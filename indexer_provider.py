@@ -70,7 +70,7 @@ def get_actions(network_id, account_id):
     sql3 = "(receiver_account_id in ('%s', '%s', '%s', 'wrap.near', '%s', '%s') " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["FARMING_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["BOOSTFARM_CONTRACT"], Cfg.NETWORK[network_id]["VOTE_CONTRACT"])
     sql4 = "or (args->'args_json'->>'receiver_id' = 'aurora' and args->>'method_name' = 'ft_transfer_call') "
     sql5 = "or (receiver_account_id = 'aurora' and args->>'method_name' = 'call') "
-    sql6 = "or args->'args_json'->>'receiver_id' in ('%s', '%s'))) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
+    sql6 = "or args->'args_json'->>'receiver_id' in ('%s', '%s', '%s'))) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["VOTE_CONTRACT"])
     sql7 = "or (predecessor_account_id = 'usn' and receiver_account_id = 'usn' and  args->>'method_name' in ('buy_with_price_callback', 'sell_with_price_callback') "
     sql8 = """ and args->'args_json'->>'account' = %s )) """
     sql9 = "order by timestamp desc limit 10"
