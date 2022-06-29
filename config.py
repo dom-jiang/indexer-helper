@@ -50,6 +50,7 @@ class Cfg:
             "REF_CONTRACT": "exchange.ref-dev.testnet",
             "XREF_CONTRACT": "xref.ref-dev.testnet",
             "BOOSTFARM_CONTRACT": "boostfarm.ref-dev.testnet",
+            "VOTE_CONTRACT": "dev-20220623151446-29039416013661",
             "REDIS_KEY": "FARMS_TESTNET_DEV",
             "REDIS_POOL_KEY": "POOLS_TESTNET_DEV",
             "REDIS_POOL_BY_TOKEN_KEY": "POOLS_BY_TOKEN_TESTNET_DEV",
