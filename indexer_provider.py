@@ -53,8 +53,8 @@ def get_actions(network_id, account_id):
         port=Cfg.NETWORK[network_id]["INDEXER_PORT"])
     cur=conn.cursor()
 
-    now_time = time.time_ns()
-    old_time = now_time - (90 * 24 * 60 * 60 * 1000 * 1000 * 1000)
+    now_time = int(time.time())
+    old_time = (now_time - (30 * 24 * 60 * 60)) * 1000000000
 
     sql1 = (
         "select " 
@@ -67,7 +67,7 @@ def get_actions(network_id, account_id):
         "status "
         "from action_receipt_actions join receipts using(receipt_id) "
         "join execution_outcomes using(receipt_id) " 
-        "where action_kind = 'FUNCTION_CALL' and timestamp > %s and  ( " % old_time
+        "where action_kind = 'FUNCTION_CALL' and included_in_block_timestamp > %s and  ( " % old_time
     )
 
     sql2 = """(predecessor_account_id = %s and """ 
