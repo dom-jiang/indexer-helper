@@ -88,9 +88,48 @@ def get_actions(network_id, account_id):
     return json_ret
 
 
+def get_proposal_id_hash(network_id):
+    ret = []
+    conn = psycopg2.connect(
+        database=Cfg.NETWORK[network_id]["INDEXER_DSN"],
+        user=Cfg.NETWORK[network_id]["INDEXER_UID"],
+        password=Cfg.NETWORK[network_id]["INDEXER_PWD"],
+        host=Cfg.NETWORK[network_id]["INDEXER_HOST"],
+        port=Cfg.NETWORK[network_id]["INDEXER_PORT"])
+    cur=conn.cursor()
+
+    now_time = int(time.time())
+    old_time = (now_time - (7 * 24 * 60 * 60)) * 1000000000
+
+    sql = (
+            """SELECT dr."data", re.included_in_block_hash """
+            "FROM ( SELECT * FROM action_receipt_actions WHERE receipt_included_in_block_timestamp > %s "
+            "AND args ->> 'method_name' = 'create_proposal' AND receipt_receiver_account_id = '%s' ) AS ara "
+            "JOIN receipts AS re USING ( receipt_id ) "
+            "JOIN action_receipt_output_data AS arod ON ( re.receipt_id = arod.output_from_receipt_id ) "
+            "JOIN data_receipts AS dr ON ( arod.output_data_id = dr.data_id )" % (old_time, Cfg.NETWORK[network_id]["VE_CONTRACT"])
+    )
+    print("get_proposal_id_hash sql:", sql)
+    cur.execute(sql)
+    rows = cur.fetchall()
+    conn.close()
+    for row in rows:
+        if row[0] is not None:
+            print("get_proposal_id_hash proposal_id bytes:", row[0])
+            proposal_id = bytes.decode(bytes(row[0]))
+            print("get_proposal_id_hash proposal_id:", proposal_id)
+            proposal = {
+                "proposal_hash": row[1],
+                "proposal_id": proposal_id
+            }
+            ret.append(proposal)
+    return ret
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
-    print(get_liquidity_pools("MAINNET", "reffer.near"))
-    print(get_actions("MAINNET", "reffer.near'); select version() -- "))
+    # print(get_liquidity_pools("MAINNET", "reffer.near"))
+    # print(get_actions("MAINNET", "juaner.near"))
     # print("#########TESTNET###########")
     # print(get_liquidity_pools("TESTNET", "pika8.testnet"))
+    print(get_proposal_id_hash("TESTNET"))
