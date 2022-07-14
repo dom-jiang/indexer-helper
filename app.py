@@ -11,13 +11,14 @@ import json
 import logging
 from indexer_provider import get_actions, get_liquidity_pools
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price 
-from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
+from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool, list_token_price_by_id_list
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
-from utils import combine_pools_info
+from utils import combine_pools_info, compress_response_content
 from config import Cfg
 from db_provider import get_history_token_price
 
-service_version = "20220705.02"
+
+service_version = "20220714.02"
 Welcome = 'Welcome to ref datacenter API server, version '+service_version+', indexer %s' % Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
 app = Flask(__name__)
@@ -48,7 +49,7 @@ def handle_latest_actions(account_id):
     except Exception as e:
         print("Exception when get_actions: ", e)
         
-    return jsonify(json_obj)
+    return compress_response_content(json_obj)
 
 
 @app.route('/liquidity-pools/<account_id>', methods=['GET'])
@@ -65,7 +66,7 @@ def handle_liquidity_pools(account_id):
     except Exception as e:
         print("Exception when get_liquidity_pools: ", e)
     
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/list-farms', methods=['GET'])
 @flask_cors.cross_origin()
@@ -74,7 +75,7 @@ def handle_list_farms():
     list_farms
     """
     ret = list_farms(Cfg.NETWORK_ID)
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/get-token-price', methods=['GET'])
 @flask_cors.cross_origin()
@@ -87,7 +88,7 @@ def handle_get_token_price():
     ret["price"] = get_token_price(Cfg.NETWORK_ID, token_contract_id)
     if ret["price"] is None:
         ret["price"] = "N/A"
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/list-token-price', methods=['GET'])
 @flask_cors.cross_origin()
@@ -118,7 +119,7 @@ def handle_list_token_price():
             "decimal": 8,
             "symbol": "RFTT",
         }
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/list-token-price-by-ids', methods=['GET'])
 @flask_cors.cross_origin()
@@ -133,7 +134,7 @@ def handle_list_token_price_by_ids():
     prices = list_token_price_by_id_list(Cfg.NETWORK_ID, [str(x) for x in id_str_list])
     ret = ["N/A" if i is None else i for i in prices]
 
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/list-token', methods=['GET'])
 @flask_cors.cross_origin()
@@ -142,7 +143,7 @@ def handle_list_token():
     list_token
     """
     ret = list_token_metadata(Cfg.NETWORK_ID)
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 @app.route('/get-pool', methods=['GET'])
 @flask_cors.cross_origin()
@@ -158,7 +159,7 @@ def handle_get_pool():
         metadata = list_token_metadata(Cfg.NETWORK_ID)
         combine_pools_info([pool,], prices, metadata)
 
-    return jsonify(pool)
+    return compress_response_content(pool)
 
 @app.route('/list-top-pools', methods=['GET'])
 @flask_cors.cross_origin()
@@ -173,7 +174,7 @@ def handle_list_top_pools():
 
     combine_pools_info(pools, prices, metadata)
 
-    return jsonify(pools)
+    return compress_response_content(pools)
 
 @app.route('/list-pools', methods=['GET'])
 @flask_cors.cross_origin()
@@ -187,7 +188,7 @@ def handle_list_pools():
 
     combine_pools_info(pools, prices, metadata)
 
-    return jsonify(pools)
+    return compress_response_content(pools)
 
 @app.route('/list-pools-by-tokens', methods=['GET'])
 @flask_cors.cross_origin()
@@ -204,7 +205,7 @@ def handle_list_pools_by_tokens():
 
     combine_pools_info(pools, prices, metadata)
 
-    return jsonify(pools)
+    return compress_response_content(pools)
 
 
 @app.route('/list-pools-by-ids', methods=['GET'])
@@ -222,7 +223,7 @@ def handle_list_pools_by_ids():
 
     combine_pools_info(pools, prices, metadata)
 
-    return jsonify(pools)
+    return compress_response_content(pools)
 
 
 @app.route('/whitelisted-active-pools', methods=['GET'])
@@ -251,7 +252,7 @@ def handle_whitelisted_active_pools():
                 "vol_token1_token0": pool["vol10"],
                 })
 
-    return jsonify(ret)
+    return compress_response_content(ret)
     
 @app.route('/to-coingecko', methods=['GET'])
 @flask_cors.cross_origin()
@@ -291,7 +292,7 @@ def handle_to_coingecko():
                     "vol_from_other_token": pool["vol10"],
                     }
 
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 
 @app.route('/list-history-token-price-by-ids', methods=['GET'])
@@ -303,7 +304,7 @@ def handle_history_token_price_by_ids():
     id_str_list = ids.lstrip("|").rstrip("|").split("|")
 
     ret = get_history_token_price([str(x) for x in id_str_list])
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 
 @app.route('/get-service-version', methods=['GET'])
