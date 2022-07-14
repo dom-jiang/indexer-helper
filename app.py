@@ -11,7 +11,7 @@ import json
 import logging
 from indexer_provider import get_actions, get_liquidity_pools
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price 
-from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool, list_token_price_by_id_list
+from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
 from utils import combine_pools_info, compress_response_content
 from config import Cfg
@@ -321,7 +321,7 @@ def handle_proposal_hash():
     if proposal_id is None:
         return jsonify(ret)
     ret = get_proposal_hash_by_id(Cfg.NETWORK_ID, proposal_id)
-    return jsonify(ret)
+    return compress_response_content(ret)
 
 
 if __name__ == '__main__':
