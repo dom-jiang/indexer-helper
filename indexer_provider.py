@@ -6,6 +6,8 @@ from config import Cfg
 import psycopg2
 import decimal
 import time
+import requests
+from redis_provider import RedisProvider
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, o):
@@ -57,30 +59,30 @@ def get_actions(network_id, account_id):
     old_time = (now_time - (30 * 24 * 60 * 60)) * 1000000000
 
     sql1 = (
-        "select " 
-        "included_in_block_timestamp as timestamp, " 
-        "originated_from_transaction_hash, "
-        "receiver_account_id, "
-        "args->>'method_name' as method_name, " 
-        "args->>'args_json' as args, " 
-        "args->>'deposit' as deposit, " 
-        "status "
-        "from action_receipt_actions join receipts using(receipt_id) "
-        "join execution_outcomes using(receipt_id) " 
-        "where action_kind = 'FUNCTION_CALL' and included_in_block_timestamp > %s and  ( " % old_time
+            "SELECT "
+            "included_in_block_timestamp as timestamp, "
+            "originated_from_transaction_hash, "
+            "receiver_account_id, "
+            "args->>'method_name' AS method_name, "
+            "args->>'args_json' AS args, "
+            "args->>'deposit' AS deposit, "
+            "status FROM (SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' "
+            "AND receipt_included_in_block_timestamp > %s "
+            "AND receipt_predecessor_account_id = '%s' ) AS ara "
+            "JOIN receipts USING ( receipt_id ) "
+            "JOIN execution_outcomes USING ( receipt_id ) " % (old_time, account_id)
     )
 
-    sql2 = """(predecessor_account_id = %s and """ 
-    sql3 = "(receiver_account_id in ('%s', '%s', '%s', 'wrap.near', '%s', '%s') " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["FARMING_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["BOOSTFARM_CONTRACT"], Cfg.NETWORK[network_id]["USN_CONTRACT"])
-    sql4 = "or (args->'args_json'->>'receiver_id' in ('aurora', '%s') and args->>'method_name' = 'ft_transfer_call') " % Cfg.NETWORK[network_id]["USN_CONTRACT"]
-    sql5 = "or (receiver_account_id = 'aurora' and args->>'method_name' = 'call') "
-    sql6 = "or args->'args_json'->>'receiver_id' in ('%s', '%s'))) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
-    sql7 = "or (predecessor_account_id = 'usn' and receiver_account_id = 'usn' and  args->>'method_name' in ('buy_with_price_callback', 'sell_with_price_callback') "
-    sql8 = """ and args->'args_json'->>'account' = %s )) """
-    sql9 = "order by timestamp desc limit 10"
-    sql = "%s %s %s %s %s %s %s %s %s" % (sql1, sql2, sql3, sql4, sql5, sql6, sql7, sql8, sql9)
+    sql2 = """WHERE predecessor_account_id = %s """
+    sql3 = "AND (receiver_account_id IN ('%s', '%s', '%s', 'wrap.near', '%s', '%s') " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["FARMING_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["BOOSTFARM_CONTRACT"], Cfg.NETWORK[network_id]["USN_CONTRACT"])
+    sql4 = "OR (args->'args_json'->>'receiver_id' IN ('aurora', '%s') AND args->>'method_name' = 'ft_transfer_call') " % Cfg.NETWORK[network_id]["USN_CONTRACT"]
+    sql5 = "OR (receiver_account_id = 'aurora' AND args->>'method_name' = 'call') "
+    sql6 = "OR args->'args_json'->>'receiver_id' IN ('%s', '%s')) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
+    sql7 = "order by timestamp desc limit 10"
+    sql = "%s %s %s %s %s %s %s" % (sql1, sql2, sql3, sql4, sql5, sql6, sql7)
 
-    cur.execute(sql, (account_id, account_id))
+    print("get_actions sql:", sql)
+    cur.execute(sql, (account_id, ))
     rows = cur.fetchall()
     conn.close()
 
@@ -88,42 +90,49 @@ def get_actions(network_id, account_id):
     return json_ret
 
 
-def get_proposal_id_hash(network_id):
-    ret = []
-    conn = psycopg2.connect(
-        database=Cfg.NETWORK[network_id]["INDEXER_DSN"],
-        user=Cfg.NETWORK[network_id]["INDEXER_UID"],
-        password=Cfg.NETWORK[network_id]["INDEXER_PWD"],
-        host=Cfg.NETWORK[network_id]["INDEXER_HOST"],
-        port=Cfg.NETWORK[network_id]["INDEXER_PORT"])
-    cur=conn.cursor()
+def get_proposal_id_hash(network_id, proposal_id):
+    proposal_res_data = None
+    url = "https://api.thegraph.com/subgraphs/name/coolsnake/refsubgraph"
 
-    now_time = int(time.time())
-    old_time = (now_time - (7 * 24 * 60 * 60)) * 1000000000
+    query = """query {
+                proposalCreates(where: {proposal_id: \"""" + str(proposal_id) + """\"}) {
+                proposal_id
+                receipt_id
+                }
+            }"""
+    ret = requests.post(url, json={'query': query}).content
+    ret_json = json.loads(ret)
+    proposal_data = ret_json["data"]["proposalCreates"]
+    if len(proposal_data) > 0:
+        receipt_id = proposal_data[0]["receipt_id"]
+        conn = psycopg2.connect(
+            database=Cfg.NETWORK[network_id]["INDEXER_DSN"],
+            user=Cfg.NETWORK[network_id]["INDEXER_UID"],
+            password=Cfg.NETWORK[network_id]["INDEXER_PWD"],
+            host=Cfg.NETWORK[network_id]["INDEXER_HOST"],
+            port=Cfg.NETWORK[network_id]["INDEXER_PORT"])
+        cur = conn.cursor()
 
-    sql = (
-            """SELECT dr."data", re.included_in_block_hash """
-            "FROM ( SELECT * FROM action_receipt_actions WHERE receipt_included_in_block_timestamp > %s "
-            "AND args ->> 'method_name' = 'create_proposal' AND receipt_receiver_account_id = '%s' ) AS ara "
-            "JOIN receipts AS re USING ( receipt_id ) "
-            "JOIN action_receipt_output_data AS arod ON ( re.receipt_id = arod.output_from_receipt_id ) "
-            "JOIN data_receipts AS dr ON ( arod.output_data_id = dr.data_id )" % (old_time, Cfg.NETWORK[network_id]["VE_CONTRACT"])
-    )
-    print("get_proposal_id_hash sql:", sql)
-    cur.execute(sql)
-    rows = cur.fetchall()
-    conn.close()
-    for row in rows:
-        if row[0] is not None:
-            print("get_proposal_id_hash proposal_id bytes:", row[0])
-            proposal_id = bytes.decode(bytes(row[0]))
-            print("get_proposal_id_hash proposal_id:", proposal_id)
-            proposal = {
-                "proposal_hash": row[1],
-                "proposal_id": proposal_id
-            }
-            ret.append(proposal)
-    return ret
+        sql = "select originated_from_transaction_hash from receipts where receipt_id = '%s'" % receipt_id
+        print("get_proposal_id_hash sql:", sql)
+        cur.execute(sql)
+        row = cur.fetchone()
+        conn.close()
+        if row is None:
+            return proposal_res_data
+        proposal_res_data = {
+                        "proposal_id": proposal_id,
+                        "receipt_id": receipt_id,
+                        "transaction_hash": "".join(row)
+                    }
+        proposal_res_data = json.dumps(proposal_res_data)
+        redis_conn = RedisProvider()
+        redis_conn.begin_pipe()
+        redis_conn.add_proposal_id_hash(network_id, proposal_id, proposal_res_data)
+        redis_conn.end_pipe()
+        redis_conn.close()
+
+    return proposal_res_data
 
 
 if __name__ == '__main__':
