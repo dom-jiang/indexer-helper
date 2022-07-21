@@ -155,7 +155,50 @@ def clear_token_price():
         cursor.close()
 
 
+def summary_hourly_price(network_id):
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql = "select mh.contract_address, " \
+          "DATE_FORMAT(from_unixtime(mh.`timestamp`, '%Y-%m-%d %H:%i:%s'), '%Y-%m-%d %H') as time, " \
+          "max(mh.price) as high_price, min(mh.price) as low_price, " \
+          "(select price from mk_history_token_price mt " \
+          "where mt.contract_address = mh.contract_address and mt.`timestamp` = min(mh.`timestamp`)) as start_price, " \
+          "(select price from mk_history_token_price mp " \
+          "where mp.contract_address = mh.contract_address and mp.`timestamp` = max(mh.`timestamp`)) as end_price " \
+          "from mk_history_token_price mh where mh.`status` = 1 group by contract_address,time "
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql)
+    rows = cursor.fetchall()
+
+    sql1 = "insert into token_price_report(contract_address, time, `status`, start_price, high_price, low_price, " \
+          "end_price, float_ratio) values(%s,%s,%s,%s,%s,%s,%s,%s)"
+    rows_length = len(rows)
+    now = int(time.time())
+    data = []
+    try:
+        for index in range(rows_length):
+            print(rows[index]["contract_address"])
+            data.append((rows[index]["contract_address"], rows[index]["time"], 1, rows[index]["start_price"],
+                    rows[index]["high_price"], rows[index]["low_price"], rows[index]["end_price"], 1))
+            if (index != 0 and index % 2 == 0) or index == rows_length-1:
+                cursor.executemany(sql1, data)
+                db_conn.commit()
+                data = []
+
+        sql2 = "update mk_history_token_price set `status` = 2 where `status` = 1 and `timestamp` < %s" % now
+        cursor.execute(sql2)
+        # Submit to database for execution
+        db_conn.commit()
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
-    add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    # add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    summary_hourly_price("1")
+
