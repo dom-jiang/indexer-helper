@@ -333,6 +333,12 @@ def handle_proposal_hash():
     return compress_response_content(ret)
 
 
+@app.route('/get-token-price-report', methods=['GET'])
+@flask_cors.cross_origin()
+def get_service_version():
+    return jsonify(service_version)
+
+
 if __name__ == '__main__':
     app.logger.setLevel(logging.INFO)
     app.logger.info(Welcome)

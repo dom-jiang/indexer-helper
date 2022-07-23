@@ -224,6 +224,9 @@ class RedisProvider(object):
     def add_history_token_price(self, network_id, contract_id, price_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_HISTORY_TOKEN_PRICE_KEY"], contract_id, price_str)
 
+    def add_token_price_report(self, network_id, contract_id, price_str):
+        self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_PRICE_REPORT_KEY"], contract_id, price_str)
+
     def add_token_metadata(self, network_id, contract_id, metadata_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_METADATA_KEY"], contract_id, metadata_str)
     
