@@ -155,7 +155,179 @@ def clear_token_price():
         cursor.close()
 
 
+def summary_hourly_price(network_id):
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql = "select mh.symbol, mh.contract_address, " \
+          "DATE_FORMAT(from_unixtime(mh.`timestamp`, '%Y-%m-%d %H:%i:%s'), '%Y-%m-%d %H') as time, " \
+          "max(mh.price) as high_price, min(mh.price) as low_price, " \
+          "(select price from mk_history_token_price mt " \
+          "where mt.contract_address = mh.contract_address and mt.`timestamp` = min(mh.`timestamp`)) as start_price, " \
+          "(select price from mk_history_token_price mp " \
+          "where mp.contract_address = mh.contract_address and mp.`timestamp` = max(mh.`timestamp`)) as end_price " \
+          "from mk_history_token_price mh where mh.`status` = 1 group by contract_address,time "
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql)
+    rows = cursor.fetchall()
+
+    sql1 = "insert into token_price_report(symbol, contract_address, time, `status`, start_price, high_price, " \
+           "low_price, end_price, float_ratio) values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+    rows_length = len(rows)
+    now = int(time.time())
+    data = []
+    try:
+        for index in range(rows_length):
+            data.append((rows[index]["symbol"], rows[index]["contract_address"], rows[index]["time"], 1,
+                         rows[index]["start_price"], rows[index]["high_price"], rows[index]["low_price"],
+                         rows[index]["end_price"], 1))
+            if (index != 0 and index % 10 == 0) or index == rows_length-1:
+                cursor.executemany(sql1, data)
+                db_conn.commit()
+                data = []
+
+        sql2 = "update mk_history_token_price set `status` = 2 where `status` = 1 and `timestamp` < %s" % now
+        cursor.execute(sql2)
+        # Submit to database for execution
+        db_conn.commit()
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+
+
+def price_report(network_id):
+    now_time = int(time.time())
+    handle_price_report_hour(network_id, now_time)
+    handle_price_report_week(network_id, now_time)
+    handle_price_report_month(network_id, now_time)
+    handle_price_report_year(network_id, now_time)
+
+
+def handle_price_report_hour(network_id, now_time):
+    date_time = 1658286000  # now - (1 * 24 * 60 * 60)
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql_h = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price,float_ratio " \
+            "from token_price_report where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % date_time
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql_h)
+    rows_h = cursor.fetchall()
+    cursor.close()
+
+    token_list_h = {}
+    for row in rows_h:
+        if row["contract_address"] in token_list_h.keys():
+            token_list_h[row["contract_address"]].append(row)
+        else:
+            token_list_h[row["contract_address"]] = [row]
+    for key_h, values in token_list_h.items():
+        key_h = key_h + "_h"
+        print("key:", key_h)
+        print("values:", json.dumps(values, cls=Encoder))
+        add_price_report_to_redis(network_id, key_h, values)
+
+
+def handle_price_report_week(network_id, now_time):
+    date_time = now_time - (7 * 24 * 60 * 60)
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql_w = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
+            "float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
+            "(select start_price from token_price_report mt " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
+            "(select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
+            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "group by contract_address,date_time" % date_time
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql_w)
+    rows_w = cursor.fetchall()
+    cursor.close()
+
+    token_list_w = {}
+    for row in rows_w:
+        row["time"] = row["date_time"]
+        if row["contract_address"] in token_list_w.keys():
+            token_list_w[row["contract_address"]].append(row)
+        else:
+            token_list_w[row["contract_address"]] = [row]
+    for key_w, values in token_list_w.items():
+        key_w = key_w + "_w"
+        print("key:", key_w)
+        print("values:", json.dumps(values, cls=Encoder))
+        add_price_report_to_redis(network_id, key_w, values)
+
+
+def handle_price_report_month(network_id, now_time):
+    date_time = now_time - (30 * 24 * 60 * 60)
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql_m = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
+            "float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
+            "(select start_price from token_price_report mt " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
+            "(select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
+            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "group by contract_address,date_time" % date_time
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql_m)
+    rows_m = cursor.fetchall()
+    cursor.close()
+
+    token_list_m = {}
+    for row in rows_m:
+        row["time"] = row["date_time"]
+        if row["contract_address"] in token_list_m.keys():
+            token_list_m[row["contract_address"]].append(row)
+        else:
+            token_list_m[row["contract_address"]] = [row]
+    for key_m, values in token_list_m.items():
+        key_m = key_m + "_m"
+        print("key:", key_m)
+        print("values:", json.dumps(values, cls=Encoder))
+        add_price_report_to_redis(network_id, key_m, values)
+
+
+def handle_price_report_year(network_id, now_time):
+    date_time = now_time - (365 * 24 * 60 * 60)
+    db_conn = get_db_connect(Cfg.NETWORK_ID)
+    sql_y = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
+            "float_ratio,DATE_FORMAT(time, '%%Y-%%m') as date_time,time," \
+            "(select start_price from token_price_report mt " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
+            "(select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
+            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "group by contract_address,date_time" % date_time
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql_y)
+    rows_y = cursor.fetchall()
+    cursor.close()
+
+    token_list_y = {}
+    for row in rows_y:
+        row["time"] = row["date_time"]
+        if row["contract_address"] in token_list_y.keys():
+            token_list_y[row["contract_address"]].append(row)
+        else:
+            token_list_y[row["contract_address"]] = [row]
+    for key_y, values in token_list_y.items():
+        key_y = key_y + "_y"
+        print("key:", key_y)
+        print("values:", json.dumps(values, cls=Encoder))
+        add_price_report_to_redis(network_id, key_y, values)
+
+
+def add_price_report_to_redis(network_id, key, values):
+    redis_conn = RedisProvider()
+    redis_conn.begin_pipe()
+    redis_conn.add_token_price_report(network_id, key, json.dumps(values, cls=Encoder))
+    redis_conn.end_pipe()
+    redis_conn.close()
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
-    add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    # add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    # summary_hourly_price("1")
+    price_report("TESTNET")
+

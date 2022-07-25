@@ -87,6 +87,7 @@ class Cfg:
             "REDIS_PROPOSAL_ID_HASH_KEY": "PROPOSAL_ID_HASH_TESTNET",
             "REDIS_TOKEN_METADATA_KEY": "TOKEN_METADATA_TESTNET",
             "REDIS_WHITELIST_KEY": "WHITELIST_TESTNET",
+            "REDIS_TOKEN_PRICE_REPORT_KEY": "TOKEN_PRICE_REPORT_TESTNET",
             "INDEXER_DSN": "testnet_explorer",
             "INDEXER_UID": "public_readonly",
             "INDEXER_PWD": "nearprotocol",

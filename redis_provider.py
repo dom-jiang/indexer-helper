@@ -119,6 +119,20 @@ def list_history_token_price(network_id: str, id_list: list) ->list:
         print(e)
     return token_list
 
+
+def get_token_price_report(network_id: str, token: str):
+    import json
+    token_report = []
+    r=redis.StrictRedis(connection_pool=pool)
+    ret = r.hget(Cfg.NETWORK[network_id]["REDIS_TOKEN_PRICE_REPORT_KEY"], token)
+    r.close()
+    try:
+        token_report = json.loads(ret)
+    except Exception as e:
+        print(e)
+    return token_report
+
+
 def list_token_metadata(network_id):
     '''
     return:
@@ -234,8 +248,8 @@ class RedisProvider(object):
     def add_history_token_price(self, network_id, contract_id, price_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_HISTORY_TOKEN_PRICE_KEY"], contract_id, price_str)
 
-    def add_proposal_id_hash(self, network_id, proposal_id, proposal_hash):
-        self.r.hset(Cfg.NETWORK[network_id]["REDIS_PROPOSAL_ID_HASH_KEY"], proposal_id, proposal_hash)
+    def add_token_price_report(self, network_id, contract_id, price_str):
+        self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_PRICE_REPORT_KEY"], contract_id, price_str)
 
     def add_token_metadata(self, network_id, contract_id, metadata_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_METADATA_KEY"], contract_id, metadata_str)
