@@ -12,7 +12,7 @@ import logging
 from indexer_provider import get_actions, get_liquidity_pools, get_proposal_id_hash
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price 
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
-from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
+from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_token_price_report
 from utils import combine_pools_info, compress_response_content
 from config import Cfg
 from db_provider import get_history_token_price
@@ -335,8 +335,13 @@ def handle_proposal_hash():
 
 @app.route('/get-token-price-report', methods=['GET'])
 @flask_cors.cross_origin()
-def get_service_version():
-    return jsonify(service_version)
+def handle_token_price_report():
+
+    token = request.args.get("token", "N/A")
+    dimension = request.args.get("dimension", "N/A")
+    token_key = token + "_" + dimension.lower()
+    ret = get_token_price_report(Cfg.NETWORK_ID, token_key)
+    return compress_response_content(ret)
 
 
 if __name__ == '__main__':

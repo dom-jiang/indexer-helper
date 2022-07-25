@@ -109,6 +109,20 @@ def list_history_token_price(network_id: str, id_list: list) ->list:
         print(e)
     return token_list
 
+
+def get_token_price_report(network_id: str, token: str):
+    import json
+    token_report = []
+    r=redis.StrictRedis(connection_pool=pool)
+    ret = r.hget(Cfg.NETWORK[network_id]["REDIS_TOKEN_PRICE_REPORT_KEY"], token)
+    r.close()
+    try:
+        token_report = json.loads(ret)
+    except Exception as e:
+        print(e)
+    return token_report
+
+
 def list_token_metadata(network_id):
     '''
     return:
