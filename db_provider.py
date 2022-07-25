@@ -1,10 +1,11 @@
 import decimal
 import pymysql
 import json
-from datetime import datetime
+from datetime import datetime as datatime
 from config import Cfg
 import time
 from redis_provider import RedisProvider, list_history_token_price
+import datetime
 
 
 class Encoder(json.JSONEncoder):
@@ -16,7 +17,7 @@ class Encoder(json.JSONEncoder):
         if isinstance(o, decimal.Decimal):
             return float(o)
 
-        if isinstance(o, datetime):
+        if isinstance(o, datatime):
             return o.strftime("%Y-%m-%d %H:%M:%S")
 
         super(Encoder, self).default(o)
@@ -155,7 +156,7 @@ def clear_token_price():
         cursor.close()
 
 
-def summary_hourly_price(network_id):
+def summary_hourly_price():
     db_conn = get_db_connect(Cfg.NETWORK_ID)
     sql = "select mh.symbol, mh.contract_address, " \
           "DATE_FORMAT(from_unixtime(mh.`timestamp`, '%Y-%m-%d %H:%i:%s'), '%Y-%m-%d %H') as time, " \
@@ -205,17 +206,29 @@ def price_report(network_id):
 
 
 def handle_price_report_hour(network_id, now_time):
-    date_time = 1658286000  # now - (1 * 24 * 60 * 60)
+    date_time = now_time - (1 * 24 * 60 * 60)
     db_conn = get_db_connect(Cfg.NETWORK_ID)
     sql_h = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price,float_ratio " \
             "from token_price_report where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_h)
     rows_h = cursor.fetchall()
+
+    history_time = date_time - (1 * 24 * 60 * 60)
+    sql_h_history = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price," \
+                    "float_ratio from token_price_report where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % (history_time, date_time)
+    cursor.execute(sql_h_history)
+    rows_h_history = cursor.fetchall()
+
     cursor.close()
 
     token_list_h = {}
     for row in rows_h:
+        for row_history in rows_h_history:
+            old_time = (row_history["time"] + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
+                row["float_ratio"] = format_percentage(float(row['end_price']), float(row_history['end_price']))
         if row["contract_address"] in token_list_h.keys():
             token_list_h[row["contract_address"]].append(row)
         else:
@@ -241,10 +254,22 @@ def handle_price_report_week(network_id, now_time):
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_w)
     rows_w = cursor.fetchall()
+
+    history_time = date_time - (7 * 24 * 60 * 60)
+    sql_w_history = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price," \
+                    "float_ratio from token_price_report where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % (history_time, date_time)
+    cursor.execute(sql_w_history)
+    rows_w_history = cursor.fetchall()
+
     cursor.close()
 
     token_list_w = {}
     for row in rows_w:
+        for row_history in rows_w_history:
+            old_time = (row_history["time"] + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
+                row["float_ratio"] = format_percentage(float(row['end_price']), float(row_history['end_price']))
         row["time"] = row["date_time"]
         if row["contract_address"] in token_list_w.keys():
             token_list_w[row["contract_address"]].append(row)
@@ -328,6 +353,5 @@ if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
     # add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
-    # summary_hourly_price("1")
+    # summary_hourly_price()
     price_report("TESTNET")
-
