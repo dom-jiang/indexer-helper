@@ -10,7 +10,7 @@ def handle_token_price_report(network_id):
         summary_hourly_price()
         price_report(network_id)
     except Exception as e:
-        print("Error occurred when clear db data, Error is: ", e)
+        print("Error occurred when token price report, Error is: ", e)
 
 
 if __name__ == '__main__':
@@ -18,7 +18,7 @@ if __name__ == '__main__':
     if len(sys.argv) == 2:
         network_id = str(sys.argv[1]).upper()
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
-            handle_token_price_report()
+            handle_token_price_report(network_id)
         else:
             print("Error, network_id should be MAINNET, TESTNET or DEVNET")
             exit(1)
