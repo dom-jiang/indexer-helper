@@ -209,7 +209,8 @@ def handle_price_report_hour(network_id, now_time):
     date_time = now_time - (1 * 24 * 60 * 60)
     db_conn = get_db_connect(Cfg.NETWORK_ID)
     sql_h = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price,float_ratio " \
-            "from token_price_report where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % date_time
+            "from token_price_report where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "group by contract_address,time " % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_h)
     rows_h = cursor.fetchall()
@@ -228,7 +229,7 @@ def handle_price_report_hour(network_id, now_time):
         for row_history in rows_h_history:
             old_time = (row_history["time"] + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
             if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
-                row["float_ratio"] = format_percentage(float(row['end_price']), float(row_history['end_price']))
+                row["float_ratio"] = format_percentage(float(row['start_price']), float(row_history['start_price']))
         if row["contract_address"] in token_list_h.keys():
             token_list_h[row["contract_address"]].append(row)
         else:
@@ -236,7 +237,6 @@ def handle_price_report_hour(network_id, now_time):
     for key_h, values in token_list_h.items():
         key_h = key_h + "_h"
         print("key:", key_h)
-        print("values:", json.dumps(values, cls=Encoder))
         add_price_report_to_redis(network_id, key_h, values)
 
 
@@ -246,19 +246,25 @@ def handle_price_report_week(network_id, now_time):
     sql_w = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
             "float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
             "(select start_price from token_price_report mt " \
-            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
-            "(select end_price from token_price_report mp " \
-            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
-            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+            "as start_price, (select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) " \
+            "as end_price from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
             "group by contract_address,date_time" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_w)
     rows_w = cursor.fetchall()
 
     history_time = date_time - (7 * 24 * 60 * 60)
-    sql_w_history = "select symbol,contract_address,time,`status`,start_price,high_price,low_price,end_price," \
-                    "float_ratio from token_price_report where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
-                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s')" % (history_time, date_time)
+    sql_w_history = "select symbol,contract_address,`status`,max(high_price) as high_price," \
+                    "min(low_price) as low_price, float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
+                    "(select start_price from token_price_report mt " \
+                    "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+                    "as start_price, (select end_price from token_price_report mp " \
+                    "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) as " \
+                    "end_price from token_price_report tpr where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "group by contract_address,date_time" % (history_time, date_time)
     cursor.execute(sql_w_history)
     rows_w_history = cursor.fetchall()
 
@@ -266,11 +272,11 @@ def handle_price_report_week(network_id, now_time):
 
     token_list_w = {}
     for row in rows_w:
-        for row_history in rows_w_history:
-            old_time = (row_history["time"] + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
-                row["float_ratio"] = format_percentage(float(row['end_price']), float(row_history['end_price']))
         row["time"] = row["date_time"]
+        for row_history in rows_w_history:
+            old_time = (row_history["time"] + datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
+                row["float_ratio"] = format_percentage(float(row['start_price']), float(row_history['start_price']))
         if row["contract_address"] in token_list_w.keys():
             token_list_w[row["contract_address"]].append(row)
         else:
@@ -278,7 +284,6 @@ def handle_price_report_week(network_id, now_time):
     for key_w, values in token_list_w.items():
         key_w = key_w + "_w"
         print("key:", key_w)
-        print("values:", json.dumps(values, cls=Encoder))
         add_price_report_to_redis(network_id, key_w, values)
 
 
@@ -288,19 +293,37 @@ def handle_price_report_month(network_id, now_time):
     sql_m = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
             "float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
             "(select start_price from token_price_report mt " \
-            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
-            "(select end_price from token_price_report mp " \
-            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
-            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+            "as start_price, (select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) " \
+            "as end_price from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
             "group by contract_address,date_time" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_m)
     rows_m = cursor.fetchall()
+
+    history_time = date_time - (30 * 24 * 60 * 60)
+    sql_m_history = "select symbol,contract_address,`status`,max(high_price) as high_price," \
+                    "min(low_price) as low_price, float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
+                    "(select start_price from token_price_report mt " \
+                    "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+                    "as start_price, (select end_price from token_price_report mp " \
+                    "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) as" \
+                    "end_price from token_price_report tpr where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "group by contract_address,date_time" % (history_time, date_time)
+    cursor.execute(sql_m_history)
+    rows_m_history = cursor.fetchall()
+
     cursor.close()
 
     token_list_m = {}
     for row in rows_m:
         row["time"] = row["date_time"]
+        for row_history in rows_m_history:
+            old_time = (row_history["time"] + datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
+                row["float_ratio"] = format_percentage(float(row['start_price']), float(row_history['start_price']))
         if row["contract_address"] in token_list_m.keys():
             token_list_m[row["contract_address"]].append(row)
         else:
@@ -308,7 +331,6 @@ def handle_price_report_month(network_id, now_time):
     for key_m, values in token_list_m.items():
         key_m = key_m + "_m"
         print("key:", key_m)
-        print("values:", json.dumps(values, cls=Encoder))
         add_price_report_to_redis(network_id, key_m, values)
 
 
@@ -318,19 +340,37 @@ def handle_price_report_year(network_id, now_time):
     sql_y = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
             "float_ratio,DATE_FORMAT(time, '%%Y-%%m') as date_time,time," \
             "(select start_price from token_price_report mt " \
-            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time)) as start_price," \
-            "(select end_price from token_price_report mp " \
-            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time)) as end_price " \
-            "from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+            "as start_price, (select end_price from token_price_report mp " \
+            "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) " \
+            "as end_price from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
             "group by contract_address,date_time" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_y)
     rows_y = cursor.fetchall()
+
+    history_time = date_time - (365 * 24 * 60 * 60)
+    sql_y_history = "select symbol,contract_address,`status`,max(high_price) as high_price," \
+                    "min(low_price) as low_price, float_ratio,DATE_FORMAT(time, '%%Y-%%m') as date_time,time," \
+                    "(select start_price from token_price_report mt " \
+                    "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
+                    "as start_price, (select end_price from token_price_report mp " \
+                    "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) as" \
+                    "end_price from token_price_report tpr where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "and time < from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+                    "group by contract_address,date_time" % (history_time, date_time)
+    cursor.execute(sql_y_history)
+    rows_y_history = cursor.fetchall()
+
     cursor.close()
 
     token_list_y = {}
     for row in rows_y:
         row["time"] = row["date_time"]
+        for row_history in rows_y_history:
+            old_time = (row_history["time"] + datetime.timedelta(days=365)).strftime("%Y-%m")
+            if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
+                row["float_ratio"] = format_percentage(float(row['start_price']), float(row_history['start_price']))
         if row["contract_address"] in token_list_y.keys():
             token_list_y[row["contract_address"]].append(row)
         else:
@@ -338,7 +378,6 @@ def handle_price_report_year(network_id, now_time):
     for key_y, values in token_list_y.items():
         key_y = key_y + "_y"
         print("key:", key_y)
-        print("values:", json.dumps(values, cls=Encoder))
         add_price_report_to_redis(network_id, key_y, values)
 
 

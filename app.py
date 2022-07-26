@@ -18,7 +18,7 @@ from config import Cfg
 from db_provider import get_history_token_price
 
 
-service_version = "20220725.01"
+service_version = "20220726.01"
 Welcome = 'Welcome to ref datacenter API server, version '+service_version+', indexer %s' % Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
 app = Flask(__name__)
@@ -337,10 +337,16 @@ def handle_proposal_hash():
 @flask_cors.cross_origin()
 def handle_token_price_report():
 
-    token = request.args.get("token", "N/A")
+    ret = {}
+    token_one = request.args.get("token_one", "N/A")
+    token_two = request.args.get("token_two", "N/A")
     dimension = request.args.get("dimension", "N/A")
-    token_key = token + "_" + dimension.lower()
-    ret = get_token_price_report(Cfg.NETWORK_ID, token_key)
+    token_one_key = token_one + "_" + dimension.lower()
+    token_one_ret = get_token_price_report(Cfg.NETWORK_ID, token_one_key)
+    token_two_key = token_two + "_" + dimension.lower()
+    token_two_ret = get_token_price_report(Cfg.NETWORK_ID, token_two_key)
+    ret["token_one"] = token_one_ret
+    ret["token_two"] = token_two_ret
     return compress_response_content(ret)
 
 
