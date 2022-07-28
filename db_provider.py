@@ -244,21 +244,21 @@ def handle_price_report_week(network_id, now_time):
     date_time = now_time - (7 * 24 * 60 * 60)
     db_conn = get_db_connect(Cfg.NETWORK_ID)
     sql_w = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
-            "float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
-            "(select start_price from token_price_report mt " \
+            "float_ratio,DATE_FORMAT(concat(date(time), ' ',floor(HOUR(time)/8)*8),'%%Y-%%m-%%d %%H') as date_time," \
+            "time, (select start_price from token_price_report mt " \
             "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
             "as start_price, (select end_price from token_price_report mp " \
             "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) " \
-            "as end_price from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "as end_price from token_price_report tpr where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
             "group by contract_address,date_time" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_w)
     rows_w = cursor.fetchall()
 
     history_time = date_time - (7 * 24 * 60 * 60)
-    sql_w_history = "select symbol,contract_address,`status`,max(high_price) as high_price," \
-                    "min(low_price) as low_price, float_ratio,DATE_FORMAT(time, '%%Y-%%m-%%d') as date_time,time," \
-                    "(select start_price from token_price_report mt " \
+    sql_w_history = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
+                    "float_ratio,DATE_FORMAT(concat(date(time), ' ',floor(HOUR(time)/8)*8),'%%Y-%%m-%%d %%H') as date_time," \
+                    "time, (select start_price from token_price_report mt " \
                     "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
                     "as start_price, (select end_price from token_price_report mp " \
                     "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) as " \
@@ -274,7 +274,7 @@ def handle_price_report_week(network_id, now_time):
     for row in rows_w:
         row["time"] = row["date_time"]
         for row_history in rows_w_history:
-            old_time = (row_history["time"] + datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+            old_time = (row_history["time"] + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
             if row_history["contract_address"] in row["contract_address"] and old_time in str(row["time"]):
                 row["float_ratio"] = format_percentage(float(row['start_price']), float(row_history['start_price']))
         if row["contract_address"] in token_list_w.keys():
