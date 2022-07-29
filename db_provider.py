@@ -338,21 +338,21 @@ def handle_price_report_year(network_id, now_time):
     date_time = now_time - (365 * 24 * 60 * 60)
     db_conn = get_db_connect(Cfg.NETWORK_ID)
     sql_y = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
-            "float_ratio,DATE_FORMAT(time, '%%Y-%%m') as date_time,time," \
-            "(select start_price from token_price_report mt " \
+            "float_ratio,DATE_FORMAT(concat(YEAR(time),'-',MONTH(time),'-',floor(DAY(time) / 15) * 15),'%%Y-%%m-%%d')" \
+            " AS date_time,time,(select start_price from token_price_report mt " \
             "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
             "as start_price, (select end_price from token_price_report mp " \
             "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) " \
-            "as end_price from token_price_report tpr where time > from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
+            "as end_price from token_price_report tpr where time >= from_unixtime(%s, '%%Y-%%m-%%d %%H:%%i:%%s') " \
             "group by contract_address,date_time" % date_time
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     cursor.execute(sql_y)
     rows_y = cursor.fetchall()
 
     history_time = date_time - (365 * 24 * 60 * 60)
-    sql_y_history = "select symbol,contract_address,`status`,max(high_price) as high_price," \
-                    "min(low_price) as low_price, float_ratio,DATE_FORMAT(time, '%%Y-%%m') as date_time,time," \
-                    "(select start_price from token_price_report mt " \
+    sql_y_history = "select symbol,contract_address,`status`,max(high_price) as high_price,min(low_price) as low_price," \
+                    "float_ratio,DATE_FORMAT(concat(YEAR(time),'-',MONTH(time),'-',floor(DAY(time) / 15) * 15),'%%Y-%%m-%%d') " \
+                    "AS date_time,time,(select start_price from token_price_report mt " \
                     "where mt.contract_address = tpr.contract_address and mt.time = min(tpr.time) group by mt.time) " \
                     "as start_price, (select end_price from token_price_report mp " \
                     "where mp.contract_address = tpr.contract_address and mp.time = max(tpr.time) group by mp.time) as" \
