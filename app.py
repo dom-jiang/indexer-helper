@@ -31,7 +31,7 @@ def before_request():
     data = request.args
     for v in data.values():
         v = str(v).lower()
-        pattern = r"\b(exec|insert|select|drop|grant|alter|alert|script|delete|update|count|master|truncate|delclare)\b|(\*|;)"
+        pattern = r"(<script>|</script>)|(\*|;)"
         r = re.search(pattern, v)
         if r:
             return 'Please enter the parameters of the specification!'
