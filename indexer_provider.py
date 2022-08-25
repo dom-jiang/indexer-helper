@@ -27,23 +27,21 @@ def get_liquidity_pools(network_id: str, account_id: str) ->list:
         password=Cfg.NETWORK[network_id]["INDEXER_PWD"],
         host=Cfg.NETWORK[network_id]["INDEXER_HOST"],
         port=Cfg.NETWORK[network_id]["INDEXER_PORT"])
-    cur=conn.cursor() 
+    cur=conn.cursor()
 
     sql1 = (
         # "select distinct pool_id from ( "
-        "select DISTINCT args_json, args_base64 from ( "
-        "select included_in_block_timestamp as timestamp, " 
+        "select distinct args_json, args_base64 from ( "
+        "select included_in_block_timestamp as timestamp, "
         # "convert_from(decode(args->>'args_base64', 'base64'), 'UTF8')::json->>'pool_id' as pool_id " 
         "args->'args_json' as args_json, "
         "args->'args_base64' as args_base64 "
-        "from ( SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' AND args ->> 'method_name' "
-        "IN ( 'add_liquidity', 'add_stable_liquidity')) AS ara "
-        "join receipts using(receipt_id) " 
-        "where ("
+        "from action_receipt_actions join receipts using(receipt_id) "
+        "where (action_kind = 'FUNCTION_CALL' and args->>'method_name' in ('add_liquidity', 'add_stable_liquidity')"
     )
-    sql2 = "receiver_account_id = '%s' " % Cfg.NETWORK[network_id]["REF_CONTRACT"]
+    sql2 = "and receiver_account_id = '%s' " % Cfg.NETWORK[network_id]["REF_CONTRACT"]
     sql3 = """and predecessor_account_id = %s) order by timestamp desc """
-    sql4 = ") as report"
+    sql4 = ") as report limit 100"
     sql = "%s %s %s %s" % (sql1, sql2, sql3, sql4)
 
     cur.execute(sql, (account_id, ))
