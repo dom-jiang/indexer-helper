@@ -11,13 +11,16 @@ from redis_provider import RedisProvider
 from config import Cfg
 from psycopg2.extras import RealDictCursor
 
+
 class DecimalEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, decimal.Decimal):
             return "%s" % o
         super(DecimalEncoder, self).default(o)
 
+
 def get_liquidity_pools(network_id: str, account_id: str) ->list:
+    start_time = int(time.time())
     conn = psycopg2.connect(
         database=Cfg.NETWORK[network_id]["INDEXER_DSN"],
         user=Cfg.NETWORK[network_id]["INDEXER_UID"],
@@ -28,23 +31,27 @@ def get_liquidity_pools(network_id: str, account_id: str) ->list:
 
     sql1 = (
         # "select distinct pool_id from ( "
-        "select distinct args_json, args_base64 from ( "
+        "select DISTINCT args_json, args_base64 from ( "
         "select included_in_block_timestamp as timestamp, " 
         # "convert_from(decode(args->>'args_base64', 'base64'), 'UTF8')::json->>'pool_id' as pool_id " 
         "args->'args_json' as args_json, "
         "args->'args_base64' as args_base64 "
-        "from action_receipt_actions join receipts using(receipt_id) " 
-        "where (action_kind = 'FUNCTION_CALL' and args->>'method_name' in ('add_liquidity', 'add_stable_liquidity')"
+        "from ( SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' AND args ->> 'method_name' "
+        "IN ( 'add_liquidity', 'add_stable_liquidity')) AS ara "
+        "join receipts using(receipt_id) " 
+        "where ("
     )
-    sql2 = "and receiver_account_id = '%s' " % Cfg.NETWORK[network_id]["REF_CONTRACT"]
+    sql2 = "receiver_account_id = '%s' " % Cfg.NETWORK[network_id]["REF_CONTRACT"]
     sql3 = """and predecessor_account_id = %s) order by timestamp desc """
-    sql4 = ") as report limit 100"
+    sql4 = ") as report"
     sql = "%s %s %s %s" % (sql1, sql2, sql3, sql4)
 
     cur.execute(sql, (account_id, ))
     rows = cur.fetchall()
     conn.close()
 
+    end_time = int(time.time()) - start_time
+    print("query liquidity pools time consuming:", end_time)
     # return [row[0] for row in rows if row[0] ]
     ids = set()
 
@@ -62,6 +69,7 @@ def get_liquidity_pools(network_id: str, account_id: str) ->list:
             # get value from args_json directly
             ids.add(row[0]['pool_id'])
 
+    print("Total time:", int(time.time()) - start_time)
     return list(ids)
 
 
