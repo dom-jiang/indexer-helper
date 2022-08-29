@@ -58,12 +58,12 @@ def compress_response_content(ret):
     return response
 
 
-def get_remote_address():
+def get_ip_address():
     if request.headers.getlist("X-Forwarded-For"):
-        ip = request.headers.getlist("X-Forwarded-For")[0]
+        ip_address = request.headers.getlist("X-Forwarded-For")[0]
     else:
-        ip = request.remote_addr
-    return ip
+        ip_address = request.remote_addr
+    return ip_address
 
 
 if __name__ == '__main__':
