@@ -76,6 +76,8 @@ class Cfg:
             "REF_CONTRACT": "ref-finance-101.testnet",
             "XREF_CONTRACT": "xref.ref-dev.testnet",
             "USN_CONTRACT": "usdn.testnet",
+            "BOOSTFARM_CONTRACT": "boostfarm.ref-dev.testnet",
+            "DCL_CONTRACT": "dcl.ref-dev.testnet",
             "REDIS_KEY": "FARMS_TESTNET",
             "REDIS_POOL_KEY": "POOLS_TESTNET",
             "REDIS_POOL_BY_TOKEN_KEY": "POOLS_BY_TOKEN_TESTNET",

@@ -68,7 +68,7 @@ def get_actions(network_id, account_id):
             "args->>'method_name' AS method_name, "
             "args->>'args_json' AS args, "
             "args->>'deposit' AS deposit, "
-            "status FROM (SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' "
+            "status, args->>'args_base64' AS args_base64 FROM (SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' "
             "AND receipt_included_in_block_timestamp > %s "
             "AND receipt_predecessor_account_id = '%s' ) AS ara "
             "JOIN receipts USING ( receipt_id ) "
@@ -76,7 +76,7 @@ def get_actions(network_id, account_id):
     )
 
     sql2 = """WHERE predecessor_account_id = %s """
-    sql3 = "AND (receiver_account_id IN ('%s', '%s', '%s', 'wrap.near', '%s', '%s') " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["FARMING_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["BOOSTFARM_CONTRACT"], Cfg.NETWORK[network_id]["USN_CONTRACT"])
+    sql3 = "AND (receiver_account_id IN ('%s', '%s', '%s', 'wrap.near', 'wrap.testnet', '%s', '%s', '%s') " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["FARMING_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"], Cfg.NETWORK[network_id]["BOOSTFARM_CONTRACT"], Cfg.NETWORK[network_id]["USN_CONTRACT"], Cfg.NETWORK[network_id]["DCL_CONTRACT"])
     sql4 = "OR (args->'args_json'->>'receiver_id' IN ('aurora', '%s') AND args->>'method_name' = 'ft_transfer_call') " % Cfg.NETWORK[network_id]["USN_CONTRACT"]
     sql5 = "OR (receiver_account_id = 'aurora' AND args->>'method_name' = 'call') "
     sql6 = "OR args->'args_json'->>'receiver_id' IN ('%s', '%s')) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
@@ -88,7 +88,22 @@ def get_actions(network_id, account_id):
     rows = cur.fetchall()
     conn.close()
 
-    json_ret = json.dumps(rows, cls=DecimalEncoder)
+    json_ret = []
+    for row in rows:
+        row = list(row)
+        try:
+            if row[4] is None:
+                ret = json.loads(row[7])
+                res = ""
+                for i in ret:
+                    res = res + chr(i)
+                row[4] = res
+            row.pop()
+            json_ret.append(row)
+        except Exception as e:
+            print("base64 transformation error:", e)
+            continue
+    json_ret = json.dumps(json_ret, cls=DecimalEncoder)
     return json_ret
 
 
@@ -144,7 +159,7 @@ def get_proposal_id_hash(network_id, id_list):
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # print(get_liquidity_pools("MAINNET", "reffer.near"))
-    print(get_actions("MAINNET", "juaner.near"))
+    print(get_actions("TESTNET", "juaner.testnet"))
     # print("#########TESTNET###########")
     # print(get_liquidity_pools("TESTNET", "pika8.testnet"))
-    print(get_proposal_id_hash("TESTNET"))
+    # print(get_proposal_id_hash("TESTNET"))
