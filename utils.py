@@ -2,6 +2,24 @@ import gzip
 from flask import make_response
 import json
 from flask import request
+from datetime import datetime
+import decimal
+
+
+class Encoder(json.JSONEncoder):
+    """
+    Handle special data types, such as decimal and time types
+    """
+
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            return float(o)
+
+        if isinstance(o, datetime):
+            return o.strftime("%Y-%m-%d %H:%M:%S")
+
+        super(Encoder, self).default(o)
+
 
 def combine_pools_info(pools, prices, metadata):
     for pool in pools:
@@ -51,7 +69,7 @@ def combine_pools_info(pools, prices, metadata):
 
 
 def compress_response_content(ret):
-    content = gzip.compress(json.dumps(ret).encode('utf8'), 5)
+    content = gzip.compress(json.dumps(ret, cls=Encoder).encode('utf8'), 5)
     response = make_response(content)
     response.headers['Content-length'] = len(content)
     response.headers['Content-Encoding'] = 'gzip'

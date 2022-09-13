@@ -32,6 +32,21 @@ def get_db_connect(network_id: str):
     return conn
 
 
+def get_db_connect_lostfound():
+    conn = pymysql.connect(
+        # host="173.255.213.66",
+        # port=3306,
+        # user="ref",
+        # passwd="Hd2n7TKFej@C",
+        # db="ref_dcl_testnet")
+        host="127.0.0.1",
+        port=3306,
+        user="root",
+        passwd="root",
+        db="ref")
+    return conn
+
+
 def get_history_token_price(id_list: list) -> list:
     """
     Batch query historical price
@@ -155,7 +170,24 @@ def clear_token_price():
         cursor.close()
 
 
+def get_lostfound_logs(block_id, token_id, sender_id, status, timestamp, block, receiver_id):
+
+    db_conn = get_db_connect_lostfound()
+    sql = 'select block_id, tx_id, token_id, sender_id, amount, `status`, `timestamp`, create_time, update_time, ' \
+          'block, receiver_id from account_not_registered_logs where (block_id="{0}" or "{0}"="") ' \
+          'and (token_id="{1}" or "{1}"="") and (sender_id="{2}" or "{2}"="") and (`status`="{3}" or "{3}"="") ' \
+          'and (`timestamp`="{4}" or "{4}"="") and (block="{5}" or "{5}"="") ' \
+          'and (receiver_id="{6}" or "{6}"="")'.format(block_id, token_id, sender_id, status, timestamp, block, receiver_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    cursor.execute(sql)
+    rows = cursor.fetchall()
+    print(rows)
+    db_conn.close()
+    return rows
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
-    add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    # add_history_token_price("ref.fakes.testnet", "ref2", 1.003, 18, "MAINNET")
+    get_lostfound_logs("", "v1.dacha-finance.near", "", "", "", "", "")

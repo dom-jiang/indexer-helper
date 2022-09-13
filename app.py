@@ -15,7 +15,7 @@ from redis_provider import list_pools_by_id_list, list_token_metadata, list_pool
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
 from utils import combine_pools_info, compress_response_content, get_ip_address
 from config import Cfg
-from db_provider import get_history_token_price
+from db_provider import get_history_token_price, get_lostfound_logs
 import re
 from flask_limiter import Limiter
 
@@ -354,6 +354,34 @@ def handle_proposal_hash():
     if len(difference_set) > 0:
         ret += get_proposal_id_hash(Cfg.NETWORK_ID, difference_set)
     return compress_response_content(ret)
+
+
+@app.route('/get-lostfound', methods=['GET'])
+@flask_cors.cross_origin()
+def handle_lostfound():
+    block_id = request.args.get("block_id")
+    token_id = request.args.get("token_id")
+    sender_id = request.args.get("sender_id")
+    status = request.args.get("status")
+    timestamp = request.args.get("timestamp")
+    block = request.args.get("block")
+    receiver_id = request.args.get("receiver_id")
+    if block_id is None:
+        block_id = ""
+    if token_id is None:
+        token_id = ""
+    if sender_id is None:
+        sender_id = ""
+    if status is None:
+        status = ""
+    if timestamp is None:
+        timestamp = ""
+    if block is None:
+        block = ""
+    if receiver_id is None:
+        receiver_id = ""
+    res = get_lostfound_logs(block_id, token_id, sender_id, status, timestamp, block, receiver_id)
+    return compress_response_content(res)
 
 
 if __name__ == '__main__':
