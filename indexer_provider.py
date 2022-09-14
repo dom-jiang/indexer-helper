@@ -10,6 +10,8 @@ import requests
 from redis_provider import RedisProvider
 from config import Cfg
 from psycopg2.extras import RealDictCursor
+import base64
+
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, o):
@@ -80,7 +82,7 @@ def get_actions(network_id, account_id):
     sql4 = "OR (args->'args_json'->>'receiver_id' IN ('aurora', '%s') AND args->>'method_name' = 'ft_transfer_call') " % Cfg.NETWORK[network_id]["USN_CONTRACT"]
     sql5 = "OR (receiver_account_id = 'aurora' AND args->>'method_name' = 'call') "
     sql6 = "OR args->'args_json'->>'receiver_id' IN ('%s', '%s')) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
-    sql7 = "order by timestamp desc limit 10"
+    sql7 = "order by timestamp desc limit 100"
     sql = "%s %s %s %s %s %s %s" % (sql1, sql2, sql3, sql4, sql5, sql6, sql7)
 
     print("get_actions sql:", sql)
@@ -93,10 +95,13 @@ def get_actions(network_id, account_id):
         row = list(row)
         try:
             if row[4] is None:
-                ret = json.loads(row[7])
-                res = ""
-                for i in ret:
-                    res = res + chr(i)
+                if row[7].startswith("["):
+                    ret = json.loads(row[7])
+                    res = ""
+                    for i in ret:
+                        res = res + chr(i)
+                else:
+                    res = str(base64.b64decode(row[7]))
                 row[4] = res
             row.pop()
             json_ret.append(row)
