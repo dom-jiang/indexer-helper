@@ -10,6 +10,7 @@ import requests
 from redis_provider import RedisProvider
 from config import Cfg
 from psycopg2.extras import RealDictCursor
+import base64
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -57,12 +58,16 @@ def get_liquidity_pools(network_id: str, account_id: str) ->list:
         # there is no args_json to read from
         # then get it from ascii vec
         if not row[0]:
-            res = ""
-            for i in row[1]:
-                res = res + chr(i)
+            if isinstance(row[1], list):
+                res = ""
+                for i in row[1]:
+                    res = res + chr(i)
 
-            json_ = json.loads(res)
-            ids.add(json_['pool_id'])
+                json_ = json.loads(res)
+                ids.add(json_['pool_id'])
+            else:
+                res = json.loads(base64.b64decode(row[1]))
+                ids.add(res['pool_id'])
         else:
             # get value from args_json directly
             ids.add(row[0]['pool_id'])
@@ -94,7 +99,7 @@ def get_actions(network_id, account_id):
             "args->>'method_name' AS method_name, "
             "args->>'args_json' AS args, "
             "args->>'deposit' AS deposit, "
-            "status FROM (SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' "
+            "status, args->>'args_base64' AS args_base64 FROM (SELECT * FROM action_receipt_actions WHERE action_kind = 'FUNCTION_CALL' "
             "AND receipt_included_in_block_timestamp > %s "
             "AND receipt_predecessor_account_id = '%s' ) AS ara "
             "JOIN receipts USING ( receipt_id ) "
@@ -114,7 +119,25 @@ def get_actions(network_id, account_id):
     rows = cur.fetchall()
     conn.close()
 
-    json_ret = json.dumps(rows, cls=DecimalEncoder)
+    json_ret = []
+    for row in rows:
+        row = list(row)
+        try:
+            if row[4] is None:
+                if row[7].startswith("["):
+                    ret = json.loads(row[7])
+                    res = ""
+                    for i in ret:
+                        res = res + chr(i)
+                else:
+                    res = str(base64.b64decode(row[7]))
+                row[4] = res
+            row.pop()
+            json_ret.append(row)
+        except Exception as e:
+            print("base64 transformation error:", e)
+            continue
+    json_ret = json.dumps(json_ret, cls=DecimalEncoder)
     return json_ret
 
 
@@ -160,7 +183,7 @@ def get_proposal_id_hash(network_id, id_list):
         redis_conn = RedisProvider()
         redis_conn.begin_pipe()
         for pps in proposal_res_data:
-            if not pps["transaction_hash"] is "":
+            if pps["transaction_hash"] != "":
                 redis_conn.add_proposal_id_hash(network_id, pps["proposal_id"], json.dumps(pps))
         redis_conn.end_pipe()
         redis_conn.close()
@@ -170,7 +193,7 @@ def get_proposal_id_hash(network_id, id_list):
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # print(get_liquidity_pools("MAINNET", "reffer.near"))
-    # print(get_actions("MAINNET", "juaner.near"))
+    print(get_actions("MAINNET", "juaner.near"))
     # print("#########TESTNET###########")
-    print(get_liquidity_pools("TESTNET", "juaner.testnet"))
+    # print(get_liquidity_pools("TESTNET", "juaner.testnet"))
     # print(get_proposal_id_hash("TESTNET"))
