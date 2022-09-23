@@ -13,16 +13,23 @@ from indexer_provider import get_actions, get_liquidity_pools, get_proposal_id_h
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price 
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
-from utils import combine_pools_info, compress_response_content
+from utils import combine_pools_info, compress_response_content, get_ip_address
 from config import Cfg
 from db_provider import get_history_token_price
 import re
+from flask_limiter import Limiter
 
 
-service_version = "20220815.02"
+service_version = "20220920.01"
 Welcome = 'Welcome to ref datacenter API server, version '+service_version+', indexer %s' % Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
 app = Flask(__name__)
+limiter = Limiter(
+    app,
+    key_func=get_ip_address,
+    default_limits=["20 per second"],
+    storage_uri="redis://:@127.0.0.1:6379/2"
+)
 
 
 @app.before_request
@@ -42,8 +49,10 @@ def before_request():
 def hello_world():
     return Welcome
 
+
 @app.route('/timestamp', methods=['GET'])
 @flask_cors.cross_origin()
+@limiter.limit("1/5 second")
 def handle_timestamp():
     import time
     return jsonify({"ts": int(time.time())})
@@ -98,6 +107,8 @@ def handle_get_token_price():
     """
     token_contract_id = request.args.get("token_id", "N/A") 
     ret = {"token_contract_id": token_contract_id}
+    if token_contract_id == 'usn' or token_contract_id == 'usdt.tether-token.near':
+        token_contract_id = "dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near"
     ret["price"] = get_token_price(Cfg.NETWORK_ID, token_contract_id)
     if ret["price"] is None:
         ret["price"] = "N/A"
@@ -125,6 +136,11 @@ def handle_list_token_price():
             "decimal": 18,
             "symbol": "USN",
         }
+        ret["usdt.tether-token.near"] = {
+            "price": prices["dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near"],
+            "decimal": 6,
+            "symbol": "USDt",
+        }
     # if token.v2.ref-finance.near exists, mirror its info to rftt.tkn.near
     if "token.v2.ref-finance.near" in ret:
         ret["rftt.tkn.near"] = {
@@ -142,6 +158,7 @@ def handle_list_token_price_by_ids():
     """
     ids = request.args.get("ids", "") 
     ids = ("|"+ids.lstrip("|").rstrip("|")+"|").replace("|usn|", "|dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near|")
+    ids = ("|" + ids.lstrip("|").rstrip("|") + "|").replace("|usdt.tether-token.near|", "|dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near|")
     id_str_list = ids.lstrip("|").rstrip("|").split("|")
 
     prices = list_token_price_by_id_list(Cfg.NETWORK_ID, [str(x) for x in id_str_list])
@@ -321,6 +338,7 @@ def handle_history_token_price_by_ids():
 
 @app.route('/get-service-version', methods=['GET'])
 @flask_cors.cross_origin()
+@limiter.limit("1/second")
 def get_service_version():
     return jsonify(service_version)
 
