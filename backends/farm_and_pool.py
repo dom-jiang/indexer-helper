@@ -90,6 +90,7 @@ def internal_get_pools(network_id: str) ->list:
     token_metadata = {}
     seeds = set()
     contract = Cfg.NETWORK[network_id]["REF_CONTRACT"]
+    err_pool = ""
 
     try:
         token_metadata = list_token_metadata(network_id)
@@ -101,7 +102,7 @@ def internal_get_pools(network_id: str) ->list:
         conn = MultiNodeJsonProvider(network_id)
         ret = conn.view_call(contract, "get_number_of_pools", b'')
         pool_num = int("".join([chr(x) for x in ret["result"]]))
-        print(pool_num)
+        print("pool_num:", pool_num)
 
         base_index = 0
 
@@ -126,11 +127,11 @@ def internal_get_pools(network_id: str) ->list:
                 pool["farming"] = True
             else:
                 pool["farming"] = False
-            
             pool["token_symbols"] = []
             for x in pool["token_account_ids"]:
                 if x in token_metadata:
-                    pool["token_symbols"].append(token_metadata[x]["symbol"])
+                    if token_metadata[x] != "":
+                        pool["token_symbols"].append(token_metadata[x]["symbol"])
                 else:
                     time.sleep(0.1)
                     metadata_obj = internal_get_token_metadata(conn, x)
@@ -142,6 +143,7 @@ def internal_get_pools(network_id: str) ->list:
         pools.clear()
     except Exception as e:
         print("Error: ", e)
+        print("err_pool:", err_pool)
         pools.clear()
     return pools
 
@@ -182,7 +184,12 @@ def internal_pools_to_redis(network_id: str, pools: list):
                 # gen tops
                 # key = "{%s}-{%s}" % (pool["token_account_ids"][0], pool["token_account_ids"][1])
                 sorted_tp = sorted(pool["token_account_ids"])
-                key = "{%s}-{%s}" % (sorted_tp[0], sorted_tp[1])
+                key = ""
+                for k in range(0, len(sorted_tp)):
+                    key = key + "{" + sorted_tp[k] + "}-"
+                    if k == len(sorted_tp)-1:
+                        key = key[:-1]
+                # key = "{%s}-{%s}" % (sorted_tp[0], sorted_tp[1])
                 pool["id"] = "%s" % i
                 if key in tops:
                     max_k = int(tops[key]["amounts"][0]) * int(tops[key]["amounts"][1])
