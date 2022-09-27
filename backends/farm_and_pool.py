@@ -132,6 +132,7 @@ def internal_get_pools(network_id: str) ->list:
                 if x in token_metadata:
                     if token_metadata[x] != "":
                         pool["token_symbols"].append(token_metadata[x]["symbol"])
+                    # pool["token_symbols"].append(token_metadata[x]["symbol"])
                 else:
                     time.sleep(0.1)
                     metadata_obj = internal_get_token_metadata(conn, x)
@@ -187,7 +188,7 @@ def internal_pools_to_redis(network_id: str, pools: list):
                 key = ""
                 for k in range(0, len(sorted_tp)):
                     key = key + "{" + sorted_tp[k] + "}-"
-                    if k == len(sorted_tp)-1:
+                    if k == len(sorted_tp) - 1:
                         key = key[:-1]
                 # key = "{%s}-{%s}" % (sorted_tp[0], sorted_tp[1])
                 pool["id"] = "%s" % i
