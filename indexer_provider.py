@@ -123,15 +123,18 @@ def get_actions(network_id, account_id):
     for row in rows:
         row = list(row)
         try:
-            if row[4] is None:
-                if row[7].startswith("["):
-                    ret = json.loads(row[7])
-                    res = ""
-                    for i in ret:
-                        res = res + chr(i)
-                else:
-                    res = str(base64.b64decode(row[7]))
-                row[4] = res
+            if row[2] == "aurora":
+                row[4] = ""
+            else:
+                if row[4] is None:
+                    if row[7].startswith("["):
+                        ret = json.loads(row[7])
+                        res = ""
+                        for i in ret:
+                            res = res + chr(i)
+                    else:
+                        res = base64.b64decode(row[7]).decode('utf-8')
+                    row[4] = res
             row.pop()
             json_ret.append(row)
         except Exception as e:
@@ -193,7 +196,7 @@ def get_proposal_id_hash(network_id, id_list):
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # print(get_liquidity_pools("MAINNET", "reffer.near"))
-    print(get_actions("MAINNET", "juaner.near"))
+    print(get_actions("TESTNET", "juaner.testnet"))
     # print("#########TESTNET###########")
     # print(get_liquidity_pools("TESTNET", "juaner.testnet"))
     # print(get_proposal_id_hash("TESTNET"))
