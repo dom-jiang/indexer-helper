@@ -111,7 +111,7 @@ def get_actions(network_id, account_id):
     sql4 = "OR (args->'args_json'->>'receiver_id' IN ('aurora', '%s') AND args->>'method_name' = 'ft_transfer_call') " % Cfg.NETWORK[network_id]["USN_CONTRACT"]
     sql5 = "OR (receiver_account_id = 'aurora' AND args->>'method_name' = 'call') "
     sql6 = "OR args->'args_json'->>'receiver_id' IN ('%s', '%s')) " % (Cfg.NETWORK[network_id]["REF_CONTRACT"], Cfg.NETWORK[network_id]["XREF_CONTRACT"])
-    sql7 = "order by timestamp desc limit 100"
+    sql7 = "order by timestamp desc limit 10"
     sql = "%s %s %s %s %s %s %s" % (sql1, sql2, sql3, sql4, sql5, sql6, sql7)
 
     print("get_actions sql:", sql)
