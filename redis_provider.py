@@ -209,9 +209,9 @@ def get_whitelisted_tokens(network_id, token_contract_id):
             rpc_conn = MultiNodeJsonProvider(network_id)
             rpc_ret = rpc_conn.view_call(token_contract_id, "get_whitelisted_tokens", b'')
             json_str = "".join([chr(x) for x in rpc_ret["result"]])
-            ret = json.loads(json_str)
-            r.setex(redis_key, 600, ret)
+            r.setex(redis_key, 600, json_str)
             r.close()
+            ret = json.loads(json_str)
         except MultiNodeJsonProviderError as e:
             r.close()
             print("RPC Error: ", e)
