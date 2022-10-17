@@ -195,6 +195,8 @@ def get_whitelisted_tokens(network_id, token_contract_id):
         except MultiNodeJsonProviderError as e:
             r.close()
             print("RPC Error: ", e)
+    else:
+        ret = json.loads(ret)
     return ret
 
 
