@@ -2,6 +2,7 @@ import json
 
 from config import Cfg
 import redis
+from near_multinode_rpc_provider import MultiNodeJsonProviderError,  MultiNodeJsonProvider
 
 pool = redis.ConnectionPool(host=Cfg.REDIS["REDIS_HOST"], port=int(Cfg.REDIS["REDIS_PORT"]), decode_responses=True)
 
@@ -177,6 +178,24 @@ def list_whitelist(network_id):
     for key, value in ret.items():
         whitelist_obj[key] = json.loads(value)
     return whitelist_obj
+
+
+def get_whitelisted_tokens(network_id, token_contract_id):
+    redis_key = Cfg.NETWORK[network_id]["REDIS_WHITELISTED_TOKENS_KEY"] + "_" + token_contract_id
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get(redis_key)
+    if ret is None:
+        try:
+            rpc_conn = MultiNodeJsonProvider(network_id)
+            rpc_ret = rpc_conn.view_call(token_contract_id, "get_whitelisted_tokens", b'')
+            json_str = "".join([chr(x) for x in rpc_ret["result"]])
+            ret = json.loads(json_str)
+            r.setex(redis_key, 600, ret)
+            r.close()
+        except MultiNodeJsonProviderError as e:
+            r.close()
+            print("RPC Error: ", e)
+    return ret
 
 
 class RedisProvider(object):

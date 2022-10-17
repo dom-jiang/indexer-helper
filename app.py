@@ -12,7 +12,7 @@ import logging
 from indexer_provider import get_actions, get_liquidity_pools, get_proposal_id_hash
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price 
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
-from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id
+from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_whitelisted_tokens
 from utils import combine_pools_info, compress_response_content, get_ip_address
 from config import Cfg
 from db_provider import get_history_token_price
@@ -361,6 +361,19 @@ def handle_proposal_hash():
     difference_set = list(set(id_str_list).difference(set(proposal_id_list)))
     if len(difference_set) > 0:
         ret += get_proposal_id_hash(Cfg.NETWORK_ID, difference_set)
+    return compress_response_content(ret)
+
+
+@app.route('/get-whitelisted-tokens', methods=['GET'])
+@flask_cors.cross_origin()
+def handle_whitelisted_tokens():
+    """
+    get_whitelisted_tokens
+    """
+    contract_id = request.args.get("contract_id")
+    if contract_id is None or contract_id == "":
+        return ""
+    ret = get_whitelisted_tokens(Cfg.NETWORK_ID, contract_id)
     return compress_response_content(ret)
 
 
