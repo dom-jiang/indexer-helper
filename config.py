@@ -95,6 +95,7 @@ class Cfg:
             "REDIS_WHITELISTED_TOKENS_KEY": "WHITELISTED_TOKENS_TESTNET",
             "REDIS_DCL_POOLS_VOLUME_24H_KEY": "DCL_POOLS_VOLUME_24H_TESTNET",
             "REDIS_DCL_POOLS_VOLUME_LIST_KEY": "DCL_POOLS_VOLUME_LIST_TESTNET",
+            "REDIS_DCL_POOLS_TVL_LIST_KEY": "DCL_POOLS_TVL_LIST_TESTNET",
             "INDEXER_DSN": "testnet_explorer",
             "INDEXER_UID": "public_readonly",
             "INDEXER_PWD": "nearprotocol",
