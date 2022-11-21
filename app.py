@@ -22,19 +22,35 @@ from db_provider import get_history_token_price
 import re
 from flask_limiter import Limiter
 from loguru import logger
+from json_response import JsonResponse
+from json_flask import JsonFlask
+from flask_cors import CORS
+from data_db_provider import get_token_ratio_swap_data, get_swap_count_data, get_swap_count_by_account_data
+from data_db_provider import get_swap_count_by_pool_data, get_add_liquidity_count_data, get_remove_liquidity_count_data
+from data_db_provider import get_add_liquidity_count_by_pool_data, get_remove_liquidity_count_by_pool_data
 
 
-service_version = "20221025.01"
+service_version = "20221121.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
-app = Flask(__name__)
+# app = Flask(__name__)
+app = JsonFlask(__name__)
+CORS(app, supports_credentials=True)
 limiter = Limiter(
     app,
     key_func=get_ip_address,
     default_limits=["20 per second"],
     storage_uri="redis://:@127.0.0.1:6379/2"
 )
+
+
+@app.errorhandler(Exception)
+def error_handler(e):
+    """
+    Global Exception Capture
+    """
+    return JsonResponse.error(msg=str(e))
 
 
 @app.before_request
@@ -332,7 +348,7 @@ def handle_to_coingecko():
                 float(pool['amounts'][1]) / (10 ** metadata[token1]["decimals"])
             )
             key = "%s-%s" % (pool["token_symbols"][0], pool["token_symbols"][1])
-            # add token0_ref_price = token1_price * token1_balance / token0_balance 
+            # add token0_ref_price = token1_price * token1_balance / token0_balance
             if balance0 > 0 and balance1 > 0:
                 ret[key] = {
                     "pool_id": pool["id"],
@@ -453,6 +469,97 @@ def handle_dcl_pools_tvl_list():
         return ''
     res = get_dcl_pools_tvl_list(Cfg.NETWORK_ID, pool_id)
     return compress_response_content(res)
+
+
+@app.route('/get-token-swap-ratio', methods=['GET'])
+@flask_cors.cross_origin()
+def get_token_swap_ratio():
+    ret = get_token_ratio_swap_data()
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-swap-count', methods=['GET'])
+@flask_cors.cross_origin()
+def get_swap_count():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_swap_count_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-swap-count-by-account', methods=['GET'])
+@flask_cors.cross_origin()
+def get_swap_count_by_account():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_swap_count_by_account_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-swap-count-by-pool', methods=['GET'])
+@flask_cors.cross_origin()
+def get_swap_count_by_pool():
+    ret = ""
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_swap_count_by_pool_data(start_time, end_time)
+    return JsonResponse.success(data=ret)
+
+
+@app.route('/get-add-liquidity-count', methods=['GET'])
+@flask_cors.cross_origin()
+def get_add_liquidity_count():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_add_liquidity_count_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-remove-liquidity-count', methods=['GET'])
+@flask_cors.cross_origin()
+def get_remove_liquidity_count():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_remove_liquidity_count_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-add-liquidity-count-by-pool', methods=['GET'])
+@flask_cors.cross_origin()
+def get_add_liquidity_count_by_pool():
+    ret = ""
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_add_liquidity_count_by_pool_data(start_time, end_time)
+    return JsonResponse.success(data=ret)
+
+
+@app.route('/get-remove-liquidity-count-by-pool', methods=['GET'])
+@flask_cors.cross_origin()
+def get_remove_liquidity_count_by_pool():
+    ret = ""
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_remove_liquidity_count_by_pool_data(start_time, end_time)
+    return JsonResponse.success(data=ret)
 
 
 logger.add("app.log")
