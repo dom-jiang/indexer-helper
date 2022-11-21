@@ -135,6 +135,7 @@ class Cfg:
             {"SYMBOL": "WHALES", "NEAR_ID": "whales.tkn.near", "MD_ID": "solana", "DECIMAL": 4},
             {"SYMBOL": "NVP", "NEAR_ID": "nvp.tkn.near", "MD_ID": "solana", "DECIMAL": 18},
             {"SYMBOL": "USDt", "NEAR_ID": "usdt.tether-token.near", "MD_ID": "solana", "DECIMAL": 6},
+            {"SYMBOL": "xCORN", "NEAR_ID": "xcorn.v1.corn-staging.near", "MD_ID": "solana", "DECIMAL": 18},
         ],
     }
     MARKET_URL = "api.coingecko.com"
