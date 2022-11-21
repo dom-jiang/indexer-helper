@@ -159,7 +159,12 @@ def add_history_token_price(contract_address, symbol, price, decimals, network_i
 
 
 def format_percentage(new, old):
-    p = 100 * (new - old) / old
+    if new == 0:
+        p = 0
+    elif old == 0:
+        p = 100
+    else:
+        p = 100 * (new - old) / old
     return '%.2f' % p
 
 
