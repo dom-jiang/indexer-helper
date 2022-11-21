@@ -256,11 +256,11 @@ def get_token_ratio_liquidity_data():
             }
             if row["token_in"] in token_decimal:
                 dis = int("1" + "0" * token_decimal[row["token_in"]])
-                row["swap_in"] = int(row["swap_in"]) / dis
+                row["amount_in"] = int(row["amount_in"]) / dis
             if row["token_out"] in token_decimal:
                 dis = int("1" + "0" * token_decimal[row["token_out"]])
-                row["swap_out"] = int(row["swap_out"]) / dis
-            res_data["ratio"] = format_percentage(float(row["swap_in"]), float(row["swap_out"]))
+                row["amount_out"] = int(row["amount_out"]) / dis
+            res_data["ratio"] = format_percentage(float(row["amount_in"]), float(row["amount_out"]))
             res_list.append(res_data)
         return res_list
     except Exception as e:
@@ -314,4 +314,5 @@ if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
     # print(get_token_ratio_swap_data())
-    print(get_swap_count_data("2022-10-23 23:59:55", "2022-10-23 23:59:59"))
+    # print(get_swap_count_data("2022-10-23 23:59:55", "2022-10-23 23:59:59"))
+    print(get_token_ratio_liquidity_data())
