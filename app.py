@@ -26,6 +26,7 @@ from flask_cors import CORS
 from data_db_provider import get_token_ratio_swap_data, get_swap_count_data, get_swap_count_by_account_data
 from data_db_provider import get_swap_count_by_pool_data, get_add_liquidity_count_data, get_remove_liquidity_count_data
 from data_db_provider import get_add_liquidity_count_by_pool_data, get_remove_liquidity_count_by_pool_data
+from data_db_provider import get_token_ratio_liquidity_data, get_add_liquidity_count_by_account_data, get_remove_liquidity_count_by_account_data
 
 
 service_version = "20221121.01"
@@ -491,6 +492,37 @@ def get_remove_liquidity_count_by_pool():
         return ret
     ret = get_remove_liquidity_count_by_pool_data(start_time, end_time)
     return JsonResponse.success(data=ret)
+
+
+@app.route('/get-token-liquidity-ratio', methods=['GET'])
+@flask_cors.cross_origin()
+def get_token_liquidity_ratio():
+    ret = get_token_ratio_liquidity_data()
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-add-liquidity-count-by-account', methods=['GET'])
+@flask_cors.cross_origin()
+def get_add_liquidity_count_by_account():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_add_liquidity_count_by_account_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-remove-liquidity-count-by-account', methods=['GET'])
+@flask_cors.cross_origin()
+def get_remove_liquidity_count_by_account():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_remove_liquidity_count_by_account_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
 
 
 logger.add("app.log")

@@ -32,6 +32,14 @@ def get_data_db_connect():
     return conn
 
 
+def format_percentage(one, two):
+    if 0 == one or 0 == two:
+        p = 0
+    else:
+        p = 100 * one / two
+    return '%.2f' % p
+
+
 def get_token_ratio_swap_data():
     # Get current timestamp
     # now = int(time.time())
@@ -227,12 +235,79 @@ def get_liquidity_count_by_pool_data(start_time, end_time, method):
     return liquidity_data_list
 
 
-def format_percentage(one, two):
-    if 0 == one or 0 == two:
-        p = 0
+def get_token_ratio_liquidity_data():
+    token_decimal = {}
+    res_list = []
+    for token in Cfg.TOKENS["MAINNET"]:
+        token_decimal[token["NEAR_ID"]] = token["DECIMAL"]
+    db_conn = get_data_db_connect()
+    sql = "select token_in,token_out,amount_in,amount_out,`timestamp` from near_lake_liquidity_log " \
+          "where token_in != '' and token_out != '' group by token_in, token_out order by `timestamp` desc"
+    # par = (contract_address, before_time)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        for row in rows:
+            res_data = {
+                "token_in": row["token_in"],
+                "token_out": row["token_out"],
+                "ratio": ""
+            }
+            if row["token_in"] in token_decimal:
+                dis = int("1" + "0" * token_decimal[row["token_in"]])
+                row["swap_in"] = int(row["swap_in"]) / dis
+            if row["token_out"] in token_decimal:
+                dis = int("1" + "0" * token_decimal[row["token_out"]])
+                row["swap_out"] = int(row["swap_out"]) / dis
+            res_data["ratio"] = format_percentage(float(row["swap_in"]), float(row["swap_out"]))
+            res_list.append(res_data)
+        return res_list
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+
+
+def get_add_liquidity_count_by_account_data(start_time, end_time):
+    return get_liquidity_count_by_account_data(start_time, end_time, "add")
+
+
+def get_remove_liquidity_count_by_account_data(start_time, end_time):
+    return get_liquidity_count_by_account_data(start_time, end_time, "remove")
+
+
+def get_liquidity_count_by_account_data(start_time, end_time, method):
+    start_time = time.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+    end_time = time.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+    start_time_timestamp = int(time.mktime(start_time) * 1000000000)
+    end_time_timestamp = int(time.mktime(end_time) * 1000000000)
+    swap_count = 0
+    db_conn = get_data_db_connect()
+    if method == "add":
+        sql = "select count(*) as count from (select count(*) as count1, predecessor_id from near_lake_liquidity_log " \
+              "where `timestamp` >= %s and `timestamp` <= %s and (method_name = 'add_liquidity' " \
+              "or method_name = 'add_stable_liquidity') group by predecessor_id) as cc"
     else:
-        p = 100 * one / two
-    return '%.2f' % p
+        sql = "select count(*) as count from (select count(*) as count1, predecessor_id from near_lake_liquidity_log " \
+              "where `timestamp` >= %s and `timestamp` <= %s and (method_name = 'remove_liquidity' " \
+              "or method_name = 'remove_liquidity_by_tokens') group by predecessor_id) as cc"
+    par = (start_time_timestamp, end_time_timestamp)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, par)
+        row = cursor.fetchone()
+        if row is not None:
+            swap_count = row["count"]
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+    return swap_count
 
 
 if __name__ == '__main__':
