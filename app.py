@@ -569,7 +569,7 @@ def get_remove_liquidity_count_by_pool():
 @flask_cors.cross_origin()
 def get_token_liquidity_ratio():
     ret = get_token_ratio_liquidity_data()
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-add-liquidity-count-by-account', methods=['GET'])
@@ -581,7 +581,7 @@ def get_add_liquidity_count_by_account():
     if start_time is None or end_time is None:
         return ret
     ret = get_add_liquidity_count_by_account_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-remove-liquidity-count-by-account', methods=['GET'])
@@ -593,7 +593,7 @@ def get_remove_liquidity_count_by_account():
     if start_time is None or end_time is None:
         return ret
     ret = get_remove_liquidity_count_by_account_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-deposit-farm-count', methods=['GET'])
@@ -605,7 +605,7 @@ def get_deposit_farm_count():
     if start_time is None or end_time is None:
         return ret
     ret = get_deposit_farm_count_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-withdraw-farm-count', methods=['GET'])
@@ -617,7 +617,7 @@ def get_withdraw_farm_count():
     if start_time is None or end_time is None:
         return ret
     ret = get_withdraw_farm_count_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-deposit-farm-count-by-account', methods=['GET'])
@@ -629,7 +629,7 @@ def get_deposit_farm_count_by_account():
     if start_time is None or end_time is None:
         return ret
     ret = get_deposit_farm_count_by_account_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-withdraw-farm-count-by-account', methods=['GET'])
@@ -641,7 +641,7 @@ def get_withdraw_farm_count_by_account():
     if start_time is None or end_time is None:
         return ret
     ret = get_withdraw_farm_count_by_account_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-deposit-farm-count-by-farm', methods=['GET'])
