@@ -409,7 +409,7 @@ def handle_proposal_hash():
 @flask_cors.cross_origin()
 def get_token_swap_ratio():
     ret = get_token_ratio_swap_data()
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-swap-count', methods=['GET'])
@@ -421,7 +421,7 @@ def get_swap_count():
     if start_time is None or end_time is None:
         return ret
     ret = get_swap_count_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-swap-count-by-account', methods=['GET'])
@@ -433,7 +433,7 @@ def get_swap_count_by_account():
     if start_time is None or end_time is None:
         return ret
     ret = get_swap_count_by_account_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-swap-count-by-pool', methods=['GET'])
@@ -457,7 +457,7 @@ def get_add_liquidity_count():
     if start_time is None or end_time is None:
         return ret
     ret = get_add_liquidity_count_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-remove-liquidity-count', methods=['GET'])
@@ -469,7 +469,7 @@ def get_remove_liquidity_count():
     if start_time is None or end_time is None:
         return ret
     ret = get_remove_liquidity_count_data(start_time, end_time)
-    return JsonResponse.success(data=str(ret))
+    return JsonResponse.success(data=ret)
 
 
 @app.route('/get-add-liquidity-count-by-pool', methods=['GET'])
