@@ -29,6 +29,8 @@ from data_db_provider import get_token_ratio_swap_data, get_swap_count_data, get
 from data_db_provider import get_swap_count_by_pool_data, get_add_liquidity_count_data, get_remove_liquidity_count_data
 from data_db_provider import get_add_liquidity_count_by_pool_data, get_remove_liquidity_count_by_pool_data
 from data_db_provider import get_token_ratio_liquidity_data, get_add_liquidity_count_by_account_data, get_remove_liquidity_count_by_account_data
+from data_db_provider import get_deposit_farm_count_data, get_withdraw_farm_count_data, get_deposit_farm_count_by_account_data, get_withdraw_farm_count_by_account_data
+from data_db_provider import get_deposit_farm_count_by_farm_data, get_withdraw_farm_count_by_farm_data
 
 
 service_version = "20221121.01"
@@ -592,6 +594,78 @@ def get_remove_liquidity_count_by_account():
         return ret
     ret = get_remove_liquidity_count_by_account_data(start_time, end_time)
     return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-deposit-farm-count', methods=['GET'])
+@flask_cors.cross_origin()
+def get_deposit_farm_count():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_deposit_farm_count_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-withdraw-farm-count', methods=['GET'])
+@flask_cors.cross_origin()
+def get_withdraw_farm_count():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_withdraw_farm_count_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-deposit-farm-count-by-account', methods=['GET'])
+@flask_cors.cross_origin()
+def get_deposit_farm_count_by_account():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_deposit_farm_count_by_account_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-withdraw-farm-count-by-account', methods=['GET'])
+@flask_cors.cross_origin()
+def get_withdraw_farm_count_by_account():
+    ret = "0"
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_withdraw_farm_count_by_account_data(start_time, end_time)
+    return JsonResponse.success(data=str(ret))
+
+
+@app.route('/get-deposit-farm-count-by-farm', methods=['GET'])
+@flask_cors.cross_origin()
+def get_deposit_farm_count_by_farm():
+    ret = ""
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_deposit_farm_count_by_farm_data(start_time, end_time)
+    return JsonResponse.success(data=ret)
+
+
+@app.route('/get-withdraw-farm-count-by-farm', methods=['GET'])
+@flask_cors.cross_origin()
+def get_withdraw_farm_count_by_farm():
+    ret = ""
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    if start_time is None or end_time is None:
+        return ret
+    ret = get_withdraw_farm_count_by_farm_data(start_time, end_time)
+    return JsonResponse.success(data=ret)
 
 
 logger.add("app.log")
