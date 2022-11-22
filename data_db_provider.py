@@ -310,6 +310,108 @@ def get_liquidity_count_by_account_data(start_time, end_time, method):
     return swap_count
 
 
+def get_deposit_farm_count_data(start_time, end_time):
+    return get_farm_count_data(start_time, end_time, "seed_deposit")
+
+
+def get_withdraw_farm_count_data(start_time, end_time):
+    return get_farm_count_data(start_time, end_time, "seed_withdraw")
+
+
+def get_farm_count_data(start_time, end_time, event):
+    start_time = time.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+    end_time = time.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+    start_time_timestamp = int(time.mktime(start_time) * 1000000000)
+    end_time_timestamp = int(time.mktime(end_time) * 1000000000)
+    add_liquidity_count = 0
+    db_conn = get_data_db_connect()
+    sql = "select count(*) as count from near_lake_farm_log where `timestamp` >= %s and `timestamp` <= %s and event = %s"
+    par = (start_time_timestamp, end_time_timestamp, event)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, par)
+        row = cursor.fetchone()
+        if row is not None:
+            add_liquidity_count = row["count"]
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+    return add_liquidity_count
+
+
+def get_deposit_farm_count_by_account_data(start_time, end_time):
+    return get_farm_count_by_account_data(start_time, end_time, "seed_deposit")
+
+
+def get_withdraw_farm_count_by_account_data(start_time, end_time):
+    return get_farm_count_by_account_data(start_time, end_time, "seed_withdraw")
+
+
+def get_farm_count_by_account_data(start_time, end_time, event):
+    start_time = time.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+    end_time = time.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+    start_time_timestamp = int(time.mktime(start_time) * 1000000000)
+    end_time_timestamp = int(time.mktime(end_time) * 1000000000)
+    swap_count = 0
+    db_conn = get_data_db_connect()
+    sql = "select count(*) as count from (select count(*) as count1, sender_id from near_lake_farm_log " \
+          "where `timestamp` >= %s and `timestamp` <= %s and event = %s group by sender_id) as cc"
+    par = (start_time_timestamp, end_time_timestamp, event)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, par)
+        row = cursor.fetchone()
+        if row is not None:
+            swap_count = row["count"]
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+    return swap_count
+
+
+def get_deposit_farm_count_by_farm_data(start_time, end_time):
+    return get_farm_count_by_farm_data(start_time, end_time, "seed_deposit")
+
+
+def get_withdraw_farm_count_by_farm_data(start_time, end_time):
+    return get_farm_count_by_farm_data(start_time, end_time, "seed_withdraw")
+
+
+def get_farm_count_by_farm_data(start_time, end_time, event):
+    start_time = time.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+    end_time = time.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+    start_time_timestamp = int(time.mktime(start_time) * 1000000000)
+    end_time_timestamp = int(time.mktime(end_time) * 1000000000)
+    liquidity_data_list = []
+    db_conn = get_data_db_connect()
+    sql = "select count(*) as count, farmer_id from near_lake_farm_log " \
+          "where `timestamp` >= %s and `timestamp` <= %s and event = %s group by farmer_id"
+    par = (start_time_timestamp, end_time_timestamp, event)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, par)
+        rows = cursor.fetchall()
+        for row in rows:
+            liquidity_data = {
+                "farmer_id": row["farmer_id"],
+                "count": row["count"]
+            }
+            liquidity_data_list.append(liquidity_data)
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+    return liquidity_data_list
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
