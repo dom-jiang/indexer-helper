@@ -123,7 +123,7 @@ def get_actions(network_id, account_id):
     for row in rows:
         row = list(row)
         try:
-            if row[2] == "aurora":
+            if row[2] == "aurora" and row[3] == "call":
                 row[4] = ""
             else:
                 if row[4] is None:
