@@ -128,6 +128,7 @@ class Cfg:
             "REDIS_DCL_POOLS_VOLUME_24H_KEY": "DCL_POOLS_VOLUME_24H_MAINNET",
             "REDIS_DCL_POOLS_VOLUME_LIST_KEY": "DCL_POOLS_VOLUME_LIST_MAINNET",
             "REDIS_DCL_POOLS_TVL_LIST_KEY": "DCL_POOLS_TVL_LIST_MAINNET",
+            "REDIS_ACCOUNT_POOL_ASSETS_KEY": "ACCOUNT_POOL_ASSETS_MAINNET",
             "INDEXER_DSN": INDEXER_DSN,
             "INDEXER_UID": INDEXER_UID,
             "INDEXER_PWD": INDEXER_PWD,
@@ -138,6 +139,7 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
+            "BLOCK_HEIGHT_FOLDER_PATH": "/www/wwwroot/mainnet-indexer.ref-finance.com/indexer-helper/backends/",
         }
     }
     TOKENS = {
