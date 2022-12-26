@@ -13,8 +13,7 @@ import binascii
 
 # the blockhash that used as random source
 hashes = [
-    'GczTaWKjEVbuCRMJGrympqTJtW2TjD9AFxtkbUQBSU44',
-    '0x8cc2b24c321aec063c8cea612205b1d6f29c05b1e57c3e0ee89a6e098bd24c5c',
+    '5jJA9QB98tbvjvVDCvQUA6hgvvQXuURwC1iqwZtwDFtz',
 ]
 
 
