@@ -10,11 +10,11 @@ from hash2random import random
 
 def get_db_connect():
     conn = pymysql.connect(
-        host="173.255.213.66",
+        host="127.0.0.1",
         port=3306,
-        user="ref",
-        passwd="Hd2n7TKFej@C",
-        db="ref_dcl_mainnet")
+        user="root",
+        passwd="root",
+        db="ref")
     return conn
 
 
