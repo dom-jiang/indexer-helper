@@ -17,7 +17,7 @@ from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id,
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list
 from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter
 from config import Cfg
-from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap
+from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_token_flow_by_pair
 import re
 from flask_limiter import Limiter
 from loguru import logger
@@ -450,6 +450,16 @@ def handle_assets_by_account():
     if ret is None:
         return ""
     return compress_response_content(json.loads(ret))
+
+
+@app.route('/get-token-flow', methods=['GET'])
+@flask_cors.cross_origin()
+def get_token_flow():
+    token_pair = request.args.get("token_pair")
+    if token_pair is None:
+        return ""
+    ret = get_token_flow_by_pair(Cfg.NETWORK_ID, token_pair)
+    return compress_response_content(ret)
 
 
 logger.add("app.log")

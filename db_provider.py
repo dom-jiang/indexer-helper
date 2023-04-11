@@ -634,6 +634,26 @@ def update_account_pool_assets_status():
         cursor.close()
 
 
+def get_token_flow_by_pair(network_id, token_pair):
+    db_conn = get_db_connect(network_id)
+    sql = "select token_pair,grade,pool_ids,token_in,revolve_token_one,revolve_token_two,token_out,token_in_amount," \
+          "revolve_one_out_amount,revolve_one_in_amount,revolve_two_out_amount,revolve_two_in_amount,token_out_amount" \
+          ",token_in_symbol,revolve_token_one_symbol,revolve_token_two_symbol,token_out_symbol,token_pair_ratio," \
+          "revolve_token_one_ratio,revolve_token_two_ratio,final_ratio from t_token_flow where token_pair = '%s' " \
+          "and states = '1' order by final_ratio desc" % token_pair
+
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        token_flow_data = cursor.fetchall()
+        return token_flow_data
+    except Exception as e:
+        # Rollback on error
+        print("query get_token_flow_by_pair to db error:", e)
+    finally:
+        cursor.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()

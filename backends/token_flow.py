@@ -106,6 +106,22 @@ def update_old_token_flow_data():
         cursor.close()
 
 
+def get_token_flow_by_pair(token_pair):
+    db_conn = get_db_connect()
+    sql = "select * from t_token_flow where token_pair = '%s' and states = '1' order by grade" % token_pair
+
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        token_flow_data = cursor.fetchall()
+        return token_flow_data
+    except Exception as e:
+        # Rollback on error
+        print("query get_token_flow_by_pair to db error:", e)
+    finally:
+        cursor.close()
+
+
 def handle_token_pair():
     token_pair_list = []
     # ["token.v2.ref-finance.near", "wrap.near"]
@@ -463,31 +479,48 @@ def get_ratio(token_in_amount, token_in_balance, token_out_balance, fee):
     # return '%.6f' % ratio
 
 
-if __name__ == "__main__":
-    print("#########TOKEN FLOW START###########")
-    start_time = int(time.time())
-    # update_old_token_flow_data()
-    # end_time1 = int(time.time())
-    # print("update_old_token_flow_data consuming:", end_time1 - start_time)
-    list_top_pools_data = get_list_top_pools()
-    end_time1 = int(time.time())
-    print("get_list_top_pools consuming:", end_time1 - start_time)
-    pools_data_list = handle_list_pool_data(list_top_pools_data)
-    end_time2 = int(time.time())
-    print("handle_list_pool_data consuming:", end_time2 - end_time1)
-    token_flow_insert_data_list = handle_flow_grade(pools_data_list)
-    end_time3 = int(time.time())
-    print("handle_flow_grade consuming:", end_time3 - end_time2)
-    add_token_flow(token_flow_insert_data_list)
-    end_time = int(time.time())
-    print("add_token_flow consuming:", end_time - end_time3)
-    print("total consuming:", end_time - start_time)
-    print("#########TOKEN FLOW END###########")
+def get_token_flow_price(token_pair, swap_amount):
+    ret_pair_data = []
+    token_flow_data = get_token_flow_by_pair(token_pair)
+    max_ratio = 0.00
+    for token_pair_data in token_flow_data:
+        if token_pair_data["grade"] == "1":
+            grade_1_ratio = get_ratio(swap_amount, token_pair_data["token_in_amount"], token_pair_data["token_out_amount"], 40)
+            if grade_1_ratio > max_ratio:
+                max_ratio = grade_1_ratio
+                ret_pair_data.append(token_pair_data)
 
-    # token_in_amount = 1
+
+if __name__ == "__main__":
+    # print("#########TOKEN FLOW START###########")
+    # start_time = int(time.time())
+    # # update_old_token_flow_data()
+    # # end_time1 = int(time.time())
+    # # print("update_old_token_flow_data consuming:", end_time1 - start_time)
+    # list_top_pools_data = get_list_top_pools()
+    # end_time1 = int(time.time())
+    # print("get_list_top_pools consuming:", end_time1 - start_time)
+    # pools_data_list = handle_list_pool_data(list_top_pools_data)
+    # end_time2 = int(time.time())
+    # print("handle_list_pool_data consuming:", end_time2 - end_time1)
+    # token_flow_insert_data_list = handle_flow_grade(pools_data_list)
+    # end_time3 = int(time.time())
+    # print("handle_flow_grade consuming:", end_time3 - end_time2)
+    # add_token_flow(token_flow_insert_data_list)
+    # end_time = int(time.time())
+    # print("add_token_flow consuming:", end_time - end_time3)
+    # print("total consuming:", end_time - start_time)
+    # print("#########TOKEN FLOW START###########")
+
+    # token_in_amount = 1000
     # token_in_balance = decimal.Decimal(40300.068074627033347709)
     # # # token_in_balance = decimal.Decimal(2305203.936049)
     # token_out_balance = decimal.Decimal(20367.711115568328953233)
     # fee = 30
     # ratio_ret = get_ratio(token_in_amount, token_in_balance, token_out_balance, fee)
     # print(ratio_ret)
+
+    print("#########GET TOKEN FLOW PRICE START###########")
+    ret = get_token_flow_price("token.v2.ref-finance.near->wrap.near", 10000)
+    print(ret)
+    print("#########GET TOKEN FLOW PRICE START###########")
