@@ -636,11 +636,12 @@ def update_account_pool_assets_status():
 
 def get_token_flow_by_pair(network_id, token_pair):
     db_conn = get_db_connect(network_id)
-    sql = "select token_pair,grade,pool_ids,token_in,revolve_token_one,revolve_token_two,token_out,token_in_amount," \
-          "revolve_one_out_amount,revolve_one_in_amount,revolve_two_out_amount,revolve_two_in_amount,token_out_amount" \
-          ",token_in_symbol,revolve_token_one_symbol,revolve_token_two_symbol,token_out_symbol,token_pair_ratio," \
-          "revolve_token_one_ratio,revolve_token_two_ratio,final_ratio from t_token_flow where token_pair = '%s' " \
-          "and states = '1' order by final_ratio desc" % token_pair
+    sql = "select token_pair, grade, pool_ids, token_in, revolve_token_one, revolve_token_two, " \
+          "token_out, token_in_symbol, revolve_token_one_symbol, revolve_token_two_symbol, token_out_symbol, " \
+          "token_in_amount, token_out_amount, revolve_one_out_amount, revolve_one_in_amount, revolve_two_out_amount, " \
+          "revolve_two_in_amount, token_pair_ratio, revolve_token_one_ratio, revolve_token_two_ratio, final_ratio, " \
+          "pool_fee, revolve_one_pool_fee, revolve_two_pool_fee from t_token_flow " \
+          "where token_pair = '%s' and states = '1' order by final_ratio desc" % token_pair
 
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:

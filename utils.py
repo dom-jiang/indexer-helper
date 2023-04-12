@@ -2,6 +2,8 @@ import gzip
 from flask import make_response
 import json
 from flask import request
+import decimal
+
 
 def combine_pools_info(pools, prices, metadata):
     ret_pools = []
@@ -104,6 +106,53 @@ def pools_filter(pools, tvl, amounts):
             continue
 
     return ret_pools
+
+
+def combine_token_flow(token_flow_data_list, swap_amount):
+    print("swap_amount:", swap_amount)
+    max_ratio = 0.00
+    max_token_pair_data = {}
+    for token_pair_data in token_flow_data_list:
+        if "'1910'" in token_pair_data["pool_ids"]:
+            continue
+        grade_ratio = 0.00
+        if token_pair_data["grade"] == "1":
+            grade_1_ratio = get_token_flow_ratio(swap_amount, token_pair_data["token_in_amount"], token_pair_data["token_out_amount"], token_pair_data["pool_fee"])
+            print("grade_1_ratio", grade_1_ratio)
+            grade_ratio = float(grade_1_ratio)
+        if token_pair_data["grade"] == "2":
+            grade_2_ratio_one = get_token_flow_ratio(swap_amount, token_pair_data["token_in_amount"], token_pair_data["revolve_one_out_amount"], token_pair_data["pool_fee"])
+            grade_2_ratio_two = (get_token_flow_ratio(swap_amount, token_pair_data["revolve_one_in_amount"], token_pair_data["token_out_amount"], token_pair_data["revolve_one_pool_fee"])) / float(swap_amount)
+            grade_2_ratio = '%.6f' % (grade_2_ratio_one * grade_2_ratio_two)
+            print("grade_2_ratio", grade_2_ratio)
+            grade_ratio = float(grade_2_ratio)
+        if token_pair_data["grade"] == "3":
+            grade_3_ratio_one = get_token_flow_ratio(swap_amount, token_pair_data["token_in_amount"], token_pair_data["revolve_one_out_amount"], token_pair_data["pool_fee"])
+            grade_3_ratio_two = (get_token_flow_ratio(swap_amount, token_pair_data["revolve_one_in_amount"], token_pair_data["revolve_two_out_amount"], token_pair_data["revolve_one_pool_fee"])) / float(swap_amount)
+            grade_3_ratio_three = (get_token_flow_ratio(swap_amount, token_pair_data["revolve_two_in_amount"], token_pair_data["token_out_amount"], token_pair_data["revolve_two_pool_fee"])) / float(swap_amount)
+            grade_3_ratio = '%.6f' % (grade_3_ratio_one * grade_3_ratio_two * grade_3_ratio_three)
+            print("grade_3_ratio", grade_3_ratio)
+            grade_ratio = float(grade_3_ratio)
+        if grade_ratio > max_ratio:
+            max_ratio = grade_ratio
+            max_token_pair_data = token_pair_data
+            max_token_pair_data["final_ratio"] = max_ratio
+    return max_token_pair_data
+
+
+def get_token_flow_ratio(token_in_amount, token_in_balance, token_out_balance, fee):
+    try:
+        token_in_amount = decimal.Decimal(token_in_amount)
+        token_in_balance = decimal.Decimal(token_in_balance)
+        token_out_balance = decimal.Decimal(token_out_balance)
+        fee = decimal.Decimal(fee)
+        ratio = token_in_amount * (10000 - fee) * token_out_balance / (10000 * token_in_balance + token_in_amount * (10000 - fee))
+    except Exception as e:
+        print("get ratio error:", e)
+        return 0
+    a, b = str(ratio).split('.')
+    return float(a + '.' + b[0:6])
+    # return '%.6f' % ratio
 
 
 if __name__ == '__main__':

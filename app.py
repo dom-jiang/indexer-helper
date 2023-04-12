@@ -15,7 +15,7 @@ from redis_provider import list_farms, list_top_pools, list_pools, list_token_pr
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_24h_pool_volume, get_account_pool_assets
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list
-from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter
+from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, combine_token_flow
 from config import Cfg
 from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_token_flow_by_pair
 import re
@@ -456,9 +456,11 @@ def handle_assets_by_account():
 @flask_cors.cross_origin()
 def get_token_flow():
     token_pair = request.args.get("token_pair")
-    if token_pair is None:
+    swap_amount = request.args.get("swap_amount")
+    if token_pair is None or swap_amount is None:
         return ""
-    ret = get_token_flow_by_pair(Cfg.NETWORK_ID, token_pair)
+    token_flow_list = get_token_flow_by_pair(Cfg.NETWORK_ID, token_pair)
+    ret = combine_token_flow(token_flow_list, swap_amount)
     return compress_response_content(ret)
 
 

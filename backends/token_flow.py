@@ -1,4 +1,3 @@
-import decimal
 import sys
 
 sys.path.append('../')
@@ -7,6 +6,7 @@ import json
 import pymysql
 from config import Cfg
 import time
+from utils import get_token_flow_ratio
 
 
 tvl_balance = 10
@@ -61,7 +61,8 @@ def add_token_flow(data_list):
           "token_out, token_in_symbol, revolve_token_one_symbol, revolve_token_two_symbol, token_out_symbol, " \
           "token_in_amount, token_out_amount, revolve_one_out_amount, revolve_one_in_amount, revolve_two_out_amount, " \
           "revolve_two_in_amount, token_pair_ratio, revolve_token_one_ratio, revolve_token_two_ratio, final_ratio, " \
-          "create_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+          "pool_fee, revolve_one_pool_fee, revolve_two_pool_fee, create_time) " \
+           "values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
 
     insert_data = []
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
@@ -75,7 +76,8 @@ def add_token_flow(data_list):
                                 data["revolve_one_out_amount"], data["revolve_one_in_amount"],
                                 data["revolve_two_out_amount"], data["revolve_two_in_amount"],
                                 data["token_pair_ratio"], data["revolve_token_one_ratio"],
-                                data["revolve_token_two_ratio"], data["final_ratio"]))
+                                data["revolve_token_two_ratio"], data["final_ratio"], data["pool_fee"],
+                                data["revolve_one_pool_fee"], data["revolve_two_pool_fee"]))
 
         cursor.execute(sql)
         db_conn.commit()
@@ -102,22 +104,6 @@ def update_old_token_flow_data():
         # Rollback on error
         db_conn.rollback()
         print("update_old_token_flow_data error:", e)
-    finally:
-        cursor.close()
-
-
-def get_token_flow_by_pair(token_pair):
-    db_conn = get_db_connect()
-    sql = "select * from t_token_flow where token_pair = '%s' and states = '1' order by grade" % token_pair
-
-    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
-    try:
-        cursor.execute(sql)
-        token_flow_data = cursor.fetchall()
-        return token_flow_data
-    except Exception as e:
-        # Rollback on error
-        print("query get_token_flow_by_pair to db error:", e)
     finally:
         cursor.close()
 
@@ -173,7 +159,7 @@ def handle_flow_grade(list_pool_data):
             token_flow_insert_data = {
                 "token_pair": token_pair,
                 "grade": "1",
-                "pool_ids": token_pair_one_data["pool_id"],
+                "pool_ids": str([token_pair_one_data["pool_id"]]),
                 "token_in": "",
                 "token_in_amount": "0",
                 "revolve_token_one": "",
@@ -192,6 +178,9 @@ def handle_flow_grade(list_pool_data):
                 "revolve_token_one_ratio": 0.00,
                 "revolve_token_two_ratio": 0.00,
                 "final_ratio": 0.00,
+                "pool_fee": token_pair_one_data["total_fee"],
+                "revolve_one_pool_fee": 0,
+                "revolve_two_pool_fee": 0,
             }
             if token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data["token_two"] == token_pair_two:
                 token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
@@ -250,7 +239,7 @@ def handle_flow_grade(list_pool_data):
             if token_flow_insert_data["token_in"] in decimals_data and token_flow_insert_data["token_out"] in decimals_data:
                 token_in_balance = int(token_flow_insert_data["token_in_amount"]) / int("1" + "0" * decimals_data[token_flow_insert_data["token_in"]])
                 token_out_balance = int(token_flow_insert_data["token_out_amount"]) / int("1" + "0" * decimals_data[token_flow_insert_data["token_out"]])
-                token_pair_ratio = get_ratio(1, token_in_balance, token_out_balance, token_pair_one_data["total_fee"])
+                token_pair_ratio = get_token_flow_ratio(1, token_in_balance, token_out_balance, token_pair_one_data["total_fee"])
                 token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
                 token_flow_insert_data["final_ratio"] = token_pair_ratio
                 token_flow_insert_data["token_in_amount"] = token_in_balance
@@ -303,6 +292,9 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                 "revolve_token_one_ratio": 0.00,
                 "revolve_token_two_ratio": 0.00,
                 "final_ratio": 0.00,
+                "pool_fee": token_two_data["total_fee"],
+                "revolve_one_pool_fee": token_one_data["total_fee"],
+                "revolve_two_pool_fee": 0,
             }
             if token_one_data["token_one"] == revolve_token_one and token_one_data["token_two"] == token_pair_two:
                 token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_one_symbol"]
@@ -337,7 +329,7 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
             if token_flow_two_insert_data["token_in"] in decimals_data and token_flow_two_insert_data["revolve_token_one"] in decimals_data:
                 token_in_balance = int(token_flow_two_insert_data["token_in_amount"]) / int("1" + "0" * decimals_data[token_flow_two_insert_data["token_in"]])
                 token_out_balance = int(token_flow_two_insert_data["revolve_one_out_amount"]) / int("1" + "0" * decimals_data[token_flow_two_insert_data["revolve_token_one"]])
-                token_flow_two_insert_data["token_pair_ratio"] = get_ratio(1, token_in_balance, token_out_balance, total_fee)
+                token_flow_two_insert_data["token_pair_ratio"] = get_token_flow_ratio(1, token_in_balance, token_out_balance, total_fee)
                 token_flow_two_insert_data["token_in_amount"] = token_in_balance
                 token_flow_two_insert_data["revolve_one_out_amount"] = token_out_balance
             else:
@@ -345,7 +337,7 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
             if token_flow_two_insert_data["revolve_token_one"] in decimals_data and token_flow_two_insert_data["token_out"] in decimals_data:
                 token_in_balance = int(token_flow_two_insert_data["revolve_one_in_amount"]) / int("1" + "0" * decimals_data[token_flow_two_insert_data["revolve_token_one"]])
                 token_out_balance = int(token_flow_two_insert_data["token_out_amount"]) / int("1" + "0" * decimals_data[token_flow_two_insert_data["token_out"]])
-                token_flow_two_insert_data["revolve_token_one_ratio"] = get_ratio(1, token_in_balance, token_out_balance, token_one_data["total_fee"])
+                token_flow_two_insert_data["revolve_token_one_ratio"] = get_token_flow_ratio(1, token_in_balance, token_out_balance, token_one_data["total_fee"])
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_in_balance
                 token_flow_two_insert_data["token_out_amount"] = token_out_balance
             else:
@@ -355,12 +347,14 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
             token_flow_insert_all_data_list.append(token_flow_two_insert_data)
             handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol,
                                token_two_data["pool_id"], revolve_token_one, revolve_token_one_symbol,
-                               token_in_amount, revolve_one_out_amount, total_fee, list_pool_data, token_flow_insert_all_data_list)
+                               token_in_amount, revolve_one_out_amount, total_fee, list_pool_data,
+                               token_flow_insert_all_data_list, token_two_data["total_fee"])
     # add_token_flow(token_flow_two_insert_data_list)
 
 
 def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, pool_id,
-                       revolve_token_one, revolve_token_one_symbol, token_in_amount, revolve_one_out_amount, total_fee, list_pool_data, token_flow_insert_all_data_list):
+                       revolve_token_one, revolve_token_one_symbol, token_in_amount, revolve_one_out_amount, total_fee,
+                       list_pool_data, token_flow_insert_all_data_list, pool_fee):
     decimals_data = get_token_decimal()
     # token_flow_three_insert_data_list = []
     token_three_data_list = query_three_pools(revolve_token_one, token_pair_two, token_pair_one, list_pool_data)
@@ -402,6 +396,9 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                 "revolve_token_one_ratio": 0.00,
                 "revolve_token_two_ratio": 0.00,
                 "final_ratio": 0.00,
+                "pool_fee": pool_fee,
+                "revolve_one_pool_fee": token_three_data["total_fee"],
+                "revolve_two_pool_fee": token_one_data["total_fee"],
             }
             if token_one_data["token_one"] == revolve_token_two and token_one_data["token_two"] == token_pair_two:
                 token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_one_symbol"]
@@ -430,7 +427,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
             if token_flow_three_insert_data["token_in"] in decimals_data and token_flow_three_insert_data["revolve_token_one"] in decimals_data:
                 token_in_balance = int(token_flow_three_insert_data["token_in_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["token_in"]])
                 token_out_balance = int(token_flow_three_insert_data["revolve_one_out_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["revolve_token_one"]])
-                token_flow_three_insert_data["token_pair_ratio"] = get_ratio(1, token_in_balance, token_out_balance, total_fee)
+                token_flow_three_insert_data["token_pair_ratio"] = get_token_flow_ratio(1, token_in_balance, token_out_balance, total_fee)
                 token_flow_three_insert_data["token_in_amount"] = token_in_balance
                 token_flow_three_insert_data["revolve_one_out_amount"] = token_out_balance
             else:
@@ -438,7 +435,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
             if token_flow_three_insert_data["revolve_token_one"] in decimals_data and token_flow_three_insert_data["revolve_token_two"] in decimals_data:
                 token_in_balance = int(token_flow_three_insert_data["revolve_one_in_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["revolve_token_one"]])
                 token_out_balance = int(token_flow_three_insert_data["revolve_two_out_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["revolve_token_two"]])
-                token_flow_three_insert_data["revolve_token_one_ratio"] = get_ratio(1, token_in_balance, token_out_balance, token_three_data["total_fee"])
+                token_flow_three_insert_data["revolve_token_one_ratio"] = get_token_flow_ratio(1, token_in_balance, token_out_balance, token_three_data["total_fee"])
                 token_flow_three_insert_data["revolve_one_in_amount"] = token_in_balance
                 token_flow_three_insert_data["revolve_two_out_amount"] = token_out_balance
             else:
@@ -446,7 +443,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
             if token_flow_three_insert_data["revolve_token_two"] in decimals_data and token_flow_three_insert_data["token_out"] in decimals_data:
                 token_in_balance = int(token_flow_three_insert_data["revolve_two_in_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["revolve_token_two"]])
                 token_out_balance = int(token_flow_three_insert_data["token_out_amount"]) / int("1" + "0" * decimals_data[token_flow_three_insert_data["token_out"]])
-                token_flow_three_insert_data["revolve_token_two_ratio"] = get_ratio(1, token_in_balance, token_out_balance, token_one_data["total_fee"])
+                token_flow_three_insert_data["revolve_token_two_ratio"] = get_token_flow_ratio(1, token_in_balance, token_out_balance, token_one_data["total_fee"])
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_in_balance
                 token_flow_three_insert_data["token_out_amount"] = token_out_balance
             else:
@@ -462,33 +459,6 @@ def get_token_decimal():
     for token in Cfg.TOKENS["MAINNET"]:
         decimals[token["NEAR_ID"]] = token["DECIMAL"]
     return decimals
-
-
-def get_ratio(token_in_amount, token_in_balance, token_out_balance, fee):
-    try:
-        token_in_amount = decimal.Decimal(token_in_amount)
-        token_in_balance = decimal.Decimal(token_in_balance)
-        token_out_balance = decimal.Decimal(token_out_balance)
-        fee = decimal.Decimal(fee)
-        ratio = token_in_amount * (10000 - fee) * token_out_balance / (10000 * token_in_balance + token_in_amount * (10000 - fee))
-    except Exception as e:
-        print("get ratio error:", e)
-        return 0
-    a, b = str(ratio).split('.')
-    return float(a + '.' + b[0:6])
-    # return '%.6f' % ratio
-
-
-def get_token_flow_price(token_pair, swap_amount):
-    ret_pair_data = []
-    token_flow_data = get_token_flow_by_pair(token_pair)
-    max_ratio = 0.00
-    for token_pair_data in token_flow_data:
-        if token_pair_data["grade"] == "1":
-            grade_1_ratio = get_ratio(swap_amount, token_pair_data["token_in_amount"], token_pair_data["token_out_amount"], 40)
-            if grade_1_ratio > max_ratio:
-                max_ratio = grade_1_ratio
-                ret_pair_data.append(token_pair_data)
 
 
 if __name__ == "__main__":
@@ -511,16 +481,10 @@ if __name__ == "__main__":
     # print("add_token_flow consuming:", end_time - end_time3)
     # print("total consuming:", end_time - start_time)
     # print("#########TOKEN FLOW START###########")
-
-    # token_in_amount = 1000
-    # token_in_balance = decimal.Decimal(40300.068074627033347709)
-    # # # token_in_balance = decimal.Decimal(2305203.936049)
-    # token_out_balance = decimal.Decimal(20367.711115568328953233)
-    # fee = 30
-    # ratio_ret = get_ratio(token_in_amount, token_in_balance, token_out_balance, fee)
-    # print(ratio_ret)
-
-    print("#########GET TOKEN FLOW PRICE START###########")
-    ret = get_token_flow_price("token.v2.ref-finance.near->wrap.near", 10000)
-    print(ret)
-    print("#########GET TOKEN FLOW PRICE START###########")
+    print("")
+    token_in_amount = 100
+    token_in_balance = float(64.585966)
+    token_out_balance = float(64.541357)
+    fee = 5
+    ratio_ret = get_token_flow_ratio(token_in_amount, token_in_balance, token_out_balance, fee)
+    print("ratio:", ratio_ret)
