@@ -3,7 +3,6 @@ from flask import make_response
 import json
 from flask import request
 
-
 def combine_pools_info(pools, prices, metadata):
     ret_pools = []
     for pool in pools:
