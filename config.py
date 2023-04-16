@@ -54,6 +54,7 @@ class Cfg:
         "REDIS_HOST": REDIS_HOST,
         "REDIS_PORT": REDIS_PORT,
     }
+    TOKEN_FLOW_BLACK_LIST = []
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,

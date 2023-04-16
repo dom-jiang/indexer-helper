@@ -640,8 +640,11 @@ def get_token_flow_by_pair(network_id, token_pair):
           "token_out, token_in_symbol, revolve_token_one_symbol, revolve_token_two_symbol, token_out_symbol, " \
           "token_in_amount, token_out_amount, revolve_one_out_amount, revolve_one_in_amount, revolve_two_out_amount, " \
           "revolve_two_in_amount, token_pair_ratio, revolve_token_one_ratio, revolve_token_two_ratio, final_ratio, " \
-          "pool_fee, revolve_one_pool_fee, revolve_two_pool_fee from t_token_flow " \
-          "where token_pair = '%s' and states = '1' order by final_ratio desc" % token_pair
+          "pool_fee, revolve_one_pool_fee, revolve_two_pool_fee, pool_kind, revolve_one_pool_kind, " \
+          "revolve_two_pool_kind, three_c_amount, three_pool_ids, amp, revolve_one_pool_amp, revolve_two_pool_amp, " \
+          "rates, revolve_one_pool_rates, revolve_two_pool_rates, pool_token_number, revolve_one_pool_token_number, " \
+          "revolve_two_pool_token_number from t_token_flow " \
+          "where token_pair = '%s' group by pool_ids order by final_ratio desc limit 6" % token_pair
 
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
@@ -651,6 +654,55 @@ def get_token_flow_by_pair(network_id, token_pair):
     except Exception as e:
         # Rollback on error
         print("query get_token_flow_by_pair to db error:", e)
+    finally:
+        cursor.close()
+
+
+def add_token_flow(network_id, data_list):
+    db_conn = get_db_connect(network_id)
+    sql = "truncate table t_token_flow"
+
+    sql1 = "insert into t_token_flow(token_pair, grade, pool_ids, token_in, revolve_token_one, revolve_token_two, " \
+           "token_out, token_in_symbol, revolve_token_one_symbol, revolve_token_two_symbol, token_out_symbol, " \
+           "token_in_amount, token_out_amount, revolve_one_out_amount,revolve_one_in_amount, revolve_two_out_amount, " \
+           "revolve_two_in_amount, token_pair_ratio, revolve_token_one_ratio, revolve_token_two_ratio, final_ratio, " \
+           "pool_fee, revolve_one_pool_fee, revolve_two_pool_fee, pool_kind, revolve_one_pool_kind, " \
+           "revolve_two_pool_kind, three_c_amount,three_pool_ids,amp,revolve_one_pool_amp,revolve_two_pool_amp," \
+           "rates,revolve_one_pool_rates,revolve_two_pool_rates,pool_token_number,revolve_one_pool_token_number," \
+           "revolve_two_pool_token_number, create_time) values(%s,%s,%s,%s,%s,%s," \
+           "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["token_pair"], data["grade"], data["pool_ids"], data["token_in"],
+                                data["revolve_token_one"], data["revolve_token_two"], data["token_out"],
+                                data["token_in_symbol"], data["revolve_token_one_symbol"],
+                                data["revolve_token_two_symbol"], data["token_out_symbol"],
+                                data["token_in_amount"], data["token_out_amount"],
+                                data["revolve_one_out_amount"], data["revolve_one_in_amount"],
+                                data["revolve_two_out_amount"], data["revolve_two_in_amount"],
+                                data["token_pair_ratio"], data["revolve_token_one_ratio"],
+                                data["revolve_token_two_ratio"], data["final_ratio"], data["pool_fee"],
+                                data["revolve_one_pool_fee"], data["revolve_two_pool_fee"],
+                                data["pool_kind"], data["revolve_one_pool_kind"],
+                                data["revolve_two_pool_kind"], data["three_c_amount"], data["three_pool_ids"],
+                                data["amp"], data["revolve_one_pool_amp"],
+                                data["revolve_two_pool_amp"], data["rates"], data["revolve_one_pool_rates"],
+                                data["revolve_two_pool_rates"], data["pool_token_number"],
+                                data["revolve_one_pool_token_number"], data["revolve_two_pool_token_number"]))
+
+        cursor.execute(sql)
+        db_conn.commit()
+        cursor.executemany(sql1, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        # print("insert sql:", sql1)
+        # print("insert insert_data:", insert_data)
+        print("insert token flow to db error:", e)
     finally:
         cursor.close()
 
