@@ -2,8 +2,6 @@ import gzip
 from flask import make_response
 import json
 from flask import request
-import decimal
-import time
 
 
 def combine_pools_info(pools, prices, metadata):
