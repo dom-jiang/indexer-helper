@@ -396,8 +396,8 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                     stable_pool = {"amp": token_one_data["amp"], "total_fee": token_one_data["total_fee"],
                                    "token_account_ids": token_one_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_one_data["rates"]}
-                    token_pair_ratio = get_swapped_amount(token_one_data["token_account_ids"][0],
-                                                          token_one_data["token_account_ids"][1], 1, stable_pool,
+                    token_pair_ratio = get_swapped_amount(token_flow_two_insert_data["revolve_token_one"],
+                                                          token_flow_two_insert_data["token_out"], 1, stable_pool,
                                                           token_one_data["stable_pool_decimal"])
                     token_flow_two_insert_data["revolve_token_one_ratio"] = token_pair_ratio
                     token_flow_two_insert_data["revolve_one_in_amount"] = token_in_balance
@@ -519,8 +519,8 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     stable_pool = {"amp": one_pool_data["amp"], "total_fee": one_pool_data["total_fee"],
                                    "token_account_ids": one_pool_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": one_pool_data["rates"]}
-                    token_pair_ratio = get_swapped_amount(one_pool_data["token_account_ids"][0],
-                                                          one_pool_data["token_account_ids"][1],
+                    token_pair_ratio = get_swapped_amount(token_flow_three_insert_data["token_in"],
+                                                          token_flow_three_insert_data["revolve_token_one"],
                                                           1, stable_pool, one_pool_data["stable_pool_decimal"])
                     token_flow_three_insert_data["token_pair_ratio"] = token_pair_ratio
                     token_flow_three_insert_data["token_in_amount"] = token_in_balance
@@ -548,9 +548,9 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     stable_pool = {"amp": token_three_data["amp"], "total_fee": token_three_data["total_fee"],
                                    "token_account_ids": token_three_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_three_data["rates"]}
-                    revolve_token_one_ratio = get_swapped_amount(token_three_data["token_account_ids"][0],
-                                                          token_three_data["token_account_ids"][1],
-                                                          1, stable_pool, token_three_data["stable_pool_decimal"])
+                    revolve_token_one_ratio = get_swapped_amount(token_flow_three_insert_data["revolve_token_one"],
+                                                                 token_flow_three_insert_data["revolve_token_two"],
+                                                                 1, stable_pool, token_three_data["stable_pool_decimal"])
                     token_flow_three_insert_data["revolve_token_one_ratio"] = revolve_token_one_ratio
                     token_flow_three_insert_data["revolve_one_in_amount"] = token_in_balance
                     token_flow_three_insert_data["revolve_two_out_amount"] = token_out_balance
@@ -577,8 +577,8 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     stable_pool = {"amp": token_one_data["amp"], "total_fee": token_one_data["total_fee"],
                                    "token_account_ids": token_one_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_one_data["rates"]}
-                    revolve_token_two_ratio = get_swapped_amount(token_one_data["token_account_ids"][0],
-                                                                 token_one_data["token_account_ids"][1],
+                    revolve_token_two_ratio = get_swapped_amount(token_flow_three_insert_data["revolve_token_two"],
+                                                                 token_flow_three_insert_data["token_out"],
                                                                  1, stable_pool,
                                                                  token_one_data["stable_pool_decimal"])
                     token_flow_three_insert_data["revolve_token_two_ratio"] = revolve_token_two_ratio
