@@ -256,6 +256,9 @@ def handle_flow_grade(list_pool_data):
                 continue
             token_flow_insert_all_data_list.append(token_flow_insert_data)
             handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, list_pool_data, token_flow_insert_all_data_list)
+        if len(token_pair_one_data_list) < 1:
+            handle_grade_two(token_pair, token_pair_one, token_pair_two, "", "",
+                             list_pool_data, token_flow_insert_all_data_list)
     return token_flow_insert_all_data_list
 
 

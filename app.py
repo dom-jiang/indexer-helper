@@ -458,10 +458,21 @@ def handle_assets_by_account():
 def get_token_flow():
     token_pair = request.args.get("token_pair")
     swap_amount = request.args.get("swap_amount")
+    ledger = request.args.get("ledger")
     if token_pair is None or swap_amount is None:
-        return ""
+        return "null"
     token_flow_list = get_token_flow_by_pair(Cfg.NETWORK_ID, token_pair)
-    ret = combine_token_flow(token_flow_list, swap_amount)
+    if len(token_flow_list) < 1:
+        return "null"
+    if ledger is None:
+        ledger = "null"
+    else:
+        ledger = ledger.lower()
+    try:
+        swap_amount = float(swap_amount)
+    except Exception as e:
+        return "null"
+    ret = combine_token_flow(token_flow_list, swap_amount, ledger)
     return compress_response_content(ret)
 
 
