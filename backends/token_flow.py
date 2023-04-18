@@ -237,11 +237,18 @@ def handle_flow_grade(list_pool_data):
                     token_out_balance = int(token_flow_insert_data["token_out_amount"])
                     # print("token_pair:", token_pair)
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates = token_pair_one_data["rates"]
                     if len(token_pair_one_data["token_account_ids"]) > 2:
                         c_amounts = token_pair_one_data["three_c_amount"]
                         token_flow_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_insert_data["three_pool_ids"] = json.dumps(token_pair_one_data["token_account_ids"])
                         token_flow_insert_data["pool_token_number"] = "3"
+                        new_rates = old_rates
+                    else:
+                        token_account_ids = token_pair_one_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_insert_data["token_in"])
+                        token_out_index = token_account_ids.index(token_flow_insert_data["token_out"])
+                        new_rates = [old_rates[token_in_index], old_rates[token_out_index]]
                     stable_pool = {"amp": token_pair_one_data["amp"], "total_fee": token_pair_one_data["total_fee"],
                                    "token_account_ids": token_pair_one_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_pair_one_data["rates"]}
@@ -251,7 +258,7 @@ def handle_flow_grade(list_pool_data):
                     token_flow_insert_data["token_in_amount"] = token_in_balance
                     token_flow_insert_data["token_out_amount"] = token_out_balance
                     token_flow_insert_data["amp"] = token_pair_one_data["amp"]
-                    token_flow_insert_data["rates"] = json.dumps(token_pair_one_data["rates"])
+                    token_flow_insert_data["rates"] = json.dumps(new_rates)
             else:
                 continue
             token_flow_insert_all_data_list.append(token_flow_insert_data)
@@ -359,11 +366,18 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                     token_in_balance = int(token_flow_two_insert_data["token_in_amount"])
                     token_out_balance = int(token_flow_two_insert_data["revolve_one_out_amount"])
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates1 = token_two_data["rates"]
                     if len(token_two_data["token_account_ids"]) > 2:
                         c_amounts = token_two_data["three_c_amount"]
                         token_flow_two_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_two_insert_data["three_pool_ids"] = json.dumps(token_two_data["token_account_ids"])
                         token_flow_two_insert_data["pool_token_number"] = "3"
+                        new_rates1 = old_rates1
+                    else:
+                        token_account_ids = token_two_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_two_insert_data["token_in"])
+                        token_out_index = token_account_ids.index(token_flow_two_insert_data["revolve_token_one"])
+                        new_rates1 = [old_rates1[token_in_index], old_rates1[token_out_index]]
                     stable_pool = {"amp": token_two_data["amp"], "total_fee": token_two_data["total_fee"],
                                    "token_account_ids": token_two_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_two_data["rates"]}
@@ -374,7 +388,7 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                     token_flow_two_insert_data["token_in_amount"] = token_in_balance
                     token_flow_two_insert_data["revolve_one_out_amount"] = token_out_balance
                     token_flow_two_insert_data["amp"] = token_two_data["amp"]
-                    token_flow_two_insert_data["rates"] = json.dumps(token_two_data["rates"])
+                    token_flow_two_insert_data["rates"] = json.dumps(new_rates1)
             else:
                 continue
             if token_flow_two_insert_data["revolve_token_one"] in decimals_data and token_flow_two_insert_data["token_out"] in decimals_data:
@@ -388,11 +402,18 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                     token_in_balance = int(token_flow_two_insert_data["revolve_one_in_amount"])
                     token_out_balance = int(token_flow_two_insert_data["token_out_amount"])
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates2 = token_one_data["rates"]
                     if len(token_one_data["token_account_ids"]) > 2:
                         c_amounts = token_one_data["three_c_amount"]
                         token_flow_two_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_two_insert_data["three_pool_ids"] = json.dumps(token_one_data["token_account_ids"])
                         token_flow_two_insert_data["revolve_one_pool_token_number"] = "3"
+                        new_rates2 = old_rates2
+                    else:
+                        token_account_ids = token_one_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_two_insert_data["revolve_token_one"])
+                        token_out_index = token_account_ids.index(token_flow_two_insert_data["token_out"])
+                        new_rates2 = [old_rates2[token_in_index], old_rates2[token_out_index]]
                     stable_pool = {"amp": token_one_data["amp"], "total_fee": token_one_data["total_fee"],
                                    "token_account_ids": token_one_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_one_data["rates"]}
@@ -403,7 +424,7 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                     token_flow_two_insert_data["revolve_one_in_amount"] = token_in_balance
                     token_flow_two_insert_data["token_out_amount"] = token_out_balance
                     token_flow_two_insert_data["revolve_one_pool_amp"] = token_one_data["amp"]
-                    token_flow_two_insert_data["revolve_one_pool_rates"] = json.dumps(token_one_data["rates"])
+                    token_flow_two_insert_data["revolve_one_pool_rates"] = json.dumps(new_rates2)
             else:
                 continue
             final_ratio = token_flow_two_insert_data["revolve_token_one_ratio"] * token_flow_two_insert_data["token_pair_ratio"]
@@ -511,11 +532,18 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_in_balance = int(token_flow_three_insert_data["token_in_amount"])
                     token_out_balance = int(token_flow_three_insert_data["revolve_one_out_amount"])
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates3 = one_pool_data["rates"]
                     if len(one_pool_data["token_account_ids"]) > 2:
                         c_amounts = one_pool_data["three_c_amount"]
                         token_flow_three_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_three_insert_data["three_pool_ids"] = json.dumps(one_pool_data["token_account_ids"])
                         token_flow_three_insert_data["pool_token_number"] = "3"
+                        new_rates3 = old_rates3
+                    else:
+                        token_account_ids = one_pool_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_three_insert_data["token_in"])
+                        token_out_index = token_account_ids.index(token_flow_three_insert_data["revolve_token_one"])
+                        new_rates3 = [old_rates3[token_in_index], old_rates3[token_out_index]]
                     stable_pool = {"amp": one_pool_data["amp"], "total_fee": one_pool_data["total_fee"],
                                    "token_account_ids": one_pool_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": one_pool_data["rates"]}
@@ -526,7 +554,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_flow_three_insert_data["token_in_amount"] = token_in_balance
                     token_flow_three_insert_data["revolve_one_out_amount"] = token_out_balance
                     token_flow_three_insert_data["amp"] = one_pool_data["amp"]
-                    token_flow_three_insert_data["rates"] = json.dumps(one_pool_data["rates"])
+                    token_flow_three_insert_data["rates"] = json.dumps(new_rates3)
             else:
                 continue
             if token_flow_three_insert_data["revolve_token_one"] in decimals_data and token_flow_three_insert_data["revolve_token_two"] in decimals_data:
@@ -540,11 +568,18 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_in_balance = int(token_flow_three_insert_data["revolve_one_in_amount"])
                     token_out_balance = int(token_flow_three_insert_data["revolve_two_out_amount"])
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates4 = token_three_data["rates"]
                     if len(token_three_data["token_account_ids"]) > 2:
                         c_amounts = token_three_data["three_c_amount"]
                         token_flow_three_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_three_insert_data["three_pool_ids"] = json.dumps(token_three_data["token_account_ids"])
                         token_flow_three_insert_data["revolve_one_pool_token_number"] = "3"
+                        new_rates4 = old_rates4
+                    else:
+                        token_account_ids = token_three_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_three_insert_data["revolve_token_one"])
+                        token_out_index = token_account_ids.index(token_flow_three_insert_data["revolve_token_two"])
+                        new_rates4 = [old_rates4[token_in_index], old_rates4[token_out_index]]
                     stable_pool = {"amp": token_three_data["amp"], "total_fee": token_three_data["total_fee"],
                                    "token_account_ids": token_three_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_three_data["rates"]}
@@ -555,7 +590,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_flow_three_insert_data["revolve_one_in_amount"] = token_in_balance
                     token_flow_three_insert_data["revolve_two_out_amount"] = token_out_balance
                     token_flow_three_insert_data["revolve_one_pool_amp"] = token_three_data["amp"]
-                    token_flow_three_insert_data["revolve_one_pool_rates"] = json.dumps(token_three_data["rates"])
+                    token_flow_three_insert_data["revolve_one_pool_rates"] = json.dumps(new_rates4)
             else:
                 continue
             if token_flow_three_insert_data["revolve_token_two"] in decimals_data and token_flow_three_insert_data["token_out"] in decimals_data:
@@ -569,11 +604,18 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_in_balance = int(token_flow_three_insert_data["revolve_two_in_amount"])
                     token_out_balance = int(token_flow_three_insert_data["token_out_amount"])
                     c_amounts = [token_in_balance, token_out_balance]
+                    old_rates5 = token_one_data["rates"]
                     if len(token_one_data["token_account_ids"]) > 2:
                         c_amounts = token_one_data["three_c_amount"]
                         token_flow_three_insert_data["three_c_amount"] = json.dumps(c_amounts)
                         token_flow_three_insert_data["three_pool_ids"] = json.dumps(token_one_data["token_account_ids"])
                         token_flow_three_insert_data["revolve_two_pool_token_number"] = "3"
+                        new_rates5 = old_rates5
+                    else:
+                        token_account_ids = token_one_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_three_insert_data["revolve_token_two"])
+                        token_out_index = token_account_ids.index(token_flow_three_insert_data["token_out"])
+                        new_rates5 = [old_rates5[token_in_index], old_rates5[token_out_index]]
                     stable_pool = {"amp": token_one_data["amp"], "total_fee": token_one_data["total_fee"],
                                    "token_account_ids": token_one_data["token_account_ids"],
                                    "c_amounts": c_amounts, "rates": token_one_data["rates"]}
@@ -585,7 +627,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                     token_flow_three_insert_data["revolve_two_in_amount"] = token_in_balance
                     token_flow_three_insert_data["token_out_amount"] = token_out_balance
                     token_flow_three_insert_data["revolve_two_pool_amp"] = token_one_data["amp"]
-                    token_flow_three_insert_data["revolve_two_pool_rates"] = json.dumps(token_one_data["rates"])
+                    token_flow_three_insert_data["revolve_two_pool_rates"] = json.dumps(new_rates5)
             else:
                 continue
             final_ratio = token_flow_three_insert_data["token_pair_ratio"] * token_flow_three_insert_data["revolve_token_one_ratio"] * token_flow_three_insert_data["revolve_token_two_ratio"]
