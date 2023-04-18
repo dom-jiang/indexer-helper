@@ -5,9 +5,9 @@ import requests
 import json
 from config import Cfg
 import time
-from db_provider import add_token_flow
+# from db_provider import add_token_flow
 from token_flow_utils import get_stable_and_rated_pool, get_swapped_amount, get_token_flow_ratio
-from redis_provider import list_top_pools, list_token_price, list_token_metadata
+from redis_provider import list_top_pools, list_token_price, list_token_metadata, RedisProvider
 from utils import combine_pools_info
 
 
@@ -645,6 +645,23 @@ def get_token_decimal():
     return decimals
 
 
+def add_token_flow_to_redis(network_id, token_flow_data_list):
+    redis_insert_data = {}
+    for token_flow_data in token_flow_data_list:
+        if token_flow_data["token_pair"] in redis_insert_data:
+            token_pair_data = redis_insert_data[token_flow_data["token_pair"]]
+            token_pair_data.append(token_flow_data)
+        else:
+            token_pair_data = [token_flow_data]
+            redis_insert_data[token_flow_data["token_pair"]] = token_pair_data
+    for key, values in redis_insert_data.items():
+        redis_conn = RedisProvider()
+        redis_conn.begin_pipe()
+        redis_conn.add_token_flow(network_id, key, json.dumps(values))
+        redis_conn.end_pipe()
+        redis_conn.close()
+
+
 if __name__ == "__main__":
     print("#########TOKEN FLOW START###########")
 
@@ -662,9 +679,10 @@ if __name__ == "__main__":
             token_flow_insert_data_list = handle_flow_grade(pools_data_list)
             end_time3 = int(time.time())
             print("handle_flow_grade consuming:", end_time3 - end_time2)
-            add_token_flow(network_id, token_flow_insert_data_list)
+            # add_token_flow(network_id, token_flow_insert_data_list)
+            add_token_flow_to_redis(network_id, token_flow_insert_data_list)
             end_time = int(time.time())
-            print("add_token_flow consuming:", end_time - end_time3)
+            print("add_token_flow_to_redis consuming:", end_time - end_time3)
             print("total consuming:", end_time - start_time)
         else:
             print("Error, network_id should be MAINNET, TESTNET or DEVNET")
@@ -674,19 +692,21 @@ if __name__ == "__main__":
         exit(1)
     print("#########TOKEN FLOW START###########")
 
+    # network_id = "MAINNET"
     # start_time = int(time.time())
-    # list_top_pools_data = get_list_top_pools("MAINNET")
+    # list_top_pools_data = get_list_top_pools(network_id)
     # end_time1 = int(time.time())
     # print("get_list_top_pools consuming:", end_time1 - start_time)
-    # pools_data_list = handle_list_pool_data("MAINNET", list_top_pools_data)
+    # pools_data_list = handle_list_pool_data(network_id, list_top_pools_data)
     # end_time2 = int(time.time())
     # print("handle_list_pool_data consuming:", end_time2 - end_time1)
     # token_flow_insert_data_list = handle_flow_grade(pools_data_list)
     # end_time3 = int(time.time())
     # print("handle_flow_grade consuming:", end_time3 - end_time2)
-    # add_token_flow("MAINNET", token_flow_insert_data_list)
+    # # add_token_flow("MAINNET", token_flow_insert_data_list)
+    # add_token_flow_to_redis(network_id, token_flow_insert_data_list)
     # end_time = int(time.time())
-    # print("add_token_flow consuming:", end_time - end_time3)
+    # print("add_token_flow_to_redis consuming:", end_time - end_time3)
     # print("total consuming:", end_time - start_time)
 
     # print("")

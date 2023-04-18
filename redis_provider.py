@@ -230,6 +230,13 @@ def get_account_pool_assets(network_id, key):
     return ret
 
 
+def get_token_flow_by_pair(network_id, key):
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.hget(Cfg.NETWORK[network_id]["REDIS_TOKEN_FLOW_KEY"], key)
+    r.close()
+    return json.loads(ret)
+
+
 class RedisProvider(object):
 
     def __init__(self):
@@ -302,6 +309,9 @@ class RedisProvider(object):
 
     def add_account_pool_assets(self, network_id, account_id, value):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_ACCOUNT_POOL_ASSETS_KEY"], account_id, value)
+
+    def add_token_flow(self, network_id, token_pair, value):
+        self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_FLOW_KEY"], token_pair, value)
 
     def close(self):
         self.r.close()
