@@ -24,7 +24,7 @@ from loguru import logger
 from token_flow_utils import combine_token_flow
 
 
-service_version = "20230407.01"
+service_version = "20230414.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
