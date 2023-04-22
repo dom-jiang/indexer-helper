@@ -21,7 +21,7 @@ from db_provider import get_history_token_price, query_limit_order_log, query_li
 import re
 from flask_limiter import Limiter
 from loguru import logger
-from token_flow_utils import combine_token_flow
+from token_flow_utils import combine_token_flow, get_top_flow
 
 
 service_version = "20230421.01"
@@ -467,6 +467,8 @@ def get_token_flow():
     token_flow_list = get_token_flow_by_pair(Cfg.NETWORK_ID, token_pair)
     if len(token_flow_list) < 1:
         return "null"
+    else:
+        top_token_flow = get_top_flow(token_flow_list)
     if ledger is None:
         ledger = "null"
     else:
@@ -475,7 +477,9 @@ def get_token_flow():
         swap_amount = float(swap_amount)
     except Exception as e:
         return "null"
-    ret = combine_token_flow(token_flow_list, swap_amount, ledger)
+    ret = combine_token_flow(top_token_flow, swap_amount, ledger)
+    if len(ret) < 1:
+        return "null"
     return compress_response_content(ret)
 
 

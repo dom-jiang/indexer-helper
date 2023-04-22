@@ -6,7 +6,7 @@ import json
 from config import Cfg
 import time
 # from db_provider import add_token_flow
-from token_flow_utils import get_stable_and_rated_pool, get_swapped_amount, get_token_flow_ratio
+from token_flow_utils import get_stable_and_rated_pool, get_swapped_amount, get_token_flow_ratio, format_decimal_float
 from redis_provider import list_top_pools, list_token_price, list_token_metadata, RedisProvider
 from utils import combine_pools_info
 
@@ -428,7 +428,7 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
             else:
                 continue
             final_ratio = token_flow_two_insert_data["revolve_token_one_ratio"] * token_flow_two_insert_data["token_pair_ratio"]
-            token_flow_two_insert_data["final_ratio"] = '%.6f' % final_ratio
+            token_flow_two_insert_data["final_ratio"] = format_decimal_float(final_ratio)
             token_flow_insert_all_data_list.append(token_flow_two_insert_data)
             handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol,
                                token_two_data["pool_id"], revolve_token_one, revolve_token_one_symbol,
@@ -631,7 +631,7 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
             else:
                 continue
             final_ratio = token_flow_three_insert_data["token_pair_ratio"] * token_flow_three_insert_data["revolve_token_one_ratio"] * token_flow_three_insert_data["revolve_token_two_ratio"]
-            token_flow_three_insert_data["final_ratio"] = '%.6f' % final_ratio
+            token_flow_three_insert_data["final_ratio"] = format_decimal_float(final_ratio)
             token_flow_insert_all_data_list.append(token_flow_three_insert_data)
 
 

@@ -234,7 +234,10 @@ def get_token_flow_by_pair(network_id, key):
     r = redis.StrictRedis(connection_pool=pool)
     ret = r.hget(Cfg.NETWORK[network_id]["REDIS_TOKEN_FLOW_KEY"], key)
     r.close()
-    return json.loads(ret)
+    if ret is None:
+        return []
+    else:
+        return json.loads(ret)
 
 
 class RedisProvider(object):
