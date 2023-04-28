@@ -224,48 +224,55 @@ def handle_flow_grade(list_pool_data):
                 token_in_symbol = token_pair_one_data["token_three_symbol"]
                 token_out_symbol = token_pair_one_data["token_two_symbol"]
             if token_flow_insert_data["token_in"] in decimals_data and token_flow_insert_data["token_out"] in decimals_data:
-                if token_pair_one_data["pool_kind"] == "SIMPLE_POOL":
-                    token_in_balance = int(token_flow_insert_data["token_in_amount"]) / int("1" + "0" * decimals_data[token_flow_insert_data["token_in"]])
-                    token_out_balance = int(token_flow_insert_data["token_out_amount"]) / int("1" + "0" * decimals_data[token_flow_insert_data["token_out"]])
-                    token_pair_ratio = get_token_flow_ratio(1, token_in_balance, token_out_balance, token_pair_one_data["total_fee"])
-                    token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
-                    token_flow_insert_data["final_ratio"] = token_pair_ratio
-                    token_flow_insert_data["token_in_amount"] = token_in_balance
-                    token_flow_insert_data["token_out_amount"] = token_out_balance
-                else:
-                    token_in_balance = int(token_flow_insert_data["token_in_amount"])
-                    token_out_balance = int(token_flow_insert_data["token_out_amount"])
-                    # print("token_pair:", token_pair)
-                    c_amounts = [token_in_balance, token_out_balance]
-                    old_rates = token_pair_one_data["rates"]
-                    if len(token_pair_one_data["token_account_ids"]) > 2:
-                        c_amounts = token_pair_one_data["three_c_amount"]
-                        token_flow_insert_data["three_c_amount"] = json.dumps(c_amounts)
-                        token_flow_insert_data["three_pool_ids"] = json.dumps(token_pair_one_data["token_account_ids"])
-                        token_flow_insert_data["pool_token_number"] = "3"
-                        new_rates = old_rates
+                swap_number = 1
+                for i in range(0, 5):
+                    if token_pair_one_data["pool_kind"] == "SIMPLE_POOL":
+                        token_in_balance = int(token_flow_insert_data["token_in_amount"]) / int(
+                            "1" + "0" * decimals_data[token_flow_insert_data["token_in"]])
+                        token_out_balance = int(token_flow_insert_data["token_out_amount"]) / int(
+                            "1" + "0" * decimals_data[token_flow_insert_data["token_out"]])
+                        token_pair_ratio = get_token_flow_ratio(swap_number, token_in_balance, token_out_balance,
+                                                                token_pair_one_data["total_fee"])
+                        token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+                        token_flow_insert_data["final_ratio"] = token_pair_ratio
+                        token_flow_insert_data["token_in_amount"] = token_in_balance
+                        token_flow_insert_data["token_out_amount"] = token_out_balance
                     else:
-                        token_account_ids = token_pair_one_data["token_account_ids"]
-                        token_in_index = token_account_ids.index(token_flow_insert_data["token_in"])
-                        token_out_index = token_account_ids.index(token_flow_insert_data["token_out"])
-                        new_rates = [old_rates[token_in_index], old_rates[token_out_index]]
-                    stable_pool = {"amp": token_pair_one_data["amp"], "total_fee": token_pair_one_data["total_fee"],
-                                   "token_account_ids": token_pair_one_data["token_account_ids"],
-                                   "c_amounts": c_amounts, "rates": token_pair_one_data["rates"]}
-                    token_pair_ratio = get_swapped_amount(token_pair_one, token_pair_two, 1, stable_pool, token_pair_one_data["stable_pool_decimal"])
-                    token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
-                    token_flow_insert_data["final_ratio"] = token_pair_ratio
-                    token_flow_insert_data["token_in_amount"] = token_in_balance
-                    token_flow_insert_data["token_out_amount"] = token_out_balance
-                    token_flow_insert_data["amp"] = token_pair_one_data["amp"]
-                    token_flow_insert_data["rates"] = json.dumps(new_rates)
+                        token_in_balance = int(token_flow_insert_data["token_in_amount"])
+                        token_out_balance = int(token_flow_insert_data["token_out_amount"])
+                        # print("token_pair:", token_pair)
+                        c_amounts = [token_in_balance, token_out_balance]
+                        old_rates = token_pair_one_data["rates"]
+                        if len(token_pair_one_data["token_account_ids"]) > 2:
+                            c_amounts = token_pair_one_data["three_c_amount"]
+                            token_flow_insert_data["three_c_amount"] = json.dumps(c_amounts)
+                            token_flow_insert_data["three_pool_ids"] = json.dumps(
+                                token_pair_one_data["token_account_ids"])
+                            token_flow_insert_data["pool_token_number"] = "3"
+                            new_rates = old_rates
+                        else:
+                            token_account_ids = token_pair_one_data["token_account_ids"]
+                            token_in_index = token_account_ids.index(token_flow_insert_data["token_in"])
+                            token_out_index = token_account_ids.index(token_flow_insert_data["token_out"])
+                            new_rates = [old_rates[token_in_index], old_rates[token_out_index]]
+                        stable_pool = {"amp": token_pair_one_data["amp"], "total_fee": token_pair_one_data["total_fee"],
+                                       "token_account_ids": token_pair_one_data["token_account_ids"],
+                                       "c_amounts": c_amounts, "rates": token_pair_one_data["rates"]}
+                        token_pair_ratio = get_swapped_amount(token_pair_one, token_pair_two, swap_number, stable_pool,
+                                                              token_pair_one_data["stable_pool_decimal"])
+                        token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+                        token_flow_insert_data["final_ratio"] = token_pair_ratio
+                        token_flow_insert_data["token_in_amount"] = token_in_balance
+                        token_flow_insert_data["token_out_amount"] = token_out_balance
+                        token_flow_insert_data["amp"] = token_pair_one_data["amp"]
+                        token_flow_insert_data["rates"] = json.dumps(new_rates)
+                    token_flow_insert_all_data_list.append(token_flow_insert_data)
+                    swap_number = swap_number * 10
             else:
                 continue
-            token_flow_insert_all_data_list.append(token_flow_insert_data)
             handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, list_pool_data, token_flow_insert_all_data_list)
         if len(token_pair_one_data_list) < 1:
-            handle_grade_two(token_pair, token_pair_one, token_pair_two, "", "",
-                             list_pool_data, token_flow_insert_all_data_list)
+            handle_grade_two(token_pair, token_pair_one, token_pair_two, "", "", list_pool_data, token_flow_insert_all_data_list)
     return token_flow_insert_all_data_list
 
 
