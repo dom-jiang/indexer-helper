@@ -232,7 +232,7 @@ def get_swapped_amount(token_in_id, token_out_id, amount_in, stable_pool, stable
     return shrink_token(amount_out, stable_lp_token_decimals)
 
 
-def combine_token_flow(token_flow_data_list, swap_amount, ledger):
+def combine_token_flow1(token_flow_data_list, swap_amount, ledger):
     now_time = int(time.time())
     ret_list = []
     if ledger != "all" or len(token_flow_data_list) < 2:
@@ -355,6 +355,154 @@ def combine_token_flow(token_flow_data_list, swap_amount, ledger):
     return token_flow_return_data(ret_list)
 
 
+def combine_token_flow(token_flow_data_list, swap_amount, ledger):
+    now_time = int(time.time())
+    ret_list = []
+    grade_one_flow = get_grade_one_flow(token_flow_data_list)
+    if ledger != "all":
+        if grade_one_flow == {}:
+            return ret_list
+        else:
+            if grade_one_flow["pool_kind"] == "SIMPLE_POOL":
+                grade_1_ratio = get_token_flow_ratio(swap_amount, grade_one_flow["token_in_amount"],
+                                                     grade_one_flow["token_out_amount"],
+                                                     grade_one_flow["pool_fee"]) / swap_amount
+            else:
+                grade_1_ratio = get_stable_and_rated_pool_ratio(grade_one_flow["pool_token_number"],
+                                                                json.loads(grade_one_flow["three_pool_ids"]),
+                                                                json.loads(grade_one_flow["three_c_amount"]),
+                                                                grade_one_flow["token_in"],
+                                                                grade_one_flow["token_out"],
+                                                                grade_one_flow["token_in_amount"],
+                                                                grade_one_flow["token_out_amount"],
+                                                                grade_one_flow["amp"],
+                                                                grade_one_flow["pool_fee"],
+                                                                json.loads(grade_one_flow["rates"]),
+                                                                grade_one_flow["pool_kind"], swap_amount) / swap_amount
+            grade_one_flow["token_pair_ratio"] = format_decimal_float(grade_1_ratio)
+            grade_one_flow["final_ratio"] = format_decimal_float(grade_1_ratio)
+            grade_one_flow["amount"] = format_decimal_float(grade_1_ratio * swap_amount)
+            grade_one_flow["swap_amount"] = swap_amount
+            grade_one_flow["timestamp"] = str(now_time)
+            grade_one_flow["swap_ratio"] = 100
+            ret_list.append(grade_one_flow)
+    else:
+        max_combination_ratio = 0.00
+        grade_flow_data = {}
+        for token_flow_data in token_flow_data_list:
+            grade_flow_data.setdefault(token_flow_data.get("swap_number_grade"), []).append(token_flow_data)
+        if grade_one_flow == {}:
+            grade_flow_list = handel_grade_flow_data(grade_flow_data, swap_amount)
+            for x in range(0, len(grade_flow_list)):
+                grade_flow_pool_ids_x = json.loads(grade_flow_list[x]["pool_ids"])
+                pair_ratio_data_b = get_pair_ratio(grade_flow_list[x], swap_amount, 1, now_time, 100)
+                max_ratio = pair_ratio_data_b["amount"]
+                if max_ratio > max_combination_ratio:
+                    max_combination_ratio = max_ratio
+                    ret_list.clear()
+                    ret_list.append(pair_ratio_data_b)
+
+                pair_ratio_data_c = get_pair_ratio(grade_flow_list[x], swap_amount, 0.95, now_time, 95)
+                for y in range(0, len(grade_flow_list)):
+                    grade_flow_pool_ids_y = json.loads(grade_flow_list[y]["pool_ids"])
+                    y_res = list(set(grade_flow_pool_ids_x) & set(grade_flow_pool_ids_y))
+                    if grade_flow_list[y] != grade_flow_list[x] and len(y_res) < 1:
+                        pair_ratio_data_d = get_pair_ratio(grade_flow_list[y], swap_amount, 0.05, now_time, 5)
+                        amount_ratio = pair_ratio_data_c["amount"] + pair_ratio_data_d["amount"]
+                        if amount_ratio > max_combination_ratio:
+                            max_combination_ratio = amount_ratio
+                            ret_list.clear()
+                            ret_list.append(pair_ratio_data_c)
+                            ret_list.append(pair_ratio_data_d)
+
+                pair_ratio_data_e = get_pair_ratio(grade_flow_list[x], swap_amount, 0.9, now_time, 90)
+                for z in range(0, len(grade_flow_list)):
+                    grade_flow_pool_ids_z = json.loads(grade_flow_list[z]["pool_ids"])
+                    z_res = list(set(grade_flow_pool_ids_x) & set(grade_flow_pool_ids_z))
+                    if grade_flow_list[z] != grade_flow_list[x] and len(z_res) < 1:
+                        pair_ratio_data_f = get_pair_ratio(grade_flow_list[z], swap_amount, 0.1, now_time, 10)
+                        amount_ratio = pair_ratio_data_e["amount"] + pair_ratio_data_f["amount"]
+                        if amount_ratio > max_combination_ratio:
+                            max_combination_ratio = amount_ratio
+                            ret_list.clear()
+                            ret_list.append(pair_ratio_data_e)
+                            ret_list.append(pair_ratio_data_f)
+        else:
+            ratio_data = {}
+            ratio_data_key_list = []
+            ratio_data_g_1 = {}
+            ratio_data_key_list_g_1 = []
+            start_ratio = 0
+            space_number = 5
+            space_length = int((100 - start_ratio) / space_number) + 1
+            for i in range(1, space_length):
+                swap_ratio = i * space_number
+                ratio = swap_ratio / 100
+                ratio_swap_amount = swap_ratio / 100 * swap_amount
+                swap_ratio = start_ratio + swap_ratio
+                ratio_data_key = grade_one_flow["pool_ids"] + "_" + str(swap_ratio)
+                ratio_data_g_1[ratio_data_key] = get_pair_ratio(grade_one_flow, swap_amount, ratio, now_time, swap_ratio)
+                ratio_data_key_list_g_1.append(ratio_data_key)
+                grade_flow_list = handel_grade_flow_data(grade_flow_data, ratio_swap_amount)
+                top_flow_list = get_top_flow(grade_flow_list)
+                for top_flow in top_flow_list:
+                    ratio_data_key = top_flow["pool_ids"] + "_" + str(swap_ratio)
+                    ratio_data[ratio_data_key] = get_pair_ratio(top_flow, swap_amount, ratio, now_time, swap_ratio)
+                    ratio_data_key_list.append(ratio_data_key)
+            end_time = int(time.time())
+            print("combine_token_flow end1:", end_time - now_time)
+            for ratio_data_key_g_1 in ratio_data_key_list_g_1:
+                g_1_ratio_s = ratio_data_key_g_1.split("_")
+                g_1_ratio = 100 - int(g_1_ratio_s[1])
+                combination_list = []
+                ratio_data_key_list_end = []
+                for ratio_data_key_end in ratio_data_key_list:
+                    ratio_data_key_r = int(ratio_data_key_end.split("_")[1])
+                    if ratio_data_key_r <= g_1_ratio:
+                        ratio_data_key_list_end.append(ratio_data_key_end)
+                end_time = int(time.time())
+                print("combine_token_flow end2:", end_time - now_time)
+                for i in range(1, 4):
+                    combinations = calculate_optimal_combination(ratio_data_key_list_end, g_1_ratio, i)
+                    combination_list += combinations
+                # print("g_1_ratio:", g_1_ratio)
+                # print("combination_list:", combination_list)
+                # print("combination_list size:", len(combination_list))
+                max_ratio, pair_ratio_list = get_max_combination(combination_list, ratio_data_g_1[ratio_data_key_g_1], ratio_data)
+                end_time = int(time.time())
+                print("combine_token_flow end3:", end_time - now_time)
+                if max_ratio > max_combination_ratio:
+                    max_combination_ratio = max_ratio
+                    ret_list = pair_ratio_list
+            end_time = int(time.time())
+            print("combine_token_flow end4:", end_time - now_time)
+            pair_ratio_data_last = get_pair_ratio(grade_one_flow, swap_amount, 1, now_time, 100)
+            max_ratio = pair_ratio_data_last["amount"]
+            if max_ratio > max_combination_ratio:
+                max_combination_ratio = max_ratio
+                ret_list.clear()
+                ret_list.append(pair_ratio_data_last)
+    end_time = int(time.time())
+    print("combine_token_flow end3:", end_time - now_time)
+    return token_flow_return_data(ret_list)
+
+
+def handel_grade_flow_data(grade_flow_data, ratio_swap_amount):
+    if ratio_swap_amount < 10:
+        ret_flow_data = grade_flow_data[1]
+    elif 10 <= ratio_swap_amount < 100:
+        ret_flow_data = grade_flow_data[10]
+    elif 100 <= ratio_swap_amount < 1000:
+        ret_flow_data = grade_flow_data[100]
+    elif 1000 <= ratio_swap_amount < 10000:
+        ret_flow_data = grade_flow_data[1000]
+    elif 10000 <= ratio_swap_amount < 100000:
+        ret_flow_data = grade_flow_data[10000]
+    else:
+        ret_flow_data = grade_flow_data[100000]
+    return ret_flow_data
+
+
 def token_flow_return_data(ret_list):
     ret = []
     for max_token_pair_data in ret_list:
@@ -467,7 +615,7 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
         if token_pair_data["pool_kind"] == "SIMPLE_POOL":
             grade_2_ratio_one = get_token_flow_ratio(compute_amount, token_pair_data["token_in_amount"],
                                                      token_pair_data["revolve_one_out_amount"],
-                                                     token_pair_data["pool_fee"]) / compute_amount
+                                                     token_pair_data["pool_fee"])
         else:
             grade_2_ratio_one = get_stable_and_rated_pool_ratio(token_pair_data["pool_token_number"],
                                                                 json.loads(token_pair_data["three_pool_ids"]),
@@ -480,11 +628,11 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
                                                                 token_pair_data["pool_fee"],
                                                                 json.loads(token_pair_data["rates"]),
                                                                 token_pair_data["pool_kind"],
-                                                                compute_amount) / compute_amount
+                                                                compute_amount)
         if token_pair_data["revolve_one_pool_kind"] == "SIMPLE_POOL":
-            grade_2_ratio_two = (get_token_flow_ratio(compute_amount, token_pair_data["revolve_one_in_amount"],
+            grade_2_ratio_two = (get_token_flow_ratio(grade_2_ratio_one, token_pair_data["revolve_one_in_amount"],
                                                       token_pair_data["token_out_amount"],
-                                                      token_pair_data["revolve_one_pool_fee"])) / compute_amount
+                                                      token_pair_data["revolve_one_pool_fee"]))
         else:
             grade_2_ratio_two = get_stable_and_rated_pool_ratio(
                 token_pair_data["revolve_one_pool_token_number"],
@@ -497,13 +645,13 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
                 token_pair_data["revolve_one_pool_amp"],
                 token_pair_data["revolve_one_pool_fee"],
                 json.loads(token_pair_data["revolve_one_pool_rates"]),
-                token_pair_data["revolve_one_pool_kind"], compute_amount) / compute_amount
-        grade_2_ratio = grade_2_ratio_one * grade_2_ratio_two
-        pair_ratio = format_decimal_float(grade_2_ratio)
+                token_pair_data["revolve_one_pool_kind"], grade_2_ratio_one)
+        # grade_2_ratio = grade_2_ratio_one * grade_2_ratio_two
+        # pair_ratio = format_decimal_float(grade_2_ratio)
         pair_ratio_data["token_pair_ratio"] = format_decimal_float(grade_2_ratio_one)
         pair_ratio_data["revolve_token_one_ratio"] = format_decimal_float(grade_2_ratio_two)
-        pair_ratio_data["final_ratio"] = pair_ratio
-        pair_ratio_data["amount"] = format_decimal_float(grade_2_ratio * compute_amount)
+        pair_ratio_data["final_ratio"] = format_decimal_float(grade_2_ratio_two)
+        pair_ratio_data["amount"] = format_decimal_float(grade_2_ratio_two)
         pair_ratio_data["swap_amount"] = compute_amount
         pair_ratio_data["timestamp"] = str(now_time)
         pair_ratio_data["swap_ratio"] = swap_ratio
@@ -511,7 +659,7 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
         if token_pair_data["pool_kind"] == "SIMPLE_POOL":
             grade_3_ratio_one = get_token_flow_ratio(compute_amount, token_pair_data["token_in_amount"],
                                                      token_pair_data["revolve_one_out_amount"],
-                                                     token_pair_data["pool_fee"]) / compute_amount
+                                                     token_pair_data["pool_fee"])
         else:
             grade_3_ratio_one = get_stable_and_rated_pool_ratio(token_pair_data["pool_token_number"],
                                                                 json.loads(token_pair_data["three_pool_ids"]),
@@ -524,11 +672,11 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
                                                                 token_pair_data["pool_fee"],
                                                                 json.loads(token_pair_data["rates"]),
                                                                 token_pair_data["pool_kind"],
-                                                                compute_amount) / compute_amount
+                                                                compute_amount)
         if token_pair_data["revolve_one_pool_kind"] == "SIMPLE_POOL":
-            grade_3_ratio_two = (get_token_flow_ratio(compute_amount, token_pair_data["revolve_one_in_amount"],
+            grade_3_ratio_two = (get_token_flow_ratio(grade_3_ratio_one, token_pair_data["revolve_one_in_amount"],
                                                       token_pair_data["revolve_two_out_amount"],
-                                                      token_pair_data["revolve_one_pool_fee"])) / compute_amount
+                                                      token_pair_data["revolve_one_pool_fee"]))
         else:
             grade_3_ratio_two = get_stable_and_rated_pool_ratio(
                 token_pair_data["revolve_one_pool_token_number"],
@@ -541,12 +689,12 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
                 token_pair_data["revolve_one_pool_amp"],
                 token_pair_data["revolve_one_pool_fee"],
                 json.loads(token_pair_data["revolve_one_pool_rates"]),
-                token_pair_data["revolve_one_pool_kind"], compute_amount)
+                token_pair_data["revolve_one_pool_kind"], grade_3_ratio_one)
         if token_pair_data["revolve_two_pool_kind"] == "SIMPLE_POOL":
-            grade_3_ratio_three = (get_token_flow_ratio(compute_amount,
+            grade_3_ratio_three = (get_token_flow_ratio(grade_3_ratio_two,
                                                         token_pair_data["revolve_two_in_amount"],
                                                         token_pair_data["token_out_amount"],
-                                                        token_pair_data["revolve_two_pool_fee"])) / compute_amount
+                                                        token_pair_data["revolve_two_pool_fee"]))
         else:
             grade_3_ratio_three = get_stable_and_rated_pool_ratio(
                 token_pair_data["revolve_two_pool_token_number"],
@@ -559,21 +707,40 @@ def get_pair_ratio(token_pair_data, swap_amount, ratio_number, now_time, swap_ra
                 token_pair_data["revolve_two_pool_amp"],
                 token_pair_data["revolve_two_pool_fee"],
                 json.loads(token_pair_data["revolve_two_pool_rates"]),
-                token_pair_data["revolve_two_pool_kind"], compute_amount) / compute_amount
-        grade_3_ratio = grade_3_ratio_one * grade_3_ratio_two * grade_3_ratio_three
-        pair_ratio = format_decimal_float(grade_3_ratio)
+                token_pair_data["revolve_two_pool_kind"], grade_3_ratio_two)
+        # grade_3_ratio = grade_3_ratio_one * grade_3_ratio_two * grade_3_ratio_three
+        # pair_ratio = format_decimal_float(grade_3_ratio)
         pair_ratio_data["token_pair_ratio"] = format_decimal_float(grade_3_ratio_one)
         pair_ratio_data["revolve_token_one_ratio"] = format_decimal_float(grade_3_ratio_two)
         pair_ratio_data["revolve_token_two_ratio"] = format_decimal_float(grade_3_ratio_three)
-        pair_ratio_data["final_ratio"] = pair_ratio
-        pair_ratio_data["amount"] = format_decimal_float(grade_3_ratio * compute_amount)
+        pair_ratio_data["final_ratio"] = format_decimal_float(grade_3_ratio_three)
+        pair_ratio_data["amount"] = format_decimal_float(grade_3_ratio_three)
         pair_ratio_data["swap_amount"] = compute_amount
         pair_ratio_data["timestamp"] = str(now_time)
         pair_ratio_data["swap_ratio"] = swap_ratio
     return pair_ratio_data
 
 
+def get_grade_one_flow(token_flow_list):
+    ret_data = {}
+    for token_flow_data in token_flow_list:
+        if token_flow_data["grade"] == "1":
+            ret_data = token_flow_data
+    return ret_data
+
+
 def get_top_flow(token_flow_list):
+    ret_list = []
+    sorted_token_flow_list = sorted(token_flow_list, key=lambda token_flow: token_flow["final_ratio"], reverse=True)
+    for token_flow_data in sorted_token_flow_list:
+        if token_flow_data["grade"] == "1":
+            continue
+        if len(ret_list) < 3:
+            ret_list.append(token_flow_data)
+    return ret_list
+
+
+def get_top_flow1(token_flow_list):
     ret_list = []
     grade_flag = True
     sorted_token_flow_list = sorted(token_flow_list, key=lambda token_flow: token_flow["final_ratio"], reverse=True)
@@ -595,14 +762,23 @@ def calculate_optimal_combination(ratio_data_key_list, combination_number, numbe
     ret_list = []
     combinations = list(combinations(ratio_data_key_list, number))
     for c in combinations:
+        used_pools_list = []
+        used_pools_set = set()
         ratio = 0
         pool_ratio_key = set()
         for pool_ratio in c:
             ratio_s = pool_ratio.split("_")
             ratio = ratio + int(ratio_s[1])
             pool_ratio_key.add(ratio_s[0])
-        if ratio == combination_number and len(c) == len(pool_ratio_key):
+            used_pools = json.loads(ratio_s[0])
+            used_pools_list += used_pools
+            for used_pool in used_pools:
+                used_pools_set.add(used_pool)
+        if ratio == combination_number and len(c) == len(pool_ratio_key) and len(used_pools_list) == len(used_pools_set):
             ret_list.append(c)
+            used_pools_list.clear()
+            used_pools_set.clear()
+            pool_ratio_key.clear()
     return ret_list
 
 
@@ -628,7 +804,9 @@ def get_max_combination(combination_list, ratio_data_g_1, ratio_data):
 
 
 def format_decimal_float(number):
-    format_number = "{:.8f}".format(decimal.Decimal(number))
+    format_number = "{0:.16f}".format(decimal.Decimal(number))
+    if '.' in format_number:
+        return float(format_number[:format_number.index('.') + 1 + 8])
     return float(format_number)
 
 
@@ -673,13 +851,14 @@ if __name__ == "__main__":
     # print(pool_data)
     # end_time1 = int(time.time())
     # print("get_stable_pool consuming:", end_time1 - start_time)
-    # stable_pool_test = {'token_account_ids': ['v2-nearx.stader-labs.near', 'wrap.near'], 'decimals': [24, 24],
-    #                     'amounts': ['595424567616013857394550484133', '468570579301070362343190123358'],
-    #                     'c_amounts': ['595424567616013857394550484133', '468570579301070362343190123358'],
+
+    # stable_pool_test = {'token_account_ids': ['wrap.near', 'meta-pool.near'], 'decimals': [24, 24],
+    #                     'amounts': ['557204308996544773502195718777', '482901600452125936664295179841'],
+    #                     'c_amounts': ['557204308996544773502195718777', '482901600452125936664295179841'],
     #                     'total_fee': 5, 'shares_total_supply': '1072529148949520003479920392363', 'amp': 240,
-    #                     'rates': ['1107403203106830712636824', '1000000000000000000000000']}
+    #                     'rates': ['1000000000000000000000000', '1187871064224440774482330']}
     # # stable_pool_test["rates"] = [expand_token(1, 18), expand_token(1, 18)]
-    # res = get_swapped_amount("v2-nearx.stader-labs.near", "wrap.near", 1, stable_pool_test, 24)
+    # res = get_swapped_amount("wrap.near", "meta-pool.near", 0.000001, stable_pool_test, 24)
     # print(res)
 
     # numbers = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5]
@@ -688,10 +867,9 @@ if __name__ == "__main__":
     # for c in combinations:
     #     if sum(c) == 10:
     #         print(c)
-    start_ratio = 50
-    space_number = 5
-    space_length = int(start_ratio / space_number)
-    for i in range(1, space_length):
-        ratio = i * space_number
-        print(ratio)
+
+    aa = 4.2074845559735835e-07
+    bb = format_decimal_float(aa)
+    print(bb)
+
 
