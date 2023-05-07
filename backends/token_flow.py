@@ -11,9 +11,6 @@ from redis_provider import list_top_pools, list_token_price, list_token_metadata
 from utils import combine_pools_info
 
 
-tvl_balance = 10
-
-
 def get_list_top_pools(network_id):
     # query_list_pools_url = "https://indexer.ref.finance/list-top-pools"
     # requests.packages.urllib3.disable_warnings()
@@ -27,8 +24,7 @@ def get_list_top_pools(network_id):
     return pools
 
 
-def handle_list_pool_data(network_id, list_pools_data_list):
-    insert_pools_list = []
+def get_stable_and_rated_pool_data(network_id, list_pools_data_list):
     pool_ids = {}
     rated_pool_ids = []
     stable_pool_ids = []
@@ -42,13 +38,16 @@ def handle_list_pool_data(network_id, list_pools_data_list):
     pool_ids["rated_pool"] = rated_pool_ids
     pool_ids["stable_pool"] = stable_pool_ids
     stable_and_rated_pool_data = get_stable_and_rated_pool(network_id, pool_ids)
+    return stable_and_rated_pool_data
+
+
+def handle_list_pool_data(stable_and_rated_pool_data, list_pools_data_list, tvl_balance):
+    insert_pools_list = []
     for list_pools_data in list_pools_data_list:
         if list_pools_data["id"] in Cfg.TOKEN_FLOW_BLACK_LIST:
             continue
         pool_data = {"pool_id": list_pools_data["id"], "token_one": list_pools_data["token_account_ids"][0],
                      "token_two": list_pools_data["token_account_ids"][1], "token_three": "",
-                     "token_one_symbol": list_pools_data["token_symbols"][0],
-                     "token_two_symbol": list_pools_data["token_symbols"][1], "token_three_symbol": "",
                      "token_one_amount": list_pools_data["amounts"][0], "total_fee": list_pools_data["total_fee"],
                      "token_two_amount": list_pools_data["amounts"][1], "token_three_amount": "",
                      "tvl": list_pools_data["tvl"], "pool_kind": list_pools_data["pool_kind"], "amp": 0,
@@ -68,8 +67,6 @@ def handle_list_pool_data(network_id, list_pools_data_list):
                 pool_data["stable_pool_decimal"] = 18
         if len(list_pools_data["token_account_ids"]) > 2:
             pool_data["token_three"] = list_pools_data["token_account_ids"][2]
-        if len(list_pools_data["token_symbols"]) > 2:
-            pool_data["token_three_symbol"] = list_pools_data["token_symbols"][2]
         if len(list_pools_data["amounts"]) > 2:
             pool_data["token_three_amount"] = list_pools_data["amounts"][2]
         if int(pool_data["token_one_amount"]) > 0 and int(pool_data["token_two_amount"]) > 0 and float(
@@ -77,14 +74,24 @@ def handle_list_pool_data(network_id, list_pools_data_list):
             if len(list_pools_data["amounts"]) > 2 and int(pool_data["token_three_amount"]) <= 0:
                 continue
             insert_pools_list.append(pool_data)
-
     return insert_pools_list
 
 
-def handle_token_pair():
+def handle_token_pair(list_pool_data):
     token_pair_list = []
-    # whitelist_token = ["wrap.near", "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near", "dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near", "6b175474e89094c44da98b954eedeac495271d0f.factory.bridge.near", "c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2.factory.bridge.near", "111111111117dc0aa78b770fa6a738034120c302.factory.bridge.near", "c944e90c64b2c07662a292be6244bdf05cda44a7.factory.bridge.near", "usdt.tether-token.near", "berryclub.ek.near", "farm.berryclub.ek.near", "6f259637dcd74c767781e37bc6133cd6a68aa161.factory.bridge.near", "de30da39c46104798bb5aa3fe8b9e0e1f348163f.factory.bridge.near", "1f9840a85d5af5bf1d1762f925bdaddc4201f984.factory.bridge.near", "2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near", "514910771af9ca656af840dff83e8264ecf986ca.factory.bridge.near", "f5cfbc74057c610c8ef151a439252680ac68c6dc.factory.bridge.near", "token.v2.ref-finance.near", "d9c2d319cd7e6177336b0a9c93c21cb48d84fb54.factory.bridge.near", "token.paras.near", "a4ef4b0b23c1fc81d3f9ecf93510e64f58a4a016.factory.bridge.near", "marmaj.tkn.near", "meta-pool.near", "token.cheddar.near", "52a047ee205701895ee06a375492490ec9c597ce.factory.bridge.near", "aurora", "pixeltoken.near", "dbio.near", "aaaaaa20d9e0e2461697782ef11675f668207961.factory.bridge.near", "meta-token.near", "v1.dacha-finance.near", "3ea8ea4237344c9931214796d9417af1a1180770.factory.bridge.near", "e99de844ef3ef72806cf006224ef3b813e82662f.factory.bridge.near", "v3.oin_finance.near", "9aeb50f542050172359a0e1a25a9933bc8c01259.factory.bridge.near", "myriadcore.near", "xtoken.ref-finance.near", "sol.token.a11bd.near", "ust.token.a11bd.near", "luna.token.a11bd.near", "celo.token.a11bd.near", "cusd.token.a11bd.near", "abr.a11bd.near", "utopia.secretskelliessociety.near", "deip-token.near", "4691937a7508860f876c9c0a2a617e7d9e945d4b.factory.bridge.near", "linear-protocol.near", "usn", "0316eb71485b0ab14103307bf65a021042c6d380.factory.bridge.near", "token.pembrock.near", "atocha-token.near", "token.stlb.near", "far.tokens.fewandfar.near", "059a1f1dea1020297588c316ffc30a58a1a0d4a2.factory.bridge.near", "token.burrow.near", "fusotao-token.near", "v2-nearx.stader-labs.near", "discovol-token.near", "30d20208d987713f46dfd34ef128bb16c404d10f.factory.bridge.near", "token.sweat", "apys.token.a11bd.near", "ftv2.nekotoken.near", "phoenix-bonds.near"]
-    # whitelist_token = ["6b175474e89094c44da98b954eedeac495271d0f.factory.bridge.near", "cusd.token.a11bd.near"]
+    whitelist_token = set()
+    for pool_data in list_pool_data:
+        for pool_token in pool_data["token_account_ids"]:
+            whitelist_token.add(pool_token)
+    for token_one in whitelist_token:
+        for token_two in whitelist_token:
+            if token_one != token_two:
+                token_pair_list.append(token_one + "->" + token_two)
+    return token_pair_list
+
+
+def handle_whitelist_token_pair(network_id):
+    token_pair_list = []
     whitelist_token = []
     for token in Cfg.TOKENS[network_id]:
         whitelist_token.append(token["NEAR_ID"])
@@ -123,16 +130,150 @@ def query_one_pools(token_one, token_two, list_pool_data):
     return ret_data_list
 
 
-def handle_flow_grade(list_pool_data):
+# def handle_flow_grade(list_pool_data, network_id):
+#     decimals_data = get_token_decimal()
+#     token_flow_insert_all_data_list = []
+#     token_pair_list = handle_whitelist_token_pair(network_id)
+#     for token_pair in token_pair_list:
+#         token_pair_one = token_pair.split("->")[0]
+#         token_pair_two = token_pair.split("->")[1]
+#         token_pair_one_data_list = query_one_pools(token_pair_one, token_pair_two, list_pool_data)
+#         swap_number_grade = 1
+#         for nu in range(0, 6):
+#             for token_pair_one_data in token_pair_one_data_list:
+#                 token_flow_insert_data = {
+#                     "token_pair": token_pair,
+#                     "grade": "1",
+#                     "pool_ids": json.dumps([token_pair_one_data["pool_id"]]),
+#                     "token_in": "",
+#                     "token_in_amount": "0",
+#                     "revolve_token_one": "",
+#                     "revolve_token_two": "",
+#                     "token_out": "",
+#                     "token_out_amount": "0",
+#                     "revolve_one_out_amount": "0",
+#                     "revolve_one_in_amount": "0",
+#                     "revolve_two_out_amount": "0",
+#                     "revolve_two_in_amount": "0",
+#                     "token_pair_ratio": 0.00,
+#                     "revolve_token_one_ratio": 0.00,
+#                     "revolve_token_two_ratio": 0.00,
+#                     "final_ratio": 0.00,
+#                     "pool_fee": token_pair_one_data["total_fee"],
+#                     "revolve_one_pool_fee": 0,
+#                     "revolve_two_pool_fee": 0,
+#                     "pool_kind": token_pair_one_data["pool_kind"],
+#                     "revolve_one_pool_kind": "",
+#                     "revolve_two_pool_kind": "",
+#                     "three_c_amount": "[]",
+#                     "three_pool_ids": "[]",
+#                     "amp": 0,
+#                     "revolve_one_pool_amp": 0,
+#                     "revolve_two_pool_amp": 0,
+#                     "rates": "[]",
+#                     "revolve_one_pool_rates": "[]",
+#                     "revolve_two_pool_rates": "[]",
+#                     "pool_token_number": "2",
+#                     "revolve_one_pool_token_number": "2",
+#                     "revolve_two_pool_token_number": "2",
+#                     "swap_number_grade": swap_number_grade,
+#                 }
+#                 if token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data["token_two"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
+#                 elif token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data[
+#                     "token_three"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
+#                 elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
+#                     "token_one"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
+#                 elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
+#                     "token_three"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
+#                 elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
+#                     "token_one"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
+#                 elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
+#                     "token_two"] == token_pair_two:
+#                     token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
+#                     token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
+#                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
+#                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
+#                 if token_flow_insert_data["token_in"] in decimals_data and token_flow_insert_data[
+#                     "token_out"] in decimals_data:
+#                     if token_pair_one_data["pool_kind"] == "SIMPLE_POOL":
+#                         token_in_balance = int(token_flow_insert_data["token_in_amount"]) / int(
+#                             "1" + "0" * decimals_data[token_flow_insert_data["token_in"]])
+#                         token_out_balance = int(token_flow_insert_data["token_out_amount"]) / int(
+#                             "1" + "0" * decimals_data[token_flow_insert_data["token_out"]])
+#                         token_pair_ratio = get_token_flow_ratio(swap_number_grade, token_in_balance, token_out_balance,
+#                                                                 token_pair_one_data["total_fee"])
+#                         token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+#                         token_flow_insert_data["final_ratio"] = (token_pair_ratio / swap_number_grade)
+#                         token_flow_insert_data["token_in_amount"] = token_in_balance
+#                         token_flow_insert_data["token_out_amount"] = token_out_balance
+#                     else:
+#                         token_in_balance = int(token_flow_insert_data["token_in_amount"])
+#                         token_out_balance = int(token_flow_insert_data["token_out_amount"])
+#                         c_amounts = [token_in_balance, token_out_balance]
+#                         old_rates = token_pair_one_data["rates"]
+#                         if len(token_pair_one_data["token_account_ids"]) > 2:
+#                             c_amounts = token_pair_one_data["three_c_amount"]
+#                             token_flow_insert_data["three_c_amount"] = json.dumps(c_amounts)
+#                             token_flow_insert_data["three_pool_ids"] = json.dumps(
+#                                 token_pair_one_data["token_account_ids"])
+#                             token_flow_insert_data["pool_token_number"] = "3"
+#                             new_rates = old_rates
+#                         else:
+#                             token_account_ids = token_pair_one_data["token_account_ids"]
+#                             token_in_index = token_account_ids.index(token_flow_insert_data["token_in"])
+#                             token_out_index = token_account_ids.index(token_flow_insert_data["token_out"])
+#                             new_rates = [old_rates[token_in_index], old_rates[token_out_index]]
+#                         stable_pool = {"amp": token_pair_one_data["amp"], "total_fee": token_pair_one_data["total_fee"],
+#                                        "token_account_ids": token_pair_one_data["token_account_ids"],
+#                                        "c_amounts": c_amounts, "rates": token_pair_one_data["rates"]}
+#                         token_pair_ratio = get_swapped_amount(token_pair_one, token_pair_two, swap_number_grade, stable_pool,
+#                                                               token_pair_one_data["stable_pool_decimal"])
+#                         token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+#                         token_flow_insert_data["final_ratio"] = token_pair_ratio / swap_number_grade
+#                         token_flow_insert_data["token_in_amount"] = token_in_balance
+#                         token_flow_insert_data["token_out_amount"] = token_out_balance
+#                         token_flow_insert_data["amp"] = token_pair_one_data["amp"]
+#                         token_flow_insert_data["rates"] = json.dumps(new_rates)
+#                 else:
+#                     continue
+#                 token_flow_insert_all_data_list.append(token_flow_insert_data)
+#                 handle_grade_two(token_pair, token_pair_one, token_pair_two, list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
+#             if len(token_pair_one_data_list) < 1:
+#                 handle_grade_two(token_pair, token_pair_one, token_pair_two, list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
+#             swap_number_grade = swap_number_grade * 10
+#     return token_flow_insert_all_data_list
+
+
+def handle_flow_grade_new(list_pool_data, network_id):
     decimals_data = get_token_decimal()
     token_flow_insert_all_data_list = []
-    token_pair_list = handle_token_pair()
+    token_pair_list = handle_whitelist_token_pair(network_id)
     for token_pair in token_pair_list:
         token_pair_one = token_pair.split("->")[0]
         token_pair_two = token_pair.split("->")[1]
         token_pair_one_data_list = query_one_pools(token_pair_one, token_pair_two, list_pool_data)
         swap_number_grade = 1
-        for nu in range(0, 6):
+        for nu in range(0, 5):
             for token_pair_one_data in token_pair_one_data_list:
                 token_flow_insert_data = {
                     "token_pair": token_pair,
@@ -144,14 +285,10 @@ def handle_flow_grade(list_pool_data):
                     "revolve_token_two": "",
                     "token_out": "",
                     "token_out_amount": "0",
-                    "token_in_symbol": "",
-                    "revolve_token_one_symbol": "",
-                    "revolve_token_two_symbol": "",
                     "revolve_one_out_amount": "0",
                     "revolve_one_in_amount": "0",
                     "revolve_two_out_amount": "0",
                     "revolve_two_in_amount": "0",
-                    "token_out_symbol": "",
                     "token_pair_ratio": 0.00,
                     "revolve_token_one_ratio": 0.00,
                     "revolve_token_two_ratio": 0.00,
@@ -175,67 +312,41 @@ def handle_flow_grade(list_pool_data):
                     "revolve_two_pool_token_number": "2",
                     "swap_number_grade": swap_number_grade,
                 }
-                token_in_symbol = ""
-                token_out_symbol = ""
                 if token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data["token_two"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_one_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_two_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
-                    token_in_symbol = token_pair_one_data["token_one_symbol"]
-                    token_out_symbol = token_pair_one_data["token_two_symbol"]
                 elif token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data[
                     "token_three"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_one_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_three_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
-                    token_in_symbol = token_pair_one_data["token_one_symbol"]
-                    token_out_symbol = token_pair_one_data["token_three_symbol"]
                 elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
                     "token_one"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_two_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_one_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
-                    token_in_symbol = token_pair_one_data["token_two_symbol"]
-                    token_out_symbol = token_pair_one_data["token_one_symbol"]
                 elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
                     "token_three"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_two_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_three_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
-                    token_in_symbol = token_pair_one_data["token_two_symbol"]
-                    token_out_symbol = token_pair_one_data["token_three_symbol"]
                 elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
                     "token_one"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_three_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_one_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
-                    token_in_symbol = token_pair_one_data["token_three_symbol"]
-                    token_out_symbol = token_pair_one_data["token_one_symbol"]
                 elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
                     "token_two"] == token_pair_two:
                     token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
                     token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
-                    token_flow_insert_data["token_in_symbol"] = token_pair_one_data["token_three_symbol"]
-                    token_flow_insert_data["token_out_symbol"] = token_pair_one_data["token_two_symbol"]
                     token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
                     token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
-                    token_in_symbol = token_pair_one_data["token_three_symbol"]
-                    token_out_symbol = token_pair_one_data["token_two_symbol"]
                 if token_flow_insert_data["token_in"] in decimals_data and token_flow_insert_data[
                     "token_out"] in decimals_data:
                     if token_pair_one_data["pool_kind"] == "SIMPLE_POOL":
@@ -252,7 +363,6 @@ def handle_flow_grade(list_pool_data):
                     else:
                         token_in_balance = int(token_flow_insert_data["token_in_amount"])
                         token_out_balance = int(token_flow_insert_data["token_out_amount"])
-                        # print("token_pair:", token_pair)
                         c_amounts = [token_in_balance, token_out_balance]
                         old_rates = token_pair_one_data["rates"]
                         if len(token_pair_one_data["token_account_ids"]) > 2:
@@ -281,14 +391,143 @@ def handle_flow_grade(list_pool_data):
                 else:
                     continue
                 token_flow_insert_all_data_list.append(token_flow_insert_data)
-                handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
-            if len(token_pair_one_data_list) < 1:
-                handle_grade_two(token_pair, token_pair_one, token_pair_two, "", "", list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
+            handle_grade_two(token_pair, token_pair_one, token_pair_two, list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
             swap_number_grade = swap_number_grade * 10
     return token_flow_insert_all_data_list
 
 
-def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, list_pool_data, token_flow_insert_all_data_list, swap_number_grade):
+def handle_flow_one_grade(list_pool_data, key_list):
+    decimals_data = get_token_decimal()
+    token_flow_insert_all_data_list = []
+    token_pair_list = handle_token_pair(list_pool_data)
+    for token_pair in token_pair_list:
+        if token_pair in key_list:
+            continue
+        token_pair_one = token_pair.split("->")[0]
+        token_pair_two = token_pair.split("->")[1]
+        token_pair_one_data_list = query_one_pools(token_pair_one, token_pair_two, list_pool_data)
+        swap_number_grade = 1
+        for token_pair_one_data in token_pair_one_data_list:
+            token_flow_insert_data = {
+                "token_pair": token_pair,
+                "grade": "1",
+                "pool_ids": json.dumps([token_pair_one_data["pool_id"]]),
+                "token_in": "",
+                "token_in_amount": "0",
+                "revolve_token_one": "",
+                "revolve_token_two": "",
+                "token_out": "",
+                "token_out_amount": "0",
+                "revolve_one_out_amount": "0",
+                "revolve_one_in_amount": "0",
+                "revolve_two_out_amount": "0",
+                "revolve_two_in_amount": "0",
+                "token_pair_ratio": 0.00,
+                "revolve_token_one_ratio": 0.00,
+                "revolve_token_two_ratio": 0.00,
+                "final_ratio": 0.00,
+                "pool_fee": token_pair_one_data["total_fee"],
+                "revolve_one_pool_fee": 0,
+                "revolve_two_pool_fee": 0,
+                "pool_kind": token_pair_one_data["pool_kind"],
+                "revolve_one_pool_kind": "",
+                "revolve_two_pool_kind": "",
+                "three_c_amount": "[]",
+                "three_pool_ids": "[]",
+                "amp": 0,
+                "revolve_one_pool_amp": 0,
+                "revolve_two_pool_amp": 0,
+                "rates": "[]",
+                "revolve_one_pool_rates": "[]",
+                "revolve_two_pool_rates": "[]",
+                "pool_token_number": "2",
+                "revolve_one_pool_token_number": "2",
+                "revolve_two_pool_token_number": "2",
+                "swap_number_grade": swap_number_grade,
+            }
+            if token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data["token_two"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
+            elif token_pair_one_data["token_one"] == token_pair_one and token_pair_one_data[
+                "token_three"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_one"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_one_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
+            elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
+                "token_one"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
+            elif token_pair_one_data["token_two"] == token_pair_one and token_pair_one_data[
+                "token_three"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_two"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_three"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_two_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_three_amount"]
+            elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
+                "token_one"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_one"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_one_amount"]
+            elif token_pair_one_data["token_three"] == token_pair_one and token_pair_one_data[
+                "token_two"] == token_pair_two:
+                token_flow_insert_data["token_in"] = token_pair_one_data["token_three"]
+                token_flow_insert_data["token_out"] = token_pair_one_data["token_two"]
+                token_flow_insert_data["token_in_amount"] = token_pair_one_data["token_three_amount"]
+                token_flow_insert_data["token_out_amount"] = token_pair_one_data["token_two_amount"]
+            if token_flow_insert_data["token_in"] in decimals_data and token_flow_insert_data[
+                "token_out"] in decimals_data:
+                if token_pair_one_data["pool_kind"] == "SIMPLE_POOL":
+                    token_in_balance = int(token_flow_insert_data["token_in_amount"]) / int(
+                        "1" + "0" * decimals_data[token_flow_insert_data["token_in"]])
+                    token_out_balance = int(token_flow_insert_data["token_out_amount"]) / int(
+                        "1" + "0" * decimals_data[token_flow_insert_data["token_out"]])
+                    token_pair_ratio = get_token_flow_ratio(swap_number_grade, token_in_balance, token_out_balance,
+                                                            token_pair_one_data["total_fee"])
+                    token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+                    token_flow_insert_data["final_ratio"] = (token_pair_ratio / swap_number_grade)
+                    token_flow_insert_data["token_in_amount"] = token_in_balance
+                    token_flow_insert_data["token_out_amount"] = token_out_balance
+                else:
+                    token_in_balance = int(token_flow_insert_data["token_in_amount"])
+                    token_out_balance = int(token_flow_insert_data["token_out_amount"])
+                    c_amounts = [token_in_balance, token_out_balance]
+                    old_rates = token_pair_one_data["rates"]
+                    if len(token_pair_one_data["token_account_ids"]) > 2:
+                        c_amounts = token_pair_one_data["three_c_amount"]
+                        token_flow_insert_data["three_c_amount"] = json.dumps(c_amounts)
+                        token_flow_insert_data["three_pool_ids"] = json.dumps(
+                            token_pair_one_data["token_account_ids"])
+                        token_flow_insert_data["pool_token_number"] = "3"
+                        new_rates = old_rates
+                    else:
+                        token_account_ids = token_pair_one_data["token_account_ids"]
+                        token_in_index = token_account_ids.index(token_flow_insert_data["token_in"])
+                        token_out_index = token_account_ids.index(token_flow_insert_data["token_out"])
+                        new_rates = [old_rates[token_in_index], old_rates[token_out_index]]
+                    stable_pool = {"amp": token_pair_one_data["amp"], "total_fee": token_pair_one_data["total_fee"],
+                                   "token_account_ids": token_pair_one_data["token_account_ids"],
+                                   "c_amounts": c_amounts, "rates": token_pair_one_data["rates"]}
+                    token_pair_ratio = get_swapped_amount(token_pair_one, token_pair_two, swap_number_grade, stable_pool,
+                                                          token_pair_one_data["stable_pool_decimal"])
+                    token_flow_insert_data["token_pair_ratio"] = token_pair_ratio
+                    token_flow_insert_data["final_ratio"] = token_pair_ratio / swap_number_grade
+                    token_flow_insert_data["token_in_amount"] = token_in_balance
+                    token_flow_insert_data["token_out_amount"] = token_out_balance
+                    token_flow_insert_data["amp"] = token_pair_one_data["amp"]
+                    token_flow_insert_data["rates"] = json.dumps(new_rates)
+            else:
+                continue
+            token_flow_insert_all_data_list.append(token_flow_insert_data)
+    return token_flow_insert_all_data_list
+
+
+def handle_grade_two(token_pair, token_pair_one, token_pair_two, list_pool_data, token_flow_insert_all_data_list, swap_number_grade):
     decimals_data = get_token_decimal()
     token_two_data_list = query_two_pools(token_pair_one, token_pair_two, list_pool_data)
     for token_two_data in token_two_data_list:
@@ -323,14 +562,10 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                 "revolve_token_two": "",
                 "token_out": token_pair_two,
                 "token_out_amount": "0",
-                "token_in_symbol": token_in_symbol,
-                "revolve_token_one_symbol": "",
-                "revolve_token_two_symbol": "",
                 "revolve_one_out_amount": revolve_one_out_amount,
                 "revolve_one_in_amount": "0",
                 "revolve_two_out_amount": "0",
                 "revolve_two_in_amount": "0",
-                "token_out_symbol": token_out_symbol,
                 "token_pair_ratio": 0.00,
                 "revolve_token_one_ratio": 0.00,
                 "revolve_token_two_ratio": 0.00,
@@ -354,37 +589,24 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
                 "revolve_two_pool_token_number": "2",
                 "swap_number_grade": swap_number_grade
             }
-            revolve_token_one_symbol = ""
             if token_one_data["token_one"] == revolve_token_one and token_one_data["token_two"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_one_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_one_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_two_amount"]
-                revolve_token_one_symbol = token_one_data["token_one_symbol"]
             elif token_one_data["token_one"] == revolve_token_one and token_one_data["token_three"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_one_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_one_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_three_amount"]
-                revolve_token_one_symbol = token_one_data["token_one_symbol"]
             elif token_one_data["token_two"] == revolve_token_one and token_one_data["token_one"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_two_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_two_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_one_amount"]
-                revolve_token_one_symbol = token_one_data["token_two_symbol"]
             elif token_one_data["token_two"] == revolve_token_one and token_one_data["token_three"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_two_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_two_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_three_amount"]
-                revolve_token_one_symbol = token_one_data["token_two_symbol"]
             elif token_one_data["token_three"] == revolve_token_one and token_one_data["token_one"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_three_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_three_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_one_amount"]
-                revolve_token_one_symbol = token_one_data["token_three_symbol"]
             elif token_one_data["token_three"] == revolve_token_one and token_one_data["token_two"] == token_pair_two:
-                token_flow_two_insert_data["revolve_token_one_symbol"] = token_one_data["token_three_symbol"]
                 token_flow_two_insert_data["revolve_one_in_amount"] = token_one_data["token_three_amount"]
                 token_flow_two_insert_data["token_out_amount"] = token_one_data["token_two_amount"]
-                revolve_token_one_symbol = token_one_data["token_three_symbol"]
             if token_flow_two_insert_data["token_in"] in decimals_data and token_flow_two_insert_data["revolve_token_one"] in decimals_data:
                 if token_two_data["pool_kind"] == "SIMPLE_POOL":
                     token_in_balance = int(token_flow_two_insert_data["token_in_amount"]) / int("1" + "0" * decimals_data[token_flow_two_insert_data["token_in"]])
@@ -461,15 +683,14 @@ def handle_grade_two(token_pair, token_pair_one, token_pair_two, token_in_symbol
             final_ratio = (token_flow_two_insert_data["revolve_token_one_ratio"] / swap_number_grade) * (token_flow_two_insert_data["token_pair_ratio"] / swap_number_grade)
             token_flow_two_insert_data["final_ratio"] = format_decimal_float(final_ratio)
             token_flow_insert_all_data_list.append(token_flow_two_insert_data)
-            handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol,
-                               token_two_data["pool_id"], revolve_token_one, revolve_token_one_symbol,
+            handle_grade_three(token_pair, token_pair_one, token_pair_two, token_two_data["pool_id"], revolve_token_one,
                                token_in_amount, revolve_one_out_amount, total_fee, list_pool_data,
                                token_flow_insert_all_data_list, token_two_data["total_fee"],
                                token_two_data["pool_kind"], token_two_data, swap_number_grade)
 
 
-def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symbol, token_out_symbol, pool_id,
-                       revolve_token_one, revolve_token_one_symbol, token_in_amount, revolve_one_out_amount, total_fee,
+def handle_grade_three(token_pair, token_pair_one, token_pair_two, pool_id,
+                       revolve_token_one, token_in_amount, revolve_one_out_amount, total_fee,
                        list_pool_data, token_flow_insert_all_data_list, pool_fee, pool_kind, one_pool_data, swap_number_grade):
     decimals_data = get_token_decimal()
     token_three_data_list = query_three_pools(revolve_token_one, token_pair_two, token_pair_one, list_pool_data)
@@ -502,14 +723,10 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                 "revolve_token_two": revolve_token_two,
                 "token_out": token_pair_two,
                 "token_out_amount": "0",
-                "token_in_symbol": token_in_symbol,
-                "revolve_token_one_symbol": revolve_token_one_symbol,
-                "revolve_token_two_symbol": "",
                 "revolve_one_out_amount": revolve_one_out_amount,
                 "revolve_one_in_amount": revolve_one_in_amount,
                 "revolve_two_out_amount": revolve_two_out_amount,
                 "revolve_two_in_amount": "0",
-                "token_out_symbol": token_out_symbol,
                 "token_pair_ratio": 0.00,
                 "revolve_token_one_ratio": 0.00,
                 "revolve_token_two_ratio": 0.00,
@@ -534,27 +751,21 @@ def handle_grade_three(token_pair, token_pair_one, token_pair_two, token_in_symb
                 "swap_number_grade": swap_number_grade
             }
             if token_one_data["token_one"] == revolve_token_two and token_one_data["token_two"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_one_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_one_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_two_amount"]
             elif token_one_data["token_one"] == revolve_token_two and token_one_data["token_three"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_one_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_one_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_three_amount"]
             elif token_one_data["token_two"] == revolve_token_two and token_one_data["token_one"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_two_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_two_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_one_amount"]
             elif token_one_data["token_two"] == revolve_token_two and token_one_data["token_three"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_two_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_two_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_three_amount"]
             elif token_one_data["token_three"] == revolve_token_two and token_one_data["token_one"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_three_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_three_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_one_amount"]
             elif token_one_data["token_three"] == revolve_token_two and token_one_data["token_two"] == token_pair_two:
-                token_flow_three_insert_data["revolve_token_two_symbol"] = token_one_data["token_three_symbol"]
                 token_flow_three_insert_data["revolve_two_in_amount"] = token_one_data["token_three_amount"]
                 token_flow_three_insert_data["token_out_amount"] = token_one_data["token_two_amount"]
             if token_flow_three_insert_data["token_in"] in decimals_data and token_flow_three_insert_data["revolve_token_one"] in decimals_data:
@@ -684,6 +895,7 @@ def get_token_decimal():
 
 
 def add_token_flow_to_redis(network_id, token_flow_data_list):
+    ret_key = []
     redis_insert_data = {}
     for token_flow_data in token_flow_data_list:
         if token_flow_data["token_pair"] in redis_insert_data:
@@ -692,12 +904,14 @@ def add_token_flow_to_redis(network_id, token_flow_data_list):
         else:
             token_pair_data = [token_flow_data]
             redis_insert_data[token_flow_data["token_pair"]] = token_pair_data
+    redis_conn = RedisProvider()
+    redis_conn.begin_pipe()
     for key, values in redis_insert_data.items():
-        redis_conn = RedisProvider()
-        redis_conn.begin_pipe()
         redis_conn.add_token_flow(network_id, key, json.dumps(values))
-        redis_conn.end_pipe()
-        redis_conn.close()
+        ret_key.append(key)
+    redis_conn.end_pipe()
+    redis_conn.close()
+    return ret_key
 
 
 if __name__ == "__main__":
@@ -711,16 +925,27 @@ if __name__ == "__main__":
             list_top_pools_data = get_list_top_pools(network_id)
             end_time1 = int(time.time())
             print("get_list_top_pools consuming:", end_time1 - start_time)
-            pools_data_list = handle_list_pool_data(network_id, list_top_pools_data)
+            stable_and_rated_pool = get_stable_and_rated_pool_data(network_id, list_top_pools_data)
+            end_time10 = int(time.time())
+            print("get_stable_and_rated_pool_data consuming:", end_time10 - end_time1)
+            pools_data_list = handle_list_pool_data(stable_and_rated_pool, list_top_pools_data, 10)
             end_time2 = int(time.time())
             print("handle_list_pool_data consuming:", end_time2 - end_time1)
-            token_flow_insert_data_list = handle_flow_grade(pools_data_list)
+            token_flow_insert_data_list_new = handle_flow_grade_new(pools_data_list, network_id)
             end_time3 = int(time.time())
             print("handle_flow_grade consuming:", end_time3 - end_time2)
-            # add_token_flow(network_id, token_flow_insert_data_list)
-            add_token_flow_to_redis(network_id, token_flow_insert_data_list)
+            key_list = add_token_flow_to_redis(network_id, token_flow_insert_data_list_new)
+            end_time4 = int(time.time())
+            print("add_token_flow_to_redis consuming:", end_time4 - end_time3)
+            not_whitelist_pools_data_list = handle_list_pool_data(stable_and_rated_pool, list_top_pools_data, 0)
+            end_time5 = int(time.time())
+            print("not_whitelist_pools_data_list consuming:", end_time5 - end_time4)
+            not_whitelist_token_flow_data_list = handle_flow_one_grade(not_whitelist_pools_data_list, key_list)
+            end_time6 = int(time.time())
+            print("handle_flow_one_grade consuming:", end_time6 - end_time5)
+            key_list = add_token_flow_to_redis(network_id, not_whitelist_token_flow_data_list)
             end_time = int(time.time())
-            print("add_token_flow_to_redis consuming:", end_time - end_time3)
+            print("add_token_flow_to_redis one consuming:", end_time - end_time6)
             print("total consuming:", end_time - start_time)
         else:
             print("Error, network_id should be MAINNET, TESTNET or DEVNET")
@@ -735,16 +960,28 @@ if __name__ == "__main__":
     # list_top_pools_data = get_list_top_pools(network_id)
     # end_time1 = int(time.time())
     # print("get_list_top_pools consuming:", end_time1 - start_time)
-    # pools_data_list = handle_list_pool_data(network_id, list_top_pools_data)
+    # stable_and_rated_pool = get_stable_and_rated_pool_data(network_id, list_top_pools_data)
+    # end_time10 = int(time.time())
+    # print("get_stable_and_rated_pool_data consuming:", end_time10 - end_time1)
+    # pools_data_list = handle_list_pool_data(stable_and_rated_pool, list_top_pools_data, 10)
     # end_time2 = int(time.time())
     # print("handle_list_pool_data consuming:", end_time2 - end_time1)
-    # token_flow_insert_data_list = handle_flow_grade(pools_data_list)
+    # token_flow_insert_data_list_new = handle_flow_grade_new(pools_data_list, network_id)
     # end_time3 = int(time.time())
     # print("handle_flow_grade consuming:", end_time3 - end_time2)
     # # add_token_flow("MAINNET", token_flow_insert_data_list)
-    # add_token_flow_to_redis(network_id, token_flow_insert_data_list)
+    # key_list = add_token_flow_to_redis(network_id, token_flow_insert_data_list_new)
+    # end_time4 = int(time.time())
+    # print("add_token_flow_to_redis consuming:", end_time4 - end_time3)
+    # not_whitelist_pools_data_list = handle_list_pool_data(stable_and_rated_pool, list_top_pools_data, 0)
+    # end_time5 = int(time.time())
+    # print("not_whitelist_pools_data_list consuming:", end_time5 - end_time4)
+    # not_whitelist_token_flow_data_list = handle_flow_one_grade(not_whitelist_pools_data_list, key_list)
+    # end_time6 = int(time.time())
+    # print("handle_flow_one_grade consuming:", end_time6 - end_time5)
+    # key_list = add_token_flow_to_redis(network_id, not_whitelist_token_flow_data_list)
     # end_time = int(time.time())
-    # print("add_token_flow_to_redis consuming:", end_time - end_time3)
+    # print("add_token_flow_to_redis one consuming:", end_time - end_time6)
     # print("total consuming:", end_time - start_time)
 
     # print("")
@@ -762,3 +999,8 @@ if __name__ == "__main__":
     # print(pool_data)
     # end_time1 = int(time.time())
     # print("get_stable_pool consuming:", end_time1 - start_time)
+
+    # network_id = "MAINNET"
+    # list_top_pools_data = get_list_top_pools(network_id)
+    # handle_token_pair(list_top_pools_data)
+    # print(1)
