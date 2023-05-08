@@ -635,32 +635,6 @@ def format_decimal_decimal(number):
     return decimal.Decimal(format_number)
 
 
-def get_token_pair_ratio_data(token_flow_data_list, swap_amount, now_time):
-    ratio_data = {}
-    ratio_data_key_list = []
-    for token_pair_data in token_flow_data_list:
-        ratio_data_key = token_pair_data["pool_ids"] + "_" + "5"
-        ratio_data[ratio_data_key] = get_pair_ratio(token_pair_data, swap_amount, 0.05, now_time, 5)
-        ratio_data_key_list.append(ratio_data_key)
-
-        ratio_data_key = token_pair_data["pool_ids"] + "_" + "10"
-        ratio_data[ratio_data_key] = get_pair_ratio(token_pair_data, swap_amount, 0.1, now_time, 10)
-        ratio_data_key_list.append(ratio_data_key)
-
-        ratio_data_key = token_pair_data["pool_ids"] + "_" + "90"
-        ratio_data[ratio_data_key] = get_pair_ratio(token_pair_data, swap_amount, 0.9, now_time, 90)
-        ratio_data_key_list.append(ratio_data_key)
-
-        ratio_data_key = token_pair_data["pool_ids"] + "_" + "95"
-        ratio_data[ratio_data_key] = get_pair_ratio(token_pair_data, swap_amount, 0.95, now_time, 95)
-        ratio_data_key_list.append(ratio_data_key)
-
-        ratio_data_key = token_pair_data["pool_ids"] + "_" + "100"
-        ratio_data[ratio_data_key] = get_pair_ratio(token_pair_data, swap_amount, 1, now_time, 100)
-        ratio_data_key_list.append(ratio_data_key)
-    return ratio_data_key_list, ratio_data
-
-
 if __name__ == "__main__":
     print("#########TOKEN FLOW START###########")
 
@@ -678,7 +652,7 @@ if __name__ == "__main__":
     #                     'total_fee': 5, 'shares_total_supply': '1072529148949520003479920392363', 'amp': 240,
     #                     'rates': ['1000000000000000000000000', '1187871064224440774482330']}
     # # stable_pool_test["rates"] = [expand_token(1, 18), expand_token(1, 18)]
-    # res = get_swapped_amount("wrap.near", "meta-pool.near", 0.000001, stable_pool_test, 24)
+    # res = get_swapped_amount("wrap.near", "meta-pool.near", 1, stable_pool_test, 24)
     # print(res)
 
     # numbers = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5]
@@ -688,8 +662,20 @@ if __name__ == "__main__":
     #     if sum(c) == 10:
     #         print(c)
 
-    aa = 4.2074845559735835e-07
-    bb = format_decimal_float(aa)
-    print(bb)
-
-
+    start_time = int(time.time())
+    for i in range(1, 60000):
+        # stable_pool_test = {'token_account_ids': ['wrap.near', 'meta-pool.near'], 'decimals': [24, 24],
+        #                     'amounts': ['557204308996544773502195718777', '482901600452125936664295179841'],
+        #                     'c_amounts': ['557204308996544773502195718777', '482901600452125936664295179841'],
+        #                     'total_fee': 5, 'shares_total_supply': '1072529148949520003479920392363', 'amp': 240,
+        #                     'rates': ['1000000000000000000000000', '1187871064224440774482330']}
+        # # stable_pool_test["rates"] = [expand_token(1, 18), expand_token(1, 18)]
+        # res = get_swapped_amount("wrap.near", "meta-pool.near", i, stable_pool_test, 24)
+        a = 0.1234112342121311413
+        b = 0.4326435424234224324
+        c = a * i * b
+        d = a / b / i
+        print("a", c)
+        print("b", d)
+    end_time = int(time.time())
+    print("time:", end_time - start_time)
