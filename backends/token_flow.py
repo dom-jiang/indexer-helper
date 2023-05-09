@@ -93,6 +93,7 @@ def handle_token_pair(list_pool_data):
 
 def handle_whitelist_token_pair(network_id):
     token_pair_list = []
+    # whitelist_token = ["dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near", "wrap.near"]
     whitelist_token = []
     for token in Cfg.TOKENS[network_id]:
         whitelist_token.append(token["NEAR_ID"])
@@ -270,18 +271,18 @@ def handle_flow_grade_new(list_pool_data, network_id):
     token_flow_insert_all_data_list = []
     token_pair_list = handle_whitelist_token_pair(network_id)
     swap_number_grade = 1
+    # threads = []
     for nu in range(0, 3):
-        threads = []
-        t = threading.Thread(target=thread_func, args=(swap_number_grade, decimals_data,
-                                                       token_flow_insert_all_data_list, list_pool_data, token_pair_list, ))
-        threads.append(t)
-        # thread_func(token_pair_one_data_list, token_pair, swap_number_grade, token_pair_one, token_pair_two,
-        #             decimals_data, token_flow_insert_all_data_list, list_pool_data)
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        # t = threading.Thread(target=thread_func, args=(swap_number_grade, decimals_data,
+        #                                                token_flow_insert_all_data_list, list_pool_data, token_pair_list, ))
+        # threads.append(t)
+        # t.setDaemon(True)
+        thread_func(swap_number_grade, decimals_data,token_flow_insert_all_data_list, list_pool_data, token_pair_list)
         swap_number_grade = swap_number_grade * 10
+    # for t in threads:
+    #     t.start()
+    # for t in threads:
+    #     t.join()
     return token_flow_insert_all_data_list
 
 
@@ -804,6 +805,7 @@ def add_token_flow_to_redis(network_id, token_flow_data_list):
 
 
 def thread_func(swap_number_grade, decimals_data, token_flow_insert_all_data_list, list_pool_data, token_pair_list):
+    start_time11 = int(time.time())
     for token_pair in token_pair_list:
         token_pair_one = token_pair.split("->")[0]
         token_pair_two = token_pair.split("->")[1]
@@ -926,6 +928,8 @@ def thread_func(swap_number_grade, decimals_data, token_flow_insert_all_data_lis
                 continue
             token_flow_insert_all_data_list.append(token_flow_insert_data)
         handle_grade_two(token_pair, token_pair_one, token_pair_two, list_pool_data, token_flow_insert_all_data_list, swap_number_grade)
+    end_time11 = int(time.time())
+    print("thread_func consuming:", end_time11 - start_time11)
 
 
 if __name__ == "__main__":

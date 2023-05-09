@@ -22,6 +22,7 @@ import re
 from flask_limiter import Limiter
 from loguru import logger
 from token_flow_utils import combine_token_flow
+from decimal import *
 
 
 service_version = "20230428.01"
@@ -487,7 +488,7 @@ def get_token_flow():
     else:
         ledger = ledger.lower()
     try:
-        swap_amount = float(swap_amount)
+        swap_amount = Decimal(swap_amount)
     except Exception as e:
         return "null"
     ret = combine_token_flow(token_flow_list, swap_amount, ledger)
