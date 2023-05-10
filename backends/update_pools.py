@@ -140,15 +140,18 @@ def internal_get_pools(network_id: str, number: int) -> list:
                 pool["farming"] = False
 
             pool["token_symbols"] = []
+            pool["decimals"] = []
             for x in pool["token_account_ids"]:
                 if x in token_metadata:
                     if token_metadata[x] != "":
                         pool["token_symbols"].append(token_metadata[x]["symbol"])
+                        pool["decimals"].append(int(token_metadata[x]["decimals"]))
                     # pool["token_symbols"].append(token_metadata[x]["symbol"])
                 else:
                     time.sleep(0.1)
                     metadata_obj = internal_get_token_metadata(conn, x)
                     pool["token_symbols"].append(metadata_obj["symbol"])
+                    pool["decimals"].append(int(token_metadata[x]["decimals"]))
                     token_metadata[x] = metadata_obj
 
     except MultiNodeJsonProviderError as e:
