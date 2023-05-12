@@ -322,12 +322,14 @@ def combine_token_flow(token_flow_data_list, swap_amount_0, ledger):
 
 
 def handel_grade_flow_data(grade_flow_data, ratio_swap_amount):
+    ret_flow_data = grade_flow_data[1]
     if ratio_swap_amount < 10:
         ret_flow_data = grade_flow_data[1]
-    elif 10 <= ratio_swap_amount < 100:
+    elif 10 <= ratio_swap_amount < 100 and 10 in grade_flow_data:
         ret_flow_data = grade_flow_data[10]
     else:
-        ret_flow_data = grade_flow_data[100]
+        if 100 in grade_flow_data:
+            ret_flow_data = grade_flow_data[100]
     return ret_flow_data
 
 
