@@ -44,8 +44,10 @@ def get_stable_and_rated_pool_data(network_id, list_pools_data_list):
 
 def handle_list_pool_data(stable_and_rated_pool_data, list_pools_data_list, tvl_balance):
     insert_pools_list = []
+    black_list_pool_data = []
     for list_pools_data in list_pools_data_list:
         if list_pools_data["id"] in Cfg.TOKEN_FLOW_BLACK_LIST:
+            black_list_pool_data.append(list_pools_data)
             continue
         pool_data = {"pool_id": list_pools_data["id"], "token_one": list_pools_data["token_account_ids"][0],
                      "token_two": list_pools_data["token_account_ids"][1], "token_three": "",
@@ -75,6 +77,13 @@ def handle_list_pool_data(stable_and_rated_pool_data, list_pools_data_list, tvl_
             if len(list_pools_data["amounts"]) > 2 and int(pool_data["token_three_amount"]) <= 0:
                 continue
             insert_pools_list.append(pool_data)
+    black_list_pool_token_pair = handle_token_pair(black_list_pool_data)
+    redis_conn = RedisProvider()
+    redis_conn.begin_pipe()
+    for black_list_token_pair in black_list_pool_token_pair:
+        redis_conn.del_token_flow(network_id, black_list_token_pair)
+    redis_conn.end_pipe()
+    redis_conn.close()
     return insert_pools_list
 
 

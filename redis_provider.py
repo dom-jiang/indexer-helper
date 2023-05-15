@@ -326,6 +326,9 @@ class RedisProvider(object):
     def add_token_flow(self, network_id, token_pair, value):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_FLOW_KEY"], token_pair, value)
 
+    def del_token_flow(self, network_id, token_pair):
+        self.r.hdel(Cfg.NETWORK[network_id]["REDIS_TOKEN_FLOW_KEY"], token_pair)
+
     def close(self):
         self.r.close()
 
