@@ -7,6 +7,9 @@ import time
 from near_multinode_rpc_provider import MultiNodeJsonProviderError, MultiNodeJsonProvider
 from typing import *
 from decimal import *
+from redis_provider import list_top_pools, list_token_price, list_token_metadata, RedisProvider
+import requests
+from utils import combine_pools_info
 
 fee_divisor = 10000
 
@@ -167,6 +170,19 @@ def decimal_divide(number_one, number_two):
     return Decimal(str(number_one)) / Decimal(str(number_two))
 
 
+def get_list_top_pools(network_id):
+    # query_list_pools_url = "https://mainnet-indexer.ref-finance.com/list-top-pools"
+    # requests.packages.urllib3.disable_warnings()
+    # list_pools_data_ret = requests.get(url=query_list_pools_url, verify=False)
+    # list_pools_data_list = json.loads(list_pools_data_ret.text)
+    # return list_pools_data_list
+    pools = list_top_pools(network_id)
+    prices = list_token_price(network_id)
+    metadata = list_token_metadata(network_id)
+    combine_pools_info(pools, prices, metadata)
+    return pools
+
+
 def get_stable_and_rated_pool(network_id, pool_ids):
     contract = Cfg.NETWORK[network_id]["REF_CONTRACT"]
     stable_pool_list = {}
@@ -207,6 +223,87 @@ def get_stable_and_rated_pool(network_id, pool_ids):
         print("Error: ", e)
     # stable_pool_list = {'3612': {'token_account_ids': ['nearx.stader-labs.near', 'wrap.near'], 'decimals': [24, 24], 'amounts': ['360130437500959717872155876388', '241034925164942696754683199'], 'c_amounts': ['360130437500959717872155876388', '241034925164942696754683199'], 'total_fee': 5, 'shares_total_supply': '290025281183383226017275327143', 'amp': 240, 'rates': ['1015252798887302123711272', '1000000000000000000000000']}, '3514': {'token_account_ids': ['meta-pool.near', 'wrap.near'], 'decimals': [24, 24], 'amounts': ['515447243395626285971691778217', '531271141796979975034226028750'], 'c_amounts': ['515447243395626285971691778217', '531271141796979975034226028750'], 'total_fee': 5, 'shares_total_supply': '1078446471505969185689516860530', 'amp': 240, 'rates': ['1188696129170574026485684', '1000000000000000000000000']}, '3689': {'token_account_ids': ['dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near', 'usdt.tether-token.near'], 'decimals': [6, 6], 'amounts': ['334564635658', '349077335402'], 'c_amounts': ['334564635658022867148098228502', '349077335402593919360480308707'], 'total_fee': 5, 'shares_total_supply': '681685979071425010974953766997', 'amp': 240, 'rates': ['1000000000000000000000000', '1000000000000000000000000']}, '3688': {'token_account_ids': ['v2-nearx.stader-labs.near', 'wrap.near'], 'decimals': [24, 24], 'amounts': ['644047033126466452804997381044', '422026871834657925733978213030'], 'c_amounts': ['644047033126466452804997381044', '422026871834657925733978213030'], 'total_fee': 5, 'shares_total_supply': '1079465889894144351811153756860', 'amp': 240, 'rates': ['1113083401846783921828848', '1000000000000000000000000']}, '3515': {'token_account_ids': ['linear-protocol.near', 'wrap.near'], 'decimals': [24, 24], 'amounts': ['41659410659618552912971442548', '28315132121095689389093785443'], 'c_amounts': ['41659410659618552912971442548', '28315132121095689389093785443'], 'total_fee': 5, 'shares_total_supply': '65781732637989711094334336495', 'amp': 240, 'rates': ['1115012172403903874843345', '1000000000000000000000000']}, '3364': {'token_account_ids': ['2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near', '0316eb71485b0ab14103307bf65a021042c6d380.factory.bridge.near'], 'decimals': [8, 18], 'amounts': ['97949074', '981541972922239266'], 'c_amounts': ['979490745998996886', '981541972922239266'], 'total_fee': 5, 'shares_total_supply': '1960413000030551392', 'amp': 240, 'rates': [1000000000000000000, 1000000000000000000]}, '3433': {'token_account_ids': ['usn', 'cusd.token.a11bd.near'], 'decimals': [18, 24], 'amounts': ['2688748441032130353193', '7812309631750080904185000000'], 'c_amounts': ['2688748441032130353193', '7812309631750080904185'], 'total_fee': 5, 'shares_total_supply': '10447697261401716577193', 'amp': 240, 'rates': [1000000000000000000, 1000000000000000000]}, '3020': {'token_account_ids': ['usn', 'dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near'], 'decimals': [18, 6], 'amounts': ['275486943587109562870453', '167318759190'], 'c_amounts': ['275486943587109562870453', '167318759190264886223691'], 'total_fee': 5, 'shares_total_supply': '441972102499448111126611', 'amp': 240, 'rates': [1000000000000000000, 1000000000000000000]}, '1910': {'token_account_ids': ['dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near', 'a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near', '6b175474e89094c44da98b954eedeac495271d0f.factory.bridge.near'], 'decimals': [6, 6, 18], 'amounts': ['1021571266842', '2251657612415', '1475419358407548404050684'], 'c_amounts': ['1021571266842626099709785', '2251657612415066007574408', '1475419358407548404050684'], 'total_fee': 5, 'shares_total_supply': '4712068931672473844653060', 'amp': 240, 'rates': [1000000000000000000, 1000000000000000000, 1000000000000000000]}}
     # return stable_pool_list
+
+
+def get_stable_and_rated_pool_data(network_id, list_pools_data_list):
+    pool_ids = {}
+    rated_pool_ids = []
+    stable_pool_ids = []
+    for list_pools_data in list_pools_data_list:
+        if list_pools_data["id"] in Cfg.TOKEN_FLOW_BLACK_LIST:
+            continue
+        if list_pools_data["pool_kind"] == "RATED_SWAP":
+            rated_pool_ids.append(list_pools_data["id"])
+        elif list_pools_data["pool_kind"] == "STABLE_SWAP":
+            stable_pool_ids.append(list_pools_data["id"])
+    pool_ids["rated_pool"] = rated_pool_ids
+    pool_ids["stable_pool"] = stable_pool_ids
+    stable_and_rated_pool_data = get_stable_and_rated_pool(network_id, pool_ids)
+    return stable_and_rated_pool_data
+
+
+def handle_list_pool_data(stable_and_rated_pool_data, list_pools_data_list, tvl_balance, network_id):
+    insert_pools_list = []
+    black_list_pool_data = []
+    for list_pools_data in list_pools_data_list:
+        if list_pools_data["id"] in Cfg.TOKEN_FLOW_BLACK_LIST:
+            black_list_pool_data.append(list_pools_data)
+            continue
+        pool_data = {"pool_id": list_pools_data["id"], "token_one": list_pools_data["token_account_ids"][0],
+                     "token_two": list_pools_data["token_account_ids"][1], "token_three": "",
+                     "token_one_amount": list_pools_data["amounts"][0], "total_fee": list_pools_data["total_fee"],
+                     "token_two_amount": list_pools_data["amounts"][1], "token_three_amount": "",
+                     "tvl": list_pools_data["tvl"], "pool_kind": list_pools_data["pool_kind"], "amp": 0,
+                     "rates": [0, 0], "token_account_ids": list_pools_data["token_account_ids"],
+                     "stable_pool_decimal": 24, "three_c_amount": ""}
+
+        if list_pools_data["pool_kind"] == "RATED_SWAP" or list_pools_data["pool_kind"] == "STABLE_SWAP":
+            pool_date_detail = stable_and_rated_pool_data[list_pools_data["id"]]
+            pool_data["token_one_amount"] = pool_date_detail["c_amounts"][0]
+            pool_data["token_two_amount"] = pool_date_detail["c_amounts"][1]
+            pool_data["amp"] = pool_date_detail["amp"]
+            pool_data["rates"] = pool_date_detail["rates"]
+            if len(list_pools_data["amounts"]) > 2:
+                pool_data["token_three_amount"] = pool_date_detail["c_amounts"][2]
+                pool_data["three_c_amount"] = pool_date_detail["c_amounts"]
+            if list_pools_data["pool_kind"] == "STABLE_SWAP":
+                pool_data["stable_pool_decimal"] = 18
+        if len(list_pools_data["token_account_ids"]) > 2:
+            pool_data["token_three"] = list_pools_data["token_account_ids"][2]
+        if len(list_pools_data["amounts"]) > 2:
+            pool_data["token_three_amount"] = list_pools_data["amounts"][2]
+        if int(pool_data["token_one_amount"]) > 0 and int(pool_data["token_two_amount"]) > 0 and float(
+                pool_data["tvl"]) > tvl_balance:
+            if len(list_pools_data["amounts"]) > 2 and int(pool_data["token_three_amount"]) <= 0:
+                continue
+            insert_pools_list.append(pool_data)
+    return insert_pools_list, black_list_pool_data
+
+
+def handle_token_pair(list_pool_data):
+    token_pair_list = []
+    whitelist_token = set()
+    for pool_data in list_pool_data:
+        for pool_token in pool_data["token_account_ids"]:
+            whitelist_token.add(pool_token)
+    for token_one in whitelist_token:
+        for token_two in whitelist_token:
+            if token_one != token_two:
+                token_pair_list.append(token_one + "->" + token_two)
+    return token_pair_list
+
+
+def handle_whitelist_token_pair(network_id):
+    token_pair_list = []
+    # whitelist_token = ["dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near", "wrap.near"]
+    whitelist_token = []
+    for token in Cfg.TOKENS[network_id]:
+        whitelist_token.append(token["NEAR_ID"])
+    for token_one in whitelist_token:
+        for token_two in whitelist_token:
+            if token_one != token_two:
+                token_pair_list.append(token_one + "->" + token_two)
+    return token_pair_list
 
 
 def get_swapped_amount(token_in_id, token_out_id, amount_in, stable_pool, stable_pool_decimal):
@@ -641,6 +738,65 @@ def format_decimal_float(number):
 def format_decimal_decimal(number):
     format_number = "{:.8f}".format(Decimal(number))
     return Decimal(format_number)
+
+
+def add_token_flow_to_redis(network_id, token_flow_data_list, black_list_pool_data):
+    redis_insert_data = {}
+    for token_flow_data in token_flow_data_list:
+        if token_flow_data["token_pair"] in redis_insert_data:
+            token_pair_data = redis_insert_data[token_flow_data["token_pair"]]
+            token_pair_data.append(token_flow_data)
+        else:
+            token_pair_data = [token_flow_data]
+            redis_insert_data[token_flow_data["token_pair"]] = token_pair_data
+    black_list_pool_token_pair = handle_token_pair(black_list_pool_data)
+    redis_conn = RedisProvider()
+    redis_conn.begin_pipe()
+    for black_list_token_pair in black_list_pool_token_pair:
+        redis_conn.del_token_flow(network_id, black_list_token_pair)
+    for key, values in redis_insert_data.items():
+        redis_conn.add_token_flow(network_id, key, json.dumps(values))
+    redis_conn.end_pipe()
+    redis_conn.close()
+
+
+def get_token_decimal(list_pools_data):
+    decimals = {}
+    for pool in list_pools_data:
+        tokens = pool["token_account_ids"]
+        decimal = pool["decimals"]
+        for token in tokens:
+            index = tokens.index(token)
+            decimals[token] = decimal[index]
+    return decimals
+
+
+def query_three_pools(token_one, token_two, token_three, list_pool_data):
+    ret_data_list = []
+    for pool_data in list_pool_data:
+        if (pool_data["token_one"] == token_one or pool_data["token_two"] == token_one or pool_data[
+            "token_three"] == token_one) and pool_data["token_one"] != token_two \
+                and pool_data["token_two"] != token_two and pool_data["token_three"] != token_two \
+                and pool_data["token_one"] != token_three and pool_data["token_two"] != token_three \
+                and pool_data["token_three"] != token_three:
+            ret_data_list.append(pool_data)
+    return ret_data_list
+
+
+def query_two_pools(token_one, token_two, list_pool_data):
+    ret_data_list = []
+    for pool_data in list_pool_data:
+        if (pool_data["token_one"] == token_one or pool_data["token_two"] == token_one or pool_data["token_three"] == token_one) and pool_data["token_one"] != token_two and pool_data["token_two"] != token_two and pool_data["token_three"] != token_two:
+            ret_data_list.append(pool_data)
+    return ret_data_list
+
+
+def query_one_pools(token_one, token_two, list_pool_data):
+    ret_data_list = []
+    for pool_data in list_pool_data:
+        if (pool_data["token_one"] == token_one or pool_data["token_two"] == token_one or pool_data["token_three"] == token_one) and (pool_data["token_one"] == token_two or pool_data["token_two"] == token_two or pool_data["token_three"] == token_two):
+            ret_data_list.append(pool_data)
+    return ret_data_list
 
 
 if __name__ == "__main__":
