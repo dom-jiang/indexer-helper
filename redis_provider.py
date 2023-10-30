@@ -246,6 +246,19 @@ def get_pool_point_24h_by_pool_id(network_id, pool_id):
     return ret
 
 
+def get_burrow_data():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("BURROW_DATA_MAINNET")
+    r.close()
+    return json.loads(ret)
+
+
+def add_burrow_data(value):
+    r = redis.StrictRedis(connection_pool=pool)
+    r.set("BURROW_DATA_MAINNET", value)
+    r.close()
+
+
 class RedisProvider(object):
 
     def __init__(self):

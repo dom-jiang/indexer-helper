@@ -12,7 +12,7 @@ import json
 import logging
 from indexer_provider import get_proposal_id_hash
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price
-from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
+from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool, get_burrow_data, add_burrow_data
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_24h_pool_volume, get_account_pool_assets
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, get_token_price_ratio_report
 from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, get_tx_id, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account
@@ -782,6 +782,22 @@ def handle_dcl_points_by_account():
     point_data = query_dcl_points_by_account(Cfg.NETWORK_ID, pool_id, account_id, int(start_point), int(end_point))
     ret_point_data = handle_dcl_point_bin_by_account(pool_id, point_data, int(slot_number), account_id, int(start_point), int(end_point))
     return compress_response_content(ret_point_data)
+
+
+@app.route('/get-burrow-data', methods=['GET'])
+@flask_cors.cross_origin()
+def handle_get_burrow_data():
+    ret = get_burrow_data()
+    return compress_response_content(ret)
+
+
+@app.route('/add-burrow-data', methods=['POST'])
+@flask_cors.cross_origin()
+def handle_add_burrow_data():
+    burrow_data = request.json
+    val = json.dumps(burrow_data)
+    add_burrow_data(val)
+    return compress_response_content(val)
 
 
 logger.add("app.log")
