@@ -791,13 +791,11 @@ def handle_get_burrow_data():
     return compress_response_content(ret)
 
 
-@app.route('/add-burrow-data', methods=['POST'])
+@app.route('/add-burrow-data/<data>', methods=['POST'])
 @flask_cors.cross_origin()
-def handle_add_burrow_data():
-    burrow_data = request.json
-    val = json.dumps(burrow_data)
-    add_burrow_data(val)
-    return compress_response_content(val)
+def handle_add_burrow_data(data: str):
+    add_burrow_data(data)
+    return compress_response_content(data)
 
 
 logger.add("app.log")
