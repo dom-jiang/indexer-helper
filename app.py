@@ -15,7 +15,7 @@ from redis_provider import list_farms, list_top_pools, list_pools, list_token_pr
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_24h_pool_volume, get_account_pool_assets
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, get_token_price_ratio_report
-from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, get_tx_id, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account
+from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, get_tx_id, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, pagination
 from config import Cfg
 from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log
 from db_provider import query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
@@ -27,7 +27,7 @@ from loguru import logger
 from analysis_v2_pool_data_s3 import analysis_v2_pool_data_to_s3, analysis_v2_pool_account_data_to_s3
 import time
 
-service_version = "20231025.01"
+service_version = "20231106.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
@@ -221,7 +221,6 @@ def handle_list_top_pools():
     """
     list_top_pools
     """
-
     pools = list_top_pools(Cfg.NETWORK_ID)
     prices = list_token_price(Cfg.NETWORK_ID)
     metadata = list_token_metadata(Cfg.NETWORK_ID)
@@ -237,14 +236,15 @@ def handle_list_top_pools_page():
     """
     list_top_pools
     """
-
+    page = request.args.get("page", type=int, default=1)
+    size = request.args.get("size", type=int, default=10)
     pools = list_top_pools(Cfg.NETWORK_ID)
     prices = list_token_price(Cfg.NETWORK_ID)
     metadata = list_token_metadata(Cfg.NETWORK_ID)
 
     combine_pools_info(pools, prices, metadata)
-
-    return compress_response_content(pools)
+    res_data = pagination(page, size, pools)
+    return compress_response_content(res_data)
 
 
 @app.route('/list-pools', methods=['GET'])
