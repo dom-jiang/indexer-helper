@@ -231,6 +231,22 @@ def handle_list_top_pools():
     return compress_response_content(pools)
 
 
+@app.route('/list-top-pool-page', methods=['GET'])
+@flask_cors.cross_origin()
+def handle_list_top_pools_page():
+    """
+    list_top_pools
+    """
+
+    pools = list_top_pools(Cfg.NETWORK_ID)
+    prices = list_token_price(Cfg.NETWORK_ID)
+    metadata = list_token_metadata(Cfg.NETWORK_ID)
+
+    combine_pools_info(pools, prices, metadata)
+
+    return compress_response_content(pools)
+
+
 @app.route('/list-pools', methods=['GET'])
 @flask_cors.cross_origin()
 def handle_list_pools():
