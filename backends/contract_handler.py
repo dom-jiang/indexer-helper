@@ -17,7 +17,7 @@ class RpcHandler:
             "do_buyback",
             {
                 "swap_msg": json.dumps(msg)
-            }
+            }, gas=300000000000000
         )
 
 

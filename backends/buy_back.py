@@ -22,11 +22,12 @@ def handle_buy_buck(network_id):
         conn = MultiNodeJsonProvider(network_id)
         ret = conn.view_call(Cfg.NETWORK[network_id]["BUYBACK_CONTRACT"], "get_available_fund_amount", b'')
         b = "".join([chr(x) for x in ret["result"]])
-        fund_amount = json.loads(b)
-        # fund_amount = 1000000 # 需要去小数位
-        amount_in = shrink_token(fund_amount, 6)
-        if float(amount_in) > 0:
+        amount_in = int(json.loads(b))
+        print("fund_amount:", amount_in)
+        if amount_in > 0:
             handle_flow(network_id, amount_in)
+        else:
+            print("not fund_amount")
     except MultiNodeJsonProviderError as e:
         print("RPC Error: ", e)
     except Exception as e:
@@ -56,58 +57,42 @@ def handle_flow(network_id, amount_in):
     if buyback_pool_one != {} and buyback_pool_two != {}:
         one_account_ids = buyback_pool_one["token_account_ids"]
         one_amounts = buyback_pool_one["amounts"]
-        ome_decimals = buyback_pool_one["decimals"]
         if one_account_ids[0] == Cfg.NETWORK[network_id]["BUYBACK_TOKEN_IN_CONTRACT"]:
             one_in_balance = one_amounts[0]
             one_out_balance = one_amounts[1]
             one_token_in = one_account_ids[0]
             one_token_out = one_account_ids[1]
-            one_token_in_decimal = ome_decimals[0]
-            one_token_out_decimal = ome_decimals[1]
         else:
             one_in_balance = one_amounts[1]
             one_out_balance = one_amounts[0]
             one_token_in = one_account_ids[1]
             one_token_out = one_account_ids[0]
-            one_token_in_decimal = ome_decimals[1]
-            one_token_out_decimal = ome_decimals[0]
-        one_amount_out = get_token_flow_ratio(amount_in, shrink_token(one_in_balance, one_token_in_decimal),
-                                              shrink_token(one_out_balance, one_token_out_decimal),
-                                              buyback_pool_one["total_fee"])
+        one_amount_out = get_token_flow_ratio(amount_in, one_in_balance, one_out_balance, buyback_pool_one["total_fee"])
         print("one_amount_out:", one_amount_out)
-        one_amount_out_d = expand_token(one_amount_out, one_token_out_decimal)
-        one_min_amount_out = int(one_amount_out_d - format_decimal_float(decimal_mult(one_amount_out_d, 0.003)))
+        one_min_amount_out = int(decimal_mult(one_amount_out, 0.997))
         action_one = {
             "pool_id": int(buyback_pool_one["id"]),
             "token_in": one_token_in,
-            "amount_in": str(expand_token(amount_in, one_token_in_decimal)),
+            "amount_in": str(amount_in),
             "token_out": one_token_out,
             "min_amount_out": str(one_min_amount_out)
         }
         actions.append(action_one)
         two_account_ids = buyback_pool_two["token_account_ids"]
         two_amounts = buyback_pool_two["amounts"]
-        two_decimals = buyback_pool_two["decimals"]
         if two_account_ids[1] == Cfg.NETWORK[network_id]["BUYBACK_TOKEN_OUT_CONTRACT"]:
             two_in_balance = two_amounts[0]
             two_out_balance = two_amounts[1]
             two_token_in = two_account_ids[0]
             two_token_out = two_account_ids[1]
-            two_token_in_decimal = two_decimals[0]
-            two_token_out_decimal = two_decimals[1]
         else:
             two_in_balance = two_amounts[1]
             two_out_balance = two_amounts[0]
             two_token_in = two_account_ids[1]
             two_token_out = two_account_ids[0]
-            two_token_in_decimal = two_decimals[1]
-            two_token_out_decimal = two_decimals[0]
-        two_amount_out = get_token_flow_ratio(one_amount_out, shrink_token(two_in_balance, two_token_in_decimal),
-                                               shrink_token(two_out_balance, two_token_out_decimal),
-                                               buyback_pool_two["total_fee"])
+        two_amount_out = get_token_flow_ratio(one_amount_out, two_in_balance, two_out_balance, buyback_pool_two["total_fee"])
         print("two_amount_out:", two_amount_out)
-        two_amount_out = expand_token(two_amount_out, two_token_out_decimal)
-        two_min_amount_out = int(two_amount_out - format_decimal_float(decimal_mult(two_amount_out, 0.003)))
+        two_min_amount_out = int(decimal_mult(two_amount_out, 0.997))
         action_two = {
             "pool_id": int(buyback_pool_two["id"]),
             "token_in": two_token_in,
@@ -116,32 +101,29 @@ def handle_flow(network_id, amount_in):
             "min_amount_out": str(two_min_amount_out)
         }
         actions.append(action_two)
-    num = random.randint(1, 600)
+    num = random.randint(1, 100)
     print("random num:", num)
     time.sleep(num)
     print("actions:", actions)
     signer = globals.get_signer_account(global_config.signer_account_id)
     burrow_handler = RpcHandler(signer, Cfg.NETWORK[network_id]["BUYBACK_CONTRACT"])
     ret = burrow_handler.do_buyback(actions)
-    print("buyback:", ret)
+    # print("buyback:", ret)
     return ret
 
 
 def get_token_flow_ratio(token_in_amount, token_in_balance, token_out_balance, fee):
     try:
-        token_in_amount = Decimal(token_in_amount)
-        token_in_balance = Decimal(token_in_balance)
-        token_out_balance = Decimal(token_out_balance)
-        fee = Decimal(fee)
+        token_in_amount = int(token_in_amount)
+        token_in_balance = int(token_in_balance)
+        token_out_balance = int(token_out_balance)
+        fee = int(fee)
         ratio = token_in_amount * (10000 - fee) * token_out_balance / (
                 10000 * token_in_balance + token_in_amount * (10000 - fee))
-        ratio = format_decimal_float(ratio)
-        return float(ratio)
+        return int(ratio)
     except Exception as e:
         print("get ratio error:", e)
         return 0
-    # a, b = str(ratio).split('.')
-    # return float(a + '.' + b[0:6])
 
 
 def format_decimal_float(number):
@@ -151,25 +133,8 @@ def format_decimal_float(number):
     return float(format_number)
 
 
-def format_decimal_decimal(number):
-    format_number = "{:.8f}".format(Decimal(number))
-    return Decimal(format_number)
-
-
-def shrink_token(amount, decimals):
-    return int(amount) / int("1" + "0" * decimals)
-
-
-def expand_token(amount, decimals):
-    return int(float(amount) * int("1" + "0" * decimals))
-
-
 def decimal_mult(number_one, number_two):
     return Decimal(str(number_one)) * Decimal(str(number_two))
-
-
-def decimal_divide(number_one, number_two):
-    return Decimal(str(number_one)) / Decimal(str(number_two))
 
 
 if __name__ == "__main__":
@@ -181,6 +146,7 @@ if __name__ == "__main__":
             print("Staring buy back ...")
             handle_buy_buck(network_id)
             end_time = int(time.time())
+            print("buy back end")
             print("buy back consuming time:{}", start_time - end_time)
         else:
             print("Error, network_id should be MAINNET, TESTNET or DEVNET")
@@ -207,4 +173,8 @@ if __name__ == "__main__":
     #     "swap_msg": json.dumps(msg)
     # }
     # print(json.dumps(a))
+
+    # ret = get_token_flow_ratio(1000000, 265173061933, 161409282403047959654493194, 30)
+    # print(ret)
+
 
