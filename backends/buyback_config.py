@@ -19,6 +19,11 @@ class GlobalConfig:
             self._priceoracle_contract = "priceoracle.near"
             self._near_contract = "wrap.near"
             self._signer_account_id = "juaner.near" if not os.getenv('SIGNER_ACCOUNT_ID') else os.getenv('SIGNER_ACCOUNT_ID')
+            self._buyback_contract = "buyback.juaner.near"
+            self._buyback_token_in_contract = "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near"
+            self._buyback_token_out_contract = "token.burrow.near"
+            self._buyback_pool_one = "3"
+            self._buyback_pool_two = "3474"
         elif self._near_env == "testnet":
             self._rpc_url = "https://rpc.testnet.near.org" if not os.getenv('NEAR_RPC_URL') else os.getenv('NEAR_RPC_URL')
             self._burrow_contract = "contract.1689937928.burrow.testnet"
@@ -27,6 +32,11 @@ class GlobalConfig:
             self._priceoracle_contract = "priceoracle.testnet"
             self._near_contract = "wrap.testnet"
             self._signer_account_id = "juaner.testnet" if not os.getenv('SIGNER_ACCOUNT_ID_DEV') else os.getenv('SIGNER_ACCOUNT_ID_DEV')
+            self._buyback_contract = "dev-1702289480516-51259361492553"
+            self._buyback_token_in_contract = "usdt.fakes.testnet"
+            self._buyback_token_out_contract = "token.1689937928.burrow.testnet"
+            self._buyback_pool_one = "465"
+            self._buyback_pool_two = "714"
         else:
             raise Exception("Invalid NEAR_ENV!")
 
@@ -61,3 +71,24 @@ class GlobalConfig:
     @property
     def signer_account_id(self):
         return self._signer_account_id
+
+    @property
+    def buyback_contract(self):
+        return self._buyback_contract
+
+    @property
+    def buyback_token_in_contract(self):
+        return self._buyback_token_in_contract
+
+    @property
+    def buyback_token_out_contract(self):
+        return self._buyback_token_out_contract
+
+    @property
+    def buyback_pool_one(self):
+        return self._buyback_pool_one
+
+    @property
+    def buyback_pool_two(self):
+        return self._buyback_pool_two
+

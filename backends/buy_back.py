@@ -2,14 +2,13 @@ import sys
 
 sys.path.append('../')
 from near_multinode_rpc_provider import MultiNodeJsonProviderError, MultiNodeJsonProvider
-from config import Cfg
 import json
 import time
 import sys
 from redis_provider import list_top_pools, list_token_price, list_token_metadata
 from utils import combine_pools_info
 from decimal import *
-import requests
+# import requests
 from contract_handler import RpcHandler
 import globals
 from buyback_config import GlobalConfig
@@ -20,7 +19,7 @@ import random
 def handle_buy_buck(network_id):
     try:
         conn = MultiNodeJsonProvider(network_id)
-        ret = conn.view_call(Cfg.NETWORK[network_id]["BUYBACK_CONTRACT"], "get_available_fund_amount", b'')
+        ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
         b = "".join([chr(x) for x in ret["result"]])
         amount_in = int(json.loads(b))
         print("fund_amount:", amount_in)
@@ -40,24 +39,24 @@ def handle_flow(network_id, amount_in):
     # list_pools_data_ret = requests.get(url=query_list_pools_url, verify=False)
     # pools = json.loads(list_pools_data_ret.text)
 
-    pools = list_top_pools(Cfg.NETWORK_ID)
-    prices = list_token_price(Cfg.NETWORK_ID)
-    metadata = list_token_metadata(Cfg.NETWORK_ID)
+    pools = list_top_pools(network_id)
+    prices = list_token_price(network_id)
+    metadata = list_token_metadata(network_id)
     combine_pools_info(pools, prices, metadata)
 
     actions = []
     buyback_pool_one = {}
     buyback_pool_two = {}
     for pool in pools:
-        if pool["id"] == Cfg.NETWORK[network_id]["BUYBACK_POOL_ONE"]:
+        if pool["id"] == global_config.buyback_pool_one:
             buyback_pool_one = pool
-        if pool["id"] == Cfg.NETWORK[network_id]["BUYBACK_POOL_TWO"]:
+        if pool["id"] == global_config.buyback_pool_two:
             buyback_pool_two = pool
 
     if buyback_pool_one != {} and buyback_pool_two != {}:
         one_account_ids = buyback_pool_one["token_account_ids"]
         one_amounts = buyback_pool_one["amounts"]
-        if one_account_ids[0] == Cfg.NETWORK[network_id]["BUYBACK_TOKEN_IN_CONTRACT"]:
+        if one_account_ids[0] == global_config.buyback_token_in_contract:
             one_in_balance = one_amounts[0]
             one_out_balance = one_amounts[1]
             one_token_in = one_account_ids[0]
@@ -80,7 +79,7 @@ def handle_flow(network_id, amount_in):
         actions.append(action_one)
         two_account_ids = buyback_pool_two["token_account_ids"]
         two_amounts = buyback_pool_two["amounts"]
-        if two_account_ids[1] == Cfg.NETWORK[network_id]["BUYBACK_TOKEN_OUT_CONTRACT"]:
+        if two_account_ids[1] == global_config.buyback_token_out_contract:
             two_in_balance = two_amounts[0]
             two_out_balance = two_amounts[1]
             two_token_in = two_account_ids[0]
@@ -101,12 +100,12 @@ def handle_flow(network_id, amount_in):
             "min_amount_out": str(two_min_amount_out)
         }
         actions.append(action_two)
-    num = random.randint(1, 100)
+    num = random.randint(1, 3600)
     print("random num:", num)
     time.sleep(num)
     print("actions:", actions)
     signer = globals.get_signer_account(global_config.signer_account_id)
-    burrow_handler = RpcHandler(signer, Cfg.NETWORK[network_id]["BUYBACK_CONTRACT"])
+    burrow_handler = RpcHandler(signer, global_config.buyback_contract)
     ret = burrow_handler.do_buyback(actions)
     # print("buyback:", ret)
     return ret
