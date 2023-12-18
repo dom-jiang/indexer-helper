@@ -11,8 +11,8 @@ if [ ! ${pid} ]; then
         export NEAR_ENV=testnet
         export PRIVATE_KEY_DEV=ed25519:26a7YRudAqjNfxEhd9mJSZjddGcvBpwwk4pwD36NGTWh8XXcD5y2uPD8Ldr5ivjckV7TP9t3Rz7Ac462xDpLRGrw
         export SIGNER_ACCOUNT_ID_DEV=juaner.testnet
-        python buy_back.py [NETWORK_ID] >> backend_buy_back.log
         echo 'run buy_back'
+        python buy_back.py [NETWORK_ID] >> backend_buy_back.log
 else
         echo "There is already a backend process running." >> backend_buy_back.log
 fi

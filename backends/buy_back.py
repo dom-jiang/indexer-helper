@@ -1,10 +1,10 @@
 import sys
 
 sys.path.append('../')
+sys.stdout.reconfigure(line_buffering=True)
 from near_multinode_rpc_provider import MultiNodeJsonProviderError, MultiNodeJsonProvider
 import json
 import time
-import sys
 from redis_provider import list_top_pools, list_token_price, list_token_metadata
 from utils import combine_pools_info
 from decimal import *
@@ -14,30 +14,101 @@ import globals
 from buyback_config import GlobalConfig
 global_config = GlobalConfig()
 import random
+import os
 
 
-def handle_buy_buck(network_id):
+# 禁用标准输出流的缓冲
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)
+# 禁用标准错误流的缓冲
+sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 1)
+
+
+def handle_buy_buck_one(network_id, random_num):
     try:
         conn = MultiNodeJsonProvider(network_id)
         ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
         b = "".join([chr(x) for x in ret["result"]])
         amount_in = int(json.loads(b))
-        print("fund_amount:", amount_in)
+        print("first fund_amount:", amount_in)
         if amount_in > 0:
-            handle_flow(network_id, amount_in)
+            handle_flow(network_id, amount_in, random_num)
+            print("Wait for 60 seconds for the second verification")
+            time.sleep(60)
+            ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
+            b = "".join([chr(x) for x in ret["result"]])
+            amount_in = int(json.loads(b))
+            print("second fund_amount:", amount_in)
+            if amount_in > 0:
+                handle_buy_buck_two(network_id, 600)
+            else:
+                print("second not fund_amount")
         else:
-            print("not fund_amount")
+            print("first not fund_amount")
     except MultiNodeJsonProviderError as e:
         print("RPC Error: ", e)
     except Exception as e:
         print("Error: ", e)
+        print("Wait for 60 seconds for the second verification")
+        time.sleep(60)
+        conn = MultiNodeJsonProvider(network_id)
+        ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
+        b = "".join([chr(x) for x in ret["result"]])
+        amount_in = int(json.loads(b))
+        print("second fund_amount:", amount_in)
+        if amount_in > 0:
+            handle_buy_buck_two(network_id, 600)
+        else:
+            print("second not fund_amount")
 
 
-def handle_flow(network_id, amount_in):
+def handle_buy_buck_two(network_id, random_num):
+    try:
+        conn = MultiNodeJsonProvider(network_id)
+        ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
+        b = "".join([chr(x) for x in ret["result"]])
+        amount_in = int(json.loads(b))
+        print("retry fund_amount:", amount_in)
+        if amount_in > 0:
+            handle_flow(network_id, amount_in, random_num)
+            print("Wait for 60 seconds for the second verification")
+            time.sleep(60)
+            ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
+            b = "".join([chr(x) for x in ret["result"]])
+            amount_in = int(json.loads(b))
+            print("retry fund_amount:", amount_in)
+            if amount_in > 0:
+                handle_buy_buck_two(network_id, 600)
+            else:
+                print("retry verification not fund_amount")
+        else:
+            print("retry not fund_amount")
+    except MultiNodeJsonProviderError as e:
+        print("RPC Error: ", e)
+    except Exception as e:
+        print("Error: ", e)
+        print("Wait for 60 seconds for the second verification")
+        time.sleep(60)
+        conn = MultiNodeJsonProvider(network_id)
+        ret = conn.view_call(global_config.buyback_contract, "get_available_fund_amount", b'')
+        b = "".join([chr(x) for x in ret["result"]])
+        amount_in = int(json.loads(b))
+        print("retry fund_amount:", amount_in)
+        if amount_in > 0:
+            handle_buy_buck_two(network_id, 600)
+        else:
+            print("retry verification not fund_amount")
+
+
+def handle_flow(network_id, amount_in, random_num):
     # query_list_pools_url = "https://dev-indexer.ref-finance.com/list-top-pools"
     # requests.packages.urllib3.disable_warnings()
     # list_pools_data_ret = requests.get(url=query_list_pools_url, verify=False)
     # pools = json.loads(list_pools_data_ret.text)
+
+    print("random max num:", random_num)
+    num = random.randint(1, random_num)
+    print("random num:", num)
+    time.sleep(num)
 
     pools = list_top_pools(network_id)
     prices = list_token_price(network_id)
@@ -68,7 +139,7 @@ def handle_flow(network_id, amount_in):
             one_token_out = one_account_ids[0]
         one_amount_out = get_token_flow_ratio(amount_in, one_in_balance, one_out_balance, buyback_pool_one["total_fee"])
         print("one_amount_out:", one_amount_out)
-        one_min_amount_out = int(decimal_mult(one_amount_out, 0.997))
+        one_min_amount_out = int(decimal_mult(one_amount_out, 0.9999))
         action_one = {
             "pool_id": int(buyback_pool_one["id"]),
             "token_in": one_token_in,
@@ -91,7 +162,7 @@ def handle_flow(network_id, amount_in):
             two_token_out = two_account_ids[0]
         two_amount_out = get_token_flow_ratio(one_amount_out, two_in_balance, two_out_balance, buyback_pool_two["total_fee"])
         print("two_amount_out:", two_amount_out)
-        two_min_amount_out = int(decimal_mult(two_amount_out, 0.997))
+        two_min_amount_out = int(decimal_mult(two_amount_out, 0.9999))
         action_two = {
             "pool_id": int(buyback_pool_two["id"]),
             "token_in": two_token_in,
@@ -100,9 +171,6 @@ def handle_flow(network_id, amount_in):
             "min_amount_out": str(two_min_amount_out)
         }
         actions.append(action_two)
-    num = random.randint(1, 3600)
-    print("random num:", num)
-    time.sleep(num)
     print("actions:", actions)
     signer = globals.get_signer_account(global_config.signer_account_id)
     burrow_handler = RpcHandler(signer, global_config.buyback_contract)
@@ -143,7 +211,7 @@ if __name__ == "__main__":
         network_id = str(sys.argv[1]).upper()
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
             print("Staring buy back ...")
-            handle_buy_buck(network_id)
+            handle_buy_buck_one(network_id, 3600)
             end_time = int(time.time())
             print("buy back end")
             print("buy back consuming time:{}", start_time - end_time)
