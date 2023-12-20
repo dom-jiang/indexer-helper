@@ -139,7 +139,7 @@ def handle_flow(network_id, amount_in, random_num):
             one_token_out = one_account_ids[0]
         one_amount_out = get_token_flow_ratio(amount_in, one_in_balance, one_out_balance, buyback_pool_one["total_fee"])
         print("one_amount_out:", one_amount_out)
-        one_min_amount_out = int(decimal_mult(one_amount_out, 0.9999))
+        one_min_amount_out = int(decimal_mult(one_amount_out, 0.997))
         action_one = {
             "pool_id": int(buyback_pool_one["id"]),
             "token_in": one_token_in,
@@ -162,7 +162,7 @@ def handle_flow(network_id, amount_in, random_num):
             two_token_out = two_account_ids[0]
         two_amount_out = get_token_flow_ratio(one_amount_out, two_in_balance, two_out_balance, buyback_pool_two["total_fee"])
         print("two_amount_out:", two_amount_out)
-        two_min_amount_out = int(decimal_mult(two_amount_out, 0.9999))
+        two_min_amount_out = int(decimal_mult(two_amount_out, 0.997))
         action_two = {
             "pool_id": int(buyback_pool_two["id"]),
             "token_in": two_token_in,
