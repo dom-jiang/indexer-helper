@@ -13,7 +13,7 @@ class GlobalConfig:
 
         if self._near_env == "mainnet":
             self._rpc_url = "https://rpc.mainnet.near.org" if not os.getenv('NEAR_RPC_URL') else os.getenv('NEAR_RPC_URL')
-            self._private_key = "ed25519:ZET5m6S5Sbt8CLjKtKGwRRKwwzUms1Kj8TWXa31UwdDHxT2iwUcux6bjrqkTUXzPRVdmtu4E6AXk8JXKpkVyVap" if not os.getenv('PRIVATE_KEY') else os.getenv('PRIVATE_KEY')
+            self._private_key = "" if not os.getenv('PRIVATE_KEY') else os.getenv('PRIVATE_KEY')
             self._deposit_yocto = 1
             self._near_contract = "wrap.near"
             self._signer_account_id = "dom1.near" if not os.getenv('SIGNER_ACCOUNT_ID') else os.getenv('SIGNER_ACCOUNT_ID')
