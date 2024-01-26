@@ -1,6 +1,4 @@
 import json
-from buyback_config import GlobalConfig
-global_config = GlobalConfig()
 
 
 class RpcHandler:
