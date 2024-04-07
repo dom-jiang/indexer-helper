@@ -45,6 +45,22 @@ limiter = Limiter(
 @app.before_request
 def before_request():
     # Processing get requests
+
+    # Prohibit requests with multiple Content Length headers
+    content_length_headers = request.headers.getlist('Content-Length')
+    if len(content_length_headers) > 1:
+        return "400 Bad Request", 400
+
+    # Prohibit malformed transmission encoding docks
+    if 'Transfer-Encoding' in request.headers:
+        transfer_encoding = request.headers.get('Transfer-Encoding')
+        if ',' in transfer_encoding:
+            return "400 Bad Request", 400
+
+    # Prohibit requests with both Content Length and Transfer Encoding simultaneously
+    if 'Content-Length' in request.headers and 'Transfer-Encoding' in request.headers:
+        return "400 Bad Request", 400
+
     data = request.args
     for v in data.values():
         v = str(v).lower()
