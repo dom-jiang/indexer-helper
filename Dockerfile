@@ -5,7 +5,7 @@ RUN apt-get update && apt-get -y install cron
 # Copy hello-cron file to the cron.d directory
 WORKDIR /indexer-helper/
 COPY ./ /indexer-helper/
-COPY cron /etc/cron.d/cron
+COPY ./cron /etc/cron.d/
 
 # Give execution rights on the cron job
 RUN chmod 0644 /etc/cron.d/cron
