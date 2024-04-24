@@ -3,6 +3,8 @@ FROM python:3.10
 RUN apt-get update && apt-get -y install cron
 
 # Copy hello-cron file to the cron.d directory
+WORKDIR /indexer-helper/
+COPY ./ /indexer-helper/
 COPY cron /etc/cron.d/cron
 
 # Give execution rights on the cron job
