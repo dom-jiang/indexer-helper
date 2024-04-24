@@ -1,7 +1,7 @@
-* * * * * /indexer-helper/backends/token_price.py
-*/2 * * * * /indexer-helper/backends/farm_and_pool.py
-3 * * * * /indexer-helper/backends/update_metadata.py
+#* * * * * /indexer-helper/backends/token_price.py
+#*/2 * * * * /indexer-helper/backends/farm_and_pool.py
+#3 * * * * /indexer-helper/backends/update_metadata.py
 * * * * * /indexer-helper/backends/top_pools.py
-* * * * * /indexer-helper/backends/update_pools.py
-2 */1 * * * /indexer-helper/backends/dcl_pools.py
-10 */1 * * * /indexer-helper/backends/token_price_ratio_report.py
+#* * * * * /indexer-helper/backends/update_pools.py
+#2 */1 * * * /indexer-helper/backends/dcl_pools.py
+#10 */1 * * * /indexer-helper/backends/token_price_ratio_report.py

@@ -16,7 +16,7 @@ RUN touch /var/log/cron.log
 
 WORKDIR /indexer-helper/
 COPY ./ /indexer-helper/
-RUN chmod 0644 /indexer-helper/
+RUN chmod -R a+x /indexer-helper/backends/top_pools.py
 RUN pip install -r requirements.txt
 
 # Run the command on container startup
