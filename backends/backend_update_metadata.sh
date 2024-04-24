@@ -15,6 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_update_metadata.log
 fi
-. ../venv/bin/activate
 python update_metadata.py MAINNET >> backend_update_metadata.log
 echo 'OK'

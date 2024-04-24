@@ -15,6 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_dcl_pools.log
 fi
-. ../venv/bin/activate
 python dcl_pools.py MAINNET >> backend_dcl_pools.log
 echo 'OK'

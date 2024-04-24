@@ -15,6 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_db_data_clear.log
 fi
-. ../venv/bin/activate
 python db_data_clear.py MAINNET >> backend_db_data_clear.log
 echo 'OK'
