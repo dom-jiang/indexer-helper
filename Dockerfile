@@ -16,8 +16,6 @@ RUN crontab /etc/cron.d/cron
 # Create the log file to be able to run tail
 RUN touch /var/log/cron.log
 
-ADD ./ /workspace/
-
 RUN pip install -r requirement.txt &&
 
 # Run the command on container startup
