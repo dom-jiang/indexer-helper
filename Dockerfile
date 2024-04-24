@@ -1,10 +1,22 @@
 FROM python:3.10
 
-COPY ./ /indexer/
-WORKDIR /indexer/
+RUN apt-get update && apt-get -y install cron
 
-RUN python3 -m venv venv && \
-    . ./venv/bin/activate && \
-    python3 -m pip install -r requirements.txt
+# Copy hello-cron file to the cron.d directory
+COPY cron /etc/cron.d/cron
 
-ENTRYPOINT ["/bin/bash", "/indexer/start_server.sh"]
+# Give execution rights on the cron job
+RUN chmod 0644 /etc/cron.d/cron
+
+# Apply cron job
+RUN crontab /etc/cron.d/cron
+
+# Create the log file to be able to run tail
+RUN touch /var/log/cron.log
+
+ADD ./ /workspace/
+
+RUN pip install -r requirement.txt &&
+
+# Run the command on container startup
+CMD ["cron", "-f"]
