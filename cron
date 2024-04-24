@@ -1,7 +1,22 @@
-#* * * * * /indexer-helper/backends/token_price.py
-#*/2 * * * * /indexer-helper/backends/farm_and_pool.py
-#3 * * * * /indexer-helper/backends/update_metadata.py
+*/2 * * * * /indexer-helper/backends/backend_farm_and_pool.sh
+* * * * * /indexer-helper/backends/backend_token_price.sh
+* * * * * sleep 20; /indexer-helper/backends/backend_token_price.sh
+* * * * * sleep 40; /indexer-helper/backends/backend_token_price.sh
+3 * * * * /indexer-helper/backends/backend_update_metadata.sh
+0 2 * * * /indexer-helper/backends/backend_db_data_clear.sh
 * * * * * /indexer-helper/backends/backend_top_pools.sh
-#* * * * * /indexer-helper/backends/update_pools.py
-#2 */1 * * * /indexer-helper/backends/dcl_pools.py
-#10 */1 * * * /indexer-helper/backends/token_price_ratio_report.py
+* * * * * /indexer-helper/backends/backend_update_pools.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools.sh
+* * * * * /indexer-helper/backends/backend_update_pools_1.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_1.sh
+* * * * * /indexer-helper/backends/backend_update_pools_2.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_2.sh
+* * * * * /indexer-helper/backends/backend_update_pools_3.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_3.sh
+* * * * * /indexer-helper/backends/backend_update_pools_4.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_4.sh
+* * * * * /indexer-helper/backends/backend_update_pools_5.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_5.sh
+2 */1 * * * /indexer-helper/backends/backend_dcl_pools.sh
+10 */1 * * * /indexer-helper/backends/backend_analysis_pool_and_farm_data_s3.sh
+10 */1 * * * /indexer-helper/backends/backend_token_price_ratio_report.sh
