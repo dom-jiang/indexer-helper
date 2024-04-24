@@ -16,7 +16,7 @@ RUN touch /var/log/cron.log
 
 WORKDIR /indexer-helper/
 COPY ./ /indexer-helper/
-RUN chmod -R a+x indexer-helper
+RUN chmod -R a+x /indexer-helper/*
 RUN pip install -r requirements.txt
 
 # Run the command on container startup
