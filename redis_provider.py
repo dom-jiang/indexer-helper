@@ -157,7 +157,8 @@ def list_token_metadata_v2(network_id):
     metadata_obj = {}
     for key, value in ret.items():
         token_data = json.loads(value)
-        token_data.pop("icon")
+        if isinstance(token_data, dict):
+            token_data.pop("icon")
         metadata_obj[key] = token_data
     return metadata_obj
 
