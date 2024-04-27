@@ -46,9 +46,10 @@ except ImportError:
 
 
 try:
-    from db_info import MARKET_KEY
+    from db_info import MARKET_KEY, MARKET_URL
 except ImportError:
     MARKET_KEY = ""
+    MARKET_URL = ""
 
 """
 
@@ -309,6 +310,7 @@ class Cfg:
             {"SYMBOL": "NVIDIA", "NEAR_ID": "nearnvidia.near", "MD_ID": "v2.ref-finance.near|4547|wrap.near", "DECIMAL": 8},
             {"SYMBOL": "BEAN", "NEAR_ID": "bean.tkn.near", "MD_ID": "v2.ref-finance.near|4472|wrap.near", "DECIMAL": 18},
             {"SYMBOL": "SOL", "NEAR_ID": "22.contract.portalbridge.near", "MD_ID": "solana", "DECIMAL": 8},
+            {"SYMBOL": "USM", "NEAR_ID": "usmeme.tg", "MD_ID": "v2.ref-finance.near|4949|wrap.near", "DECIMAL": 8},
         ],
         "BASE_MAINNET": [
             {"SYMBOL": "cbETH", "MD_ID": "coinbase-wrapped-staked-eth"},
@@ -471,11 +473,11 @@ class Cfg:
             {"SYMBOL": "HAN", "MD_ID": "hanchain"},
             {"SYMBOL": "LYRA", "MD_ID": "lyra-finance"},
             {"SYMBOL": "AI", "MD_ID": "sleepless-ai"},
-            {"SYMBOL": "OMNI", "MD_ID": "omni"},
+            {"SYMBOL": "OMNI", "MD_ID": "omnicat"},
             {"SYMBOL": "BAG", "MD_ID": "bag"},
             {"SYMBOL": "DACKIE", "MD_ID": "dackieswap"},
             {"SYMBOL": "USDB", "MD_ID": "usdb"},
-            {"SYMBOL": "OLE", "MD_ID": "olecoin"},
+            {"SYMBOL": "OLE", "MD_ID": "openleverage"},
             {"SYMBOL": "SBF", "MD_ID": "sam-bankmeme-fried"},
             {"SYMBOL": "GLORY", "MD_ID": "sekai-glory"},
             {"SYMBOL": "CBR", "MD_ID": "cyberblast-token"},
@@ -489,9 +491,32 @@ class Cfg:
             {"SYMBOL": "WMETIS", "MD_ID": "wmetis"},
             {"SYMBOL": "artMETIS", "MD_ID": "wmetis"},
             {"SYMBOL": "XFIT", "MD_ID": "xfit"},
+            {"SYMBOL": "YES", "MD_ID": "yes-money"},
+            {"SYMBOL": "mwstETH-WPUNKS:20", "MD_ID": "metastreet-v2-mwsteth-wpunks-20"},
+            {"SYMBOL": "JUICE", "MD_ID": "juice-finance"},
+            {"SYMBOL": "$WAI", "MD_ID": "ai-waifu"},
+            {"SYMBOL": "ANDY", "MD_ID": "andyerc"},
+            {"SYMBOL": "SEAM", "MD_ID": "seamless-protocol"},
+            {"SYMBOL": "rsETH", "MD_ID": "kelp-dao-restaked-eth"},
+            {"SYMBOL": "LEET", "MD_ID": "leetswap-canto"},
+            {"SYMBOL": "FPI", "MD_ID": "frax-price-index"},
+            {"SYMBOL": "FPIS", "MD_ID": "frax-price-index-share"},
+            {"SYMBOL": "ankrETH", "MD_ID": "ankreth"},
+            {"SYMBOL": "weETH", "MD_ID": "wrapped-eeth"},
+            {"SYMBOL": "EURA", "MD_ID": "ageur"},
+            {"SYMBOL": "CRV", "MD_ID": "curve-dao-token"},
+            {"SYMBOL": "DUSD", "MD_ID": "davos-protocol"},
+            {"SYMBOL": "MaticX", "MD_ID": "stader-maticx"},
+            {"SYMBOL": "ZENF", "MD_ID": "zenland"},
+            {"SYMBOL": "RPL", "MD_ID": "rocket-pool"},
+            {"SYMBOL": "LYNX", "MD_ID": "lynex"},
+            {"SYMBOL": "ZETA", "MD_ID": "zetachain"},
+            {"SYMBOL": "USDV", "MD_ID": "usdv-2"},
+            {"SYMBOL": "ORBIT", "MD_ID": "orbit-protocol"},
+            {"SYMBOL": "wrsETH", "MD_ID": "kelp-dao-restaked-eth"},
         ],
     }
-    MARKET_URL = "pro-api.coingecko.com"
+    MARKET_URL = MARKET_URL
     MARKET_KEY = MARKET_KEY
 
 
