@@ -315,6 +315,8 @@ class Cfg:
             {"SYMBOL": "BEAN", "NEAR_ID": "bean.tkn.near", "MD_ID": "v2.ref-finance.near|4472|wrap.near", "DECIMAL": 18},
             {"SYMBOL": "SOL", "NEAR_ID": "22.contract.portalbridge.near", "MD_ID": "solana", "DECIMAL": 8},
             {"SYMBOL": "USM", "NEAR_ID": "usmeme.tg", "MD_ID": "v2.ref-finance.near|4949|wrap.near", "DECIMAL": 8},
+            {"SYMBOL": "TOUCHED", "NEAR_ID": "touched.tkn.near", "MD_ID": "v2.ref-finance.near|4771|wrap.near", "DECIMAL": 24},
+            {"SYMBOL": "KOK", "NEAR_ID": "nkok.tkn.near", "MD_ID": "v2.ref-finance.near|4820|wrap.near", "DECIMAL": 18},
         ],
         "BASE_MAINNET": [
             {"SYMBOL": "cbETH", "MD_ID": "coinbase-wrapped-staked-eth"},
@@ -517,6 +519,7 @@ class Cfg:
             {"SYMBOL": "ZETA", "MD_ID": "zetachain"},
             {"SYMBOL": "USDV", "MD_ID": "usdv-2"},
             {"SYMBOL": "ORBIT", "MD_ID": "orbit-protocol"},
+            {"SYMBOL": "wrsETH", "MD_ID": "kelp-dao-restaked-eth"},
         ],
     }
     MARKET_URL = MARKET_URL
