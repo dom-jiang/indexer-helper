@@ -6,7 +6,7 @@ RUN apt-get update && apt-get -y install cron
 COPY ./cron /etc/cron.d/cron
 
 # Give execution rights on the cron job
-RUN chmod 0644 /etc/cron.d/cron
+RUN chmod 0777 /etc/cron.d/cron
 
 # Apply cron job
 RUN crontab /etc/cron.d/cron
@@ -16,7 +16,7 @@ RUN touch /var/log/cron.log
 
 WORKDIR /indexer-helper/
 COPY ./ /indexer-helper/
-RUN chmod -R a+x /indexer-helper
+RUN chmod -R 0777 /indexer-helper
 RUN pip install -r requirements.txt
 
 # Run the command on container startup

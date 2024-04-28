@@ -15,5 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_token_price.log
 fi
-python3 token_price.py MAINNET >> backend_token_price.log
+/usr/local/bin/python token_price.py MAINNET >> backend_token_price.log
 echo 'OK'
