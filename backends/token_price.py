@@ -203,12 +203,14 @@ def handel_base_token_price(network_id, base_tokens, base_obj):
 
 
 if __name__ == '__main__':
-    # update_price("TESTNET")
-    # market_price("MAINNET", [{"SYMBOL": "near", "NEAR_ID": "wrap.near", "MD_ID": "near", "DECIMAL": 24}], Cfg.TOKENS["BASE_MAINNET"])
+    print("----------------start_token_price-------------------")
+    start_tine = int(time.time())
     if len(sys.argv) == 2:
         network_id = str(sys.argv[1]).upper()
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
             update_price(network_id)
+            end_time = int(time.time())
+            print("time:", end_time - start_tine)
         else:
             print("Error, network_id should be MAINNET, TESTNET or DEVNET")
             exit(1)
