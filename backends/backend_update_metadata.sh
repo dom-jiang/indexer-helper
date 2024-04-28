@@ -15,5 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_update_metadata.log
 fi
-python update_metadata.py MAINNET >> backend_update_metadata.log
+/usr/local/bin/python update_metadata.py MAINNET >> backend_update_metadata.log
 echo 'OK'

@@ -15,5 +15,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_farm_and_pool.log
 fi
-python farm_and_pool.py MAINNET >> backend_farm_and_pool.log
+/usr/local/bin/python farm_and_pool.py MAINNET >> backend_farm_and_pool.log
 echo 'OK'
