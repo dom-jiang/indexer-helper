@@ -29,7 +29,7 @@ def decrypt(ciphertext: str, key: str) -> str:
 
 if __name__ == "__main__":
     key = '8309c61008a5f5ba6c51bbf977781c55'
-    params = '{"path":"http://127.0.0.1:28080/authentication","time":"1712666980"}'
+    params = '{"path":"/token-price-report","time":"1714367732"}'
     encrypted_params = encrypt(params, key)
     print(f"encrypt：{encrypted_params}")
     decrypted_params = decrypt(encrypted_params, key)
