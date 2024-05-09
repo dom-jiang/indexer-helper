@@ -30,7 +30,7 @@ import datetime
 from auth.crypto_utl import decrypt
 import time
 
-service_version = "20240417.01"
+service_version = "20240507.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
@@ -103,7 +103,6 @@ def hello_world():
 
 @app.route('/timestamp', methods=['GET'])
 @flask_cors.cross_origin()
-@limiter.limit("1/5 second")
 def handle_timestamp():
     import time
     return jsonify({"ts": int(time.time())})
@@ -442,7 +441,6 @@ def handle_history_token_price_by_ids():
 
 @app.route('/get-service-version', methods=['GET'])
 @flask_cors.cross_origin()
-@limiter.limit("1/second")
 def get_service_version():
     return jsonify(service_version)
 
