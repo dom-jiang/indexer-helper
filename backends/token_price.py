@@ -111,14 +111,16 @@ def update_price(network_id):
             pool_tokens.append(token)
         else:
             market_tokens.append(token)
-    
+    start_time1 = int(time.time())
     # [{"NEAR_ID": "rft.tokenfactory.testnet", "BASE_ID": "wrap.testnet", "price": "nnnnnn"}, ...]
     tokens_price = market_price(network_id, market_tokens, Cfg.TOKENS["BASE_MAINNET"])
+    end_time1 = int(time.time())
+    print("market_price time:", end_time1 - start_time1)
     for token in tokens_price:
         price_ref[token["NEAR_ID"]] = token["price"]
-
     tokens_price += pool_price(network_id, pool_tokens)
-
+    end_time2 = int(time.time())
+    print("pool_price time:", end_time2 - end_time1)
     try:
         if len(tokens_price) > 0:
             conn = RedisProvider()
@@ -148,7 +150,8 @@ def update_price(network_id):
             conn.close()
     except Exception as e:
         print("Error occurred when update to Redis, cancel pipe. Error is: ", e)
-
+    end_time3 = int(time.time())
+    print("add redis time:", end_time3 - end_time2)
     try:
         if len(tokens_price) > 0:
             for token in tokens_price:
@@ -168,6 +171,8 @@ def update_price(network_id):
                     add_history_token_price(token["NEAR_ID"], token["BASE_ID"], token["price"], decimals[token["NEAR_ID"]], network_id)
     except Exception as e:
         print("Error occurred when update to db, Error is: ", e)
+    end_time4 = int(time.time())
+    print("add mysql db time:", end_time4 - end_time3)
 
 
 def get_base_id_price(tokens_price, price_ref, decimals, base_id):
