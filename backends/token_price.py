@@ -82,7 +82,7 @@ def market_price(network_id, tokens, base_tokens):
         data = response.text
         obj = json.loads(data)
         handel_base_token_price(network_id, base_tokens, obj)
-        print('[debug][%s]%s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), obj))
+        # print('[debug][%s]%s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), obj))
     except Exception as e:
         print("Error: ", e)
 
