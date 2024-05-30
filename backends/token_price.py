@@ -227,7 +227,7 @@ def handel_base_token_price(network_id, base_tokens, base_obj):
 
 if __name__ == '__main__':
     print("----------------start_token_price-------------------")
-    start_tine = int(time.time())
+    start_time = int(time.time())
     if len(sys.argv) == 2:
         network_id = str(sys.argv[1]).upper()
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
