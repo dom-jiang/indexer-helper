@@ -31,7 +31,7 @@ import datetime
 from auth.crypto_utl import decrypt
 import time
 
-service_version = "20240530.01"
+service_version = "20240613.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
@@ -295,7 +295,7 @@ def handle_list_top_pools():
             "amounts": pool["amounts"],
         }
         list_top_pools_log.append(pool_log)
-    logger.info("list_top_pools_data:{}", list_top_pools_log)
+    # logger.info("list_top_pools_data:{}", list_top_pools_log)
     return compress_response_content(pools)
 
 
