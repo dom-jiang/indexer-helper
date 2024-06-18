@@ -7,7 +7,7 @@ try:
     from rpc_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
     TESTNET_RPC_URL= ["https://rpc.testnet.near.org", ]
-    MAINNET_RPC_URL= ["https://rpc.mainnet.near.org", ]
+    MAINNET_RPC_URL= ["http://45.77.96.53:3030", "https://rpc.mainnet.near.org"]
 
 try:
     from db_info import REDIS_HOST, REDIS_PORT
