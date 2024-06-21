@@ -7,6 +7,12 @@ from config import Cfg
 import json
 import time
 from db_provider import add_history_token_price, batch_add_history_token_price
+import traceback
+
+
+def get_now_millisecond():
+    millisecond = int(time.time_ns()) // 1000000
+    return millisecond
 
 
 def pool_price(network_id, tokens):
@@ -15,61 +21,87 @@ def pool_price(network_id, tokens):
     pool_tokens_price = []
     # print("pool_price tokens:", tokens)
     try:
-        conn = MultiNodeJsonProvider(network_id)
+        start_time3 = get_now_millisecond()
+        decimal_data = get_decimals()
+        simple_pool_list, stable_pool_list, stable_pool_detail_list = get_all_pool_data()
+        end_time3 = get_now_millisecond()
+        print("get_all_pool_data time:", end_time3 - start_time3)
+        # conn = MultiNodeJsonProvider(network_id)
         for token in tokens:
+            start_time4 = get_now_millisecond()
             src, pool_id, base = token["MD_ID"].split("|")
-            time.sleep(0.1)
-            if token["NEAR_ID"] == "meta-pool.near" or token["NEAR_ID"] == "linear-protocol.near":
-                try:
-                    ret = conn.view_call(src, "get_rated_pool", ('{"pool_id": %s}' % pool_id)
-                                         .encode(encoding='utf-8'))
-                    json_str = "".join([chr(x) for x in ret["result"]])
-                    result_obj = json.loads(json_str)
-                    rates = result_obj["rates"]
-                    price = int(rates[0])
-                except Exception as e:
-                    print("get_rated_pool error:", e)
-                    continue
-            elif token["NEAR_ID"] == "nearx.stader-labs.near" or token["NEAR_ID"] == "v2-nearx.stader-labs.near":
-                try:
-                    ret = conn.view_call(src, "get_nearx_price", "NA".encode(encoding='utf-8'))
-                    json_str = "".join([chr(x) for x in ret["result"]])
-                    price = json.loads(json_str)
-                except Exception as e:
-                    print("get_nearx_price error:", e)
-                    continue
-            elif token["NEAR_ID"] == "xtoken.ref-finance.near":
-                try:
-                    # print("statr get_virtual_price")
-                    ret = conn.view_call(src, "get_virtual_price", "NA".encode(encoding='utf-8'))
-                    # print("get_virtual_price ret:", ret)
-                    json_str = "".join([chr(x) for x in ret["result"]])
-                    # print("get_virtual_price ret result:", json_str)
-                    price = json.loads(json_str)
-                    # print("get_virtual_price price:", price)
-                except Exception as e:
-                    print("get_virtual_price error:", e)
-                    continue
-            else:
-                ret = conn.view_call(
-                    src,
-                    "get_return",
-                    ('{"pool_id": %s, "token_in": "%s", "amount_in": "1%s", "token_out": "%s"}'
-                     % (pool_id, token["NEAR_ID"], '0' * token["DECIMAL"], base))
-                        .encode(encoding='utf-8')
-                )
-                json_str = "".join([chr(x) for x in ret["result"]])
-                price = json.loads(json_str)
+            # time.sleep(0.1)
+            # print("NEAR_ID:", token["NEAR_ID"])
+            token_in = {
+                "id": token["NEAR_ID"],
+                "decimals": decimal_data[token["NEAR_ID"]]
+            }
+            # print("base:", base)
+            token_out = {
+                "id": base,
+                "decimals": decimal_data[base]
+            }
+            output_price = 0
+            # if token["NEAR_ID"] == "token.v2.ref-finance.near":
+            sdk_price_data = get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list, token_in, token_out)
+            # print("sdk_price_data:", sdk_price_data)
+            for sdk_price in sdk_price_data:
+                output_price = output_price + float(sdk_price["estimate"])
+            # print("output_price:", output_price)
+            end_time4 = get_now_millisecond()
+            print("get_price_by_sdk time:", end_time4 - start_time4)
+            # if token["NEAR_ID"] == "meta-pool.near" or token["NEAR_ID"] == "linear-protocol.near":
+            #     try:
+            #         ret = conn.view_call(src, "get_rated_pool", ('{"pool_id": %s}' % pool_id)
+            #                              .encode(encoding='utf-8'))
+            #         json_str = "".join([chr(x) for x in ret["result"]])
+            #         result_obj = json.loads(json_str)
+            #         rates = result_obj["rates"]
+            #         price = int(rates[0])
+            #     except Exception as e:
+            #         print("get_rated_pool error:", e)
+            #         continue
+            # elif token["NEAR_ID"] == "nearx.stader-labs.near" or token["NEAR_ID"] == "v2-nearx.stader-labs.near":
+            #     try:
+            #         ret = conn.view_call(src, "get_nearx_price", "NA".encode(encoding='utf-8'))
+            #         json_str = "".join([chr(x) for x in ret["result"]])
+            #         price = json.loads(json_str)
+            #     except Exception as e:
+            #         print("get_nearx_price error:", e)
+            #         continue
+            # elif token["NEAR_ID"] == "xtoken.ref-finance.near":
+            #     try:
+            #         # print("statr get_virtual_price")
+            #         ret = conn.view_call(src, "get_virtual_price", "NA".encode(encoding='utf-8'))
+            #         # print("get_virtual_price ret:", ret)
+            #         json_str = "".join([chr(x) for x in ret["result"]])
+            #         # print("get_virtual_price ret result:", json_str)
+            #         price = json.loads(json_str)
+            #         # print("get_virtual_price price:", price)
+            #     except Exception as e:
+            #         print("get_virtual_price error:", e)
+            #         continue
+            # else:
+            #     ret = conn.view_call(
+            #         src,
+            #         "get_return",
+            #         ('{"pool_id": %s, "token_in": "%s", "amount_in": "1%s", "token_out": "%s"}'
+            #          % (pool_id, token["NEAR_ID"], '0' * token["DECIMAL"], base))
+            #             .encode(encoding='utf-8')
+            #     )
+            #     json_str = "".join([chr(x) for x in ret["result"]])
+            #     price = json.loads(json_str)
             if token["NEAR_ID"] == "token.v2.ref-finance.near":
-                debug_price = int(price) / 1000000000000000000000000.0
+                debug_price = int(output_price) / 1000000000000000000000000.0
                 print('[debug][%s]REF-wNEAR:%.12f' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), debug_price))
-            pool_tokens_price.append({"NEAR_ID": token["NEAR_ID"], "BASE_ID": base, "price": price})
+            pool_tokens_price.append({"NEAR_ID": token["NEAR_ID"], "BASE_ID": base, "price": output_price})
 
     except MultiNodeJsonProviderError as e:
         print("RPC Error: ", e)
         pool_tokens_price.clear()
     except Exception as e:
         print("Error: ", e)
+        traceback.print_exc()
         pool_tokens_price.clear()
     return pool_tokens_price
 
@@ -91,8 +123,8 @@ def market_price(network_id, tokens, base_tokens):
             md_id = token["MD_ID"]
             if md_id in obj and "usd" in obj[md_id]:
                 market_tokens_price.append({
-                    "NEAR_ID": token["NEAR_ID"], 
-                    "BASE_ID": "", 
+                    "NEAR_ID": token["NEAR_ID"],
+                    "BASE_ID": "",
                     "price": str(obj[md_id]["usd"])
                 })
 
@@ -100,7 +132,7 @@ def market_price(network_id, tokens, base_tokens):
 
 
 def update_price(network_id):
-    start_time1 = int(time.time())
+    start_time1 = get_now_millisecond()
     pool_tokens = []
     market_tokens = []
     decimals = {}
@@ -112,7 +144,7 @@ def update_price(network_id):
             pool_tokens.append(token)
         else:
             market_tokens.append(token)
-    
+
     # [{"NEAR_ID": "rft.tokenfactory.testnet", "BASE_ID": "wrap.testnet", "price": "nnnnnn"}, ...]
     tokens_price = market_price(network_id, market_tokens, Cfg.TOKENS["BASE_MAINNET"])
     for token in tokens_price:
@@ -148,9 +180,9 @@ def update_price(network_id):
             conn.close()
     except Exception as e:
         print("Error occurred when update to Redis, cancel pipe. Error is: ", e)
-    end_time1 = int(time.time())
+    end_time1 = get_now_millisecond()
     if end_time1 - start_time1 > 10:
-        print("rpc time:", end_time1 - start_time1)
+        print("update_price time:", end_time1 - start_time1)
     try:
         if len(tokens_price) > 0:
             insert_data_list = []
@@ -174,14 +206,14 @@ def update_price(network_id):
                     insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": token["price"], "decimal": decimals[token["NEAR_ID"]]})
                 if len(insert_data_list) >= 500:
                     batch_add_history_token_price(insert_data_list, network_id)
-                    print("insert_data_list number:", len(insert_data_list))
+                    # print("insert_data_list number:", len(insert_data_list))
                     insert_data_list.clear()
             if len(insert_data_list) > 0:
                 batch_add_history_token_price(insert_data_list, network_id)
-                print("insert_data_list number:", len(insert_data_list))
+                # print("insert_data_list number:", len(insert_data_list))
     except Exception as e:
         print("Error occurred when update to db, Error is: ", e)
-    end_time2 = int(time.time())
+    end_time2 = get_now_millisecond()
     if end_time2 - end_time1 > 10:
         print("insert data time:", end_time2 - end_time1)
 
@@ -193,6 +225,13 @@ def get_symbol(contract_address):
             symbol = token["SYMBOL"]
             return symbol
     return symbol
+
+
+def get_decimals():
+    decimals = {}
+    for token in Cfg.TOKENS[Cfg.NETWORK_ID]:
+        decimals[token["NEAR_ID"]] = token["DECIMAL"]
+    return decimals
 
 
 def get_base_id_price(tokens_price, price_ref, decimals, base_id):
@@ -227,14 +266,82 @@ def handel_base_token_price(network_id, base_tokens, base_obj):
         print("Error occurred when update base token price to Redis, cancel pipe. Error is: ", e)
 
 
+def get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list, token_in, token_out):
+    start_time = get_now_millisecond()
+    simple_pool_list_ = []
+    for pool_data in simple_pool_list:
+        if token_in["id"] in pool_data["tokenIds"] and token_out["id"] in pool_data["tokenIds"]:
+            token_in_quantity = 1
+            if token_in["id"] in pool_data["tokenIds"]:
+                token_in_decimals = int(token_in["decimals"])
+                token_in_amount = int(pool_data["supplies"][token_in["id"]])
+                token_in_quantity = token_in_amount / (10 ** token_in_decimals)
+            # print("token_out_quantity:", token_out_quantity)
+            token_out_quantity = 1
+            if token_out["id"] in pool_data["tokenIds"]:
+                token_out_decimals = int(token_out["decimals"])
+                token_out_amount = int(pool_data["supplies"][token_out["id"]])
+                token_out_quantity = token_out_amount / (10 ** token_out_decimals)
+            # print("token_out_quantity:", token_out_quantity)
+            if token_out_quantity > 0.1 and token_in_quantity > 0.1:
+                simple_pool_list_.append(pool_data)
+    print("simple_pool_list_ len:", len(simple_pool_list_))
+    # print("simple_pool_list_:", simple_pool_list_)
+    query = {
+        "method": "estimateSwap",
+        "arg1": {
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "amountIn": "1",
+            "simplePools": simple_pool_list_,
+            "options": {
+                "enableSmartRouting": True,
+                "stablePools": stable_pool_list,
+                "stablePoolsDetail": stable_pool_detail_list
+            }
+        },
+        "network": Cfg.NETWORK_ID.lower()
+    }
+    estimate_ret = requests.post(Cfg.REF_SDK_URL, json=query).content
+    estimate_data = json.loads(estimate_ret)
+    end_time = get_now_millisecond()
+    if end_time - start_time > 1:
+        print("estimateSwap time:", end_time - start_time)
+    return estimate_data
+
+
+def get_all_pool_data():
+    # start_time0 = get_now_millisecond()
+    response = requests.get(Cfg.REF_URL)
+    data = response.text
+    all_pool_data = json.loads(data)
+    end_time0 = get_now_millisecond()
+    # if end_time0 - start_time0 > 1:
+    #     print("fetchAllPools time:", end_time0 - start_time0)
+    simple_pool_list = all_pool_data["simplePools"]
+    stable_pool_list = all_pool_data["unRatedPools"] + all_pool_data["ratedPools"]
+    query = {
+        "method": "getStablePools",
+        "arg1": stable_pool_list,
+        "network": Cfg.NETWORK_ID.lower()
+    }
+    # print("query:", query)
+    ret = requests.post(Cfg.REF_SDK_URL, json=query).content
+    stable_pool_detail_list = json.loads(ret)
+    # end_time1 = get_now_millisecond()
+    # if end_time1 - end_time0 > 1:
+    #     print("getStablePools time:", end_time1 - end_time0)
+    return simple_pool_list, stable_pool_list, stable_pool_detail_list
+
+
 if __name__ == '__main__':
     print("----------------start_token_price-------------------")
-    start_time = int(time.time())
+    start_time = get_now_millisecond()
     if len(sys.argv) == 2:
         network_id = str(sys.argv[1]).upper()
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
             update_price(network_id)
-            end_time = int(time.time())
+            end_time = get_now_millisecond()
             if end_time - start_time > 20:
                 print("all time:", end_time - start_time)
         else:
@@ -243,3 +350,21 @@ if __name__ == '__main__':
     else:
         print("Error, must put NETWORK_ID as arg")
         exit(1)
+
+    # a, b, c = get_all_pool_data()
+    # print("----------------------------------")
+    # token_in_ = {
+    #      "decimals": 18,
+    #      "id": "token.v2.ref-finance.near"
+    #   }
+    # token_out_ = {
+    #      "decimals": 24,
+    #      "id": "wrap.near"
+    #   }
+    # ret_data = get_price_by_sdk(a, b, c, token_in_, token_out_)
+    # print("----------------------------------")
+    # print("ret:", ret_data)
+    # output_price = 0
+    # for ret in ret_data:
+    #     output_price = output_price + float(ret["estimate"])
+    # print("output_price:", output_price)
