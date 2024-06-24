@@ -4,8 +4,8 @@
 3 * * * * /indexer-helper/backends/backend_update_metadata.sh
 0 2 * * * /indexer-helper/backends/backend_db_data_clear.sh
 * * * * * /indexer-helper/backends/backend_top_pools.sh
-#* * * * * sleep 20; /indexer-helper/backends/backend_top_pools > /dev/null
-#* * * * * sleep 40; /indexer-helper/backends/backend_top_pools > /dev/null
+* * * * * sleep 20; /indexer-helper/backends/backend_top_pools
+* * * * * sleep 40; /indexer-helper/backends/backend_top_pools
 * * * * * /indexer-helper/backends/backend_update_pools.sh
 * * * * * sleep 30; /indexer-helper/backends/backend_update_pools.sh
 * * * * * /indexer-helper/backends/backend_update_pools_1.sh
