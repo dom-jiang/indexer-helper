@@ -29,7 +29,7 @@ from analysis_v2_pool_data_s3 import analysis_v2_pool_data_to_s3, analysis_v2_po
 import time
 import datetime
 
-service_version = "20240530.01"
+service_version = "20240625.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
@@ -835,6 +835,54 @@ def handel_get_liquidation_result():
         "data": ret_data
     }
     return ret
+
+
+@app.route('/list-top-pools-v2', methods=['GET'])
+@flask_cors.cross_origin()
+def handle_list_top_pools_v2():
+    """
+    list_top_pools
+    """
+    ret_data = {"update_flag": False, "update_time": None}
+    pools = list_top_pools(Cfg.NETWORK_ID)
+    prices = list_token_price(Cfg.NETWORK_ID)
+    metadata = list_token_metadata(Cfg.NETWORK_ID)
+
+    combine_pools_info(pools, prices, metadata)
+    now_time = int(time.time())
+    min_time = now_time
+    ret_list_top_pools = []
+    for pool in pools:
+        amount_flag = False
+        price_flag = False
+        tokens = pool['token_account_ids']
+        amounts = pool['amounts']
+        for i in range(len(amounts)):
+            if int(amounts[i]) > 0:
+                amount_flag = True
+        if not amount_flag:
+            continue
+        for x in range(len(tokens)):
+            if tokens[x] in prices:
+                price_flag = True
+        if price_flag:
+            if float(pool["tvl"]) > 10:
+                ret_list_top_pools.append(pool)
+                if "update_time" in pool:
+                    update_time = int(pool["update_time"])
+                    if update_time < min_time:
+                        min_time = update_time
+        else:
+            ret_list_top_pools.append(pool)
+            if "update_time" in pool:
+                update_time = int(pool["update_time"])
+                if update_time < min_time:
+                    min_time = update_time
+    ret_data["pool_list"] = ret_list_top_pools
+    ret_data["timestamp"] = now_time
+    ret_data["update_time"] = min_time
+    ret_data["update_flag"] = now_time - min_time < 120
+    return compress_response_content(ret_data)
 
 
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
