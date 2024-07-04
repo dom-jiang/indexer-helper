@@ -183,7 +183,8 @@ class Cfg:
                                                 "marmaj.tkn.near->wrap.near", "token.v2.ref-finance.near->token.burrow.near",
                                                 "token.v2.ref-finance.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
                                                 "token.burrow.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-                                                "edge-fast.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"],
+                                                "edge-fast.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", 
+					        "802d89b6e511b335f05024a65161bce7efc3f311.factory.bridge.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"],
         }
     }
     TOKENS = {
