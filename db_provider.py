@@ -1346,6 +1346,32 @@ def get_liquidation_result(network_id, key):
         cursor.close()
 
 
+def add_near_lake_latest_actions(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into near_lake_latest_actions(timestamp, tx_id, receiver_account_id, method_name, args, " \
+          "deposit, status, predecessor_account_id, receiver_id, receipt_id, create_time) " \
+          "values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["timestamp"], data["tx_id"], data["receiver_account_id"], data["method_name"],
+                                data["args"], data["deposit"], data["status"], data["predecessor_account_id"],
+                                data["receiver_id"], data["receipt_id"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert near lake latest actions log to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()

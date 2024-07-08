@@ -46,12 +46,14 @@ except ImportError:
 
 
 try:
-    from db_info import MARKET_KEY, MARKET_URL, REF_URL, REF_SDK_URL
+    from db_info import MARKET_KEY, MARKET_URL, REF_URL, REF_SDK_URL, DB3_URL, DB3_ACCESS_KEY
 except ImportError:
     MARKET_KEY = ""
     MARKET_URL = ""
     REF_URL = ""
     REF_SDK_URL = ""
+    DB3_URL = ""
+    DB3_ACCESS_KEY = ""
 
 """
 
@@ -554,6 +556,8 @@ class Cfg:
     MARKET_KEY = MARKET_KEY
     REF_URL = REF_URL
     REF_SDK_URL = REF_SDK_URL
+    DB3_URL = DB3_URL
+    DB3_ACCESS_KEY = DB3_ACCESS_KEY
 
 
 if __name__ == '__main__':
