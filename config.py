@@ -558,6 +558,10 @@ class Cfg:
     REF_SDK_URL = REF_SDK_URL
     DB3_URL = DB3_URL
     DB3_ACCESS_KEY = DB3_ACCESS_KEY
+    CONTRACT_LIST = ["ref-finance.sputnik-dao.near", "v2.ref-finance.near", "dclv2.ref-labs.near",
+                     "token.v2.ref-finance.near", "xtoken.ref-finance.near", "burrow.sputnik-dao.near",
+                     "contract.main.burrow.near", "token.burrow.near", "v2.ref-farming.near", "boostfarm.ref-labs.near",
+                     "meme-farming_011.ref-labs.near"]
 
 
 if __name__ == '__main__':
