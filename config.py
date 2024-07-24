@@ -25,13 +25,17 @@ except ImportError:
     INDEXER_PORT = "5432"
 
 try:
-    from db_info import DB_DSN, DB_UID, DB_PWD, DB_HOST, DB_PORT
+    from db_info import DB_DSN, DB_UID, DB_PWD, DB_HOST, DB_PORT, CRM_DB_UID, CRM_DB_PWD, BURROW_DB_UID, BURROW_DB_PWD
 except ImportError:
     DB_DSN = "ref"
     DB_UID = "root"
     DB_PWD = "root"
     DB_HOST = "127.0.0.1"
     DB_PORT = "3306"
+    CRM_DB_UID = "root"
+    CRM_DB_PWD = "root"
+    BURROW_DB_UID = "root"
+    BURROW_DB_PWD = "root"
 
 
 try:
@@ -46,10 +50,14 @@ except ImportError:
 
 
 try:
-    from db_info import MARKET_KEY, MARKET_URL, REF_URL, REF_SDK_URL
+    from db_info import MARKET_KEY, MARKET_URL, AUTH_SWITCH, NOT_AUTH_LIST, SIGN_EXPIRE, CRYPTO_AES_KEY, REF_URL, REF_SDK_URL
 except ImportError:
     MARKET_KEY = ""
     MARKET_URL = ""
+    AUTH_SWITCH = True
+    NOT_AUTH_LIST = ["/crm/orderly/trading-data"]
+    SIGN_EXPIRE = 300
+    CRYPTO_AES_KEY = "8309c61008a5f5ba6c51bbf977781c55"
     REF_URL = ""
     REF_SDK_URL = ""
 
@@ -60,6 +68,7 @@ except ImportError:
 class Cfg:
     NETWORK_ID = "MAINNET"
     REFSUBGRAPH_URL = "https://api.thegraph.com/subgraphs/name/coolsnake/refsubgraph"
+    REDIS_TOKEN_MARKET_PRICE_KEY = "TOKEN_MARKET_PRICE"
     REDIS = {
         "REDIS_HOST": REDIS_HOST,
         "REDIS_PORT": REDIS_PORT,
@@ -129,6 +138,7 @@ class Cfg:
             "REF_CONTRACT": "v2.ref-finance.near",
             "XREF_CONTRACT": "xtoken.ref-finance.near",
             "BOOSTFARM_CONTRACT": "boostfarm.ref-labs.near",
+            "TOKEN_LOCKER_CONTRACT": "token-locker.ref-labs.near",
             "USN_CONTRACT": "usn",
             "DCL_POOL_CONTRACT": "dclv2.ref-labs.near",
             "DCL_CONTRACT": "dclv2.ref-labs.near",
@@ -161,6 +171,10 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
+            "CRM_DB_UID": CRM_DB_UID,
+            "CRM_DB_PWD": CRM_DB_PWD,
+            "BURROW_DB_UID": BURROW_DB_UID,
+            "BURROW_DB_PWD": BURROW_DB_PWD,
             "NEAR_LAKE_DB_DSN": NEAR_LAKE_DB_DSN,
             "NEAR_LAKE_DB_UID": NEAR_LAKE_DB_UID,
             "NEAR_LAKE_DB_PWD": NEAR_LAKE_DB_PWD,
@@ -168,10 +182,10 @@ class Cfg:
             "NEAR_LAKE_DB_PORT": NEAR_LAKE_DB_PORT,
             "NEAR_LAKE_DCL_DB_DSN": NEAR_LAKE_DCL_DB_DSN,
             "BLOCK_HEIGHT_FOLDER_PATH": "/indexer-helper/backends/",
-            "CRYPTO_AES_KEY": "8309c61008a5f5ba6c51bbf977781c55",
-            "AUTH_SWITCH": True,
-            "AUTH_LIST": ["/authentication"],
-            "SIGN_EXPIRE": 300,
+            "CRYPTO_AES_KEY": CRYPTO_AES_KEY,
+            "AUTH_SWITCH": AUTH_SWITCH,
+            "NOT_AUTH_LIST": NOT_AUTH_LIST,
+            "SIGN_EXPIRE": SIGN_EXPIRE,
             "HISTORY_TOKEN_PRICE_REPORT_PAIR": [
                 "wrap.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
                 "token.lonkingnearbackto2024.near->17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
@@ -333,6 +347,9 @@ class Cfg:
             {"SYMBOL": "OTTO", "NEAR_ID": "4e807467ba9e3119d5356c5568ef63e9c321b471.factory.bridge.near", "MD_ID": "v2.ref-finance.near|4479|wrap.near", "DECIMAL": 18},
             {"SYMBOL": "BABYBLACKDRAGON", "NEAR_ID": "babyblackdragon.tkn.near", "MD_ID": "v2.ref-finance.near|4840|wrap.near", "DECIMAL": 24},
             {"SYMBOL": "FAST", "NEAR_ID": "edge-fast.near", "MD_ID": "v2.ref-finance.near|5167|wrap.near", "DECIMAL": 24},
+            {"SYMBOL": "HAT", "NEAR_ID": "hat.tkn.near", "MD_ID": "v2.ref-finance.near|5179|wrap.near", "DECIMAL": 18},
+            {"SYMBOL": "INTEL", "NEAR_ID": "intel.tkn.near", "MD_ID": "v2.ref-finance.near|4663|wrap.near", "DECIMAL": 18},
+            {"SYMBOL": "USDC", "NEAR_ID": "16.contract.portalbridge.near", "MD_ID": "usd-coin", "DECIMAL": 6},
         ],
         "BASE_MAINNET": [
             {"SYMBOL": "cbETH", "MD_ID": "coinbase-wrapped-staked-eth"},
@@ -558,6 +575,14 @@ class Cfg:
             {"SYMBOL": "DETH", "MD_ID": "stakehouse-deth"},
 	        {"SYMBOL": "ASTR", "MD_ID": "astar"},
             {"SYMBOL": "vASTR", "MD_ID": "bifrost-voucher-astr"},
+            {"SYMBOL": "BLAST", "MD_ID": "blast"},
+            {"SYMBOL": "mETH", "MD_ID": "mantle-staked-ether"},
+            {"SYMBOL": "eETH", "MD_ID": "ether-fi-staked-eth"},
+            {"SYMBOL": "instETH", "MD_ID": "inception-restaked-steth"},
+            {"SYMBOL": "mstETH", "MD_ID": "eigenpie-msteth"},
+            {"SYMBOL": "pufETH", "MD_ID": "pufeth"},
+            {"SYMBOL": "inrETH", "MD_ID": "inception-restaked-reth"},
+            {"SYMBOL": "ZERO", "MD_ID": "zerolend"},
         ],
     }
     MARKET_URL = MARKET_URL
