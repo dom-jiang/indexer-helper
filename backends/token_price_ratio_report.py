@@ -13,7 +13,8 @@ def handle_token_pair(network_id):
     # token_list = ['pixeltoken.near', 'dbio.near']
     token_list = []
     for token in Cfg.TOKENS[network_id]:
-        token_list.append(token["NEAR_ID"])
+        if token["NEAR_ID"] not in token_list:
+            token_list.append(token["NEAR_ID"])
     for token_one in token_list:
         for token_two in token_list:
             if token_one != token_two:

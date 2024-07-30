@@ -66,6 +66,7 @@ def pool_price(network_id, tokens):
                                                   token_out)
                 for sdk_price in sdk_price_data:
                     price = price + float(sdk_price["estimate"])
+                price = price*10
             pool_tokens_price.append({"NEAR_ID": token["NEAR_ID"], "BASE_ID": base, "price": price})
 
     except MultiNodeJsonProviderError as e:
@@ -116,9 +117,14 @@ def update_price(network_id):
             market_tokens.append(token)
 
     tokens_price = market_price(network_id, market_tokens, Cfg.TOKENS["BASE_MAINNET"])
+    token_list = []
     for token in tokens_price:
         price_ref[token["NEAR_ID"]] = token["price"]
-    tokens_price += pool_price(network_id, pool_tokens)
+        token_list.append(token["NEAR_ID"])
+    pool_price_data_list = pool_price(network_id, pool_tokens)
+    for pool_price_data in pool_price_data_list:
+        if pool_price_data["NEAR_ID"] not in token_list:
+            tokens_price.append(pool_price_data)
 
     try:
         if len(tokens_price) > 0:
@@ -131,6 +137,8 @@ def update_price(network_id):
                         if ref_token_price > 0:
                             price = int(token["price"]) / 100000000 * ref_token_price
                             conn.add_token_price(network_id, token["NEAR_ID"], "%.12f" % price)
+                    elif token["NEAR_ID"] == "wrap.near":
+                        conn.add_token_price(network_id, token["NEAR_ID"], "%.12f" % token["price"])
                     elif token["BASE_ID"] in price_ref:
                         price = float(token["price"]) * float(price_ref[token["BASE_ID"]])
                         if token["NEAR_ID"] not in price_ref:
@@ -157,6 +165,8 @@ def update_price(network_id):
                         if ref_token_price > 0:
                             price = int(token["price"]) / 100000000 * ref_token_price
                             insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": "%.12f" % price, "decimal": decimals[token["NEAR_ID"]]})
+                    elif token["NEAR_ID"] == "wrap.near":
+                        insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": "%.12f" % token["price"], "decimal": decimals[token["NEAR_ID"]]})
                     elif token["BASE_ID"] in price_ref:
                         price = float(token["price"]) * float(price_ref[token["BASE_ID"]])
                         insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": "%.12f" % price, "decimal": decimals[token["NEAR_ID"]]})
@@ -225,6 +235,7 @@ def handel_base_token_price(network_id, base_tokens, base_obj):
 
 
 def get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list, token_in, token_out):
+    ret_estimate_data = []
     simple_pool_list_ = []
     for pool_data in simple_pool_list:
         if token_in["id"] in pool_data["tokenIds"] and token_out["id"] in pool_data["tokenIds"]:
@@ -245,7 +256,7 @@ def get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list
         "arg1": {
             "tokenIn": token_in,
             "tokenOut": token_out,
-            "amountIn": "1",
+            "amountIn": "0.1",
             "simplePools": simple_pool_list_,
             "options": {
                 "enableSmartRouting": True,
@@ -255,9 +266,14 @@ def get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list
         },
         "network": Cfg.NETWORK_ID.lower()
     }
-    estimate_ret = requests.post(Cfg.REF_SDK_URL, json=query).content
-    estimate_data = json.loads(estimate_ret)
-    return estimate_data
+    estimate_ret = requests.post(Cfg.REF_SDK_URL, json=query)
+    if estimate_ret.status_code == 200:
+        estimate_data = json.loads(estimate_ret.content)
+        print("token_in:", token_in)
+        print("estimate_data:", estimate_data)
+        if "error" not in estimate_data:
+            ret_estimate_data = estimate_data
+    return ret_estimate_data
 
 
 def get_all_pool_data():
