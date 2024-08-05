@@ -269,8 +269,6 @@ def get_price_by_sdk(simple_pool_list, stable_pool_list, stable_pool_detail_list
     estimate_ret = requests.post(Cfg.REF_SDK_URL, json=query)
     if estimate_ret.status_code == 200:
         estimate_data = json.loads(estimate_ret.content)
-        print("token_in:", token_in)
-        print("estimate_data:", estimate_data)
         if "error" not in estimate_data:
             ret_estimate_data = estimate_data
     return ret_estimate_data
