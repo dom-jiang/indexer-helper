@@ -3,6 +3,8 @@ import sys
 
 sys.path.append('../')
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 from bs4 import BeautifulSoup
 import requests
@@ -11,13 +13,9 @@ import requests
 def handel_burrow_data():
     # 实例化参数方法
     chrome_options = webdriver.ChromeOptions()
-    # 设置浏览器的无头浏览器, 无界面, 浏览器将不提供界面, Linux操作系统无界面下就可以运行
     chrome_options.add_argument("--headless")
-    # 解决devtoolsactiveport文件不存在的报错
     chrome_options.add_argument("--no-sandbox")
-    # 官方推荐的关闭选项, 规避一些BUG
     chrome_options.add_argument("--disable-gpu")
-    # 设置中文
     chrome_options.add_argument('lang=zh_CN.UTF-8')
     chrome_options.add_argument('sec-fetch-site=same-origin')
     chrome_options.add_argument('sec-fetch-mode=no-cors')
@@ -26,19 +24,22 @@ def handel_burrow_data():
     chrome_options.add_argument('sec-ch-ua-mobile=?0')
     chrome_options.add_argument('referer=https://app.burrow.fun/')
     chrome_options.add_argument('accept-language=zh-CN,zh;q=0.9')
-    # 更换头部
     chrome_options.add_argument('user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"')
-    # 实例化chrome, 导入设置项
-    wd = webdriver.Chrome(options=chrome_options)
-    # 最大化
-    wd.maximize_window()
-    # 打开网页
-    wd.get("https://app.burrow.finance/")
-    time.sleep(5)
-    # 获取网页内容
-    content = wd.page_source
-    # 释放,退出
-    wd.quit()
+    # 实例化 Chrome Service 对象
+    service = ChromeService(executable_path=ChromeDriverManager().install())
+    # 实例化 Chrome 浏览器对象，导入设置项
+    wd = webdriver.Chrome(service=service, options=chrome_options)
+    try:
+        # 最大化
+        wd.maximize_window()
+        # 打开网页
+        wd.get("https://app.burrow.finance/")
+        time.sleep(5)
+        # 获取网页内容
+        content = wd.page_source
+    finally:
+        # 释放, 退出
+        wd.quit()
 
     # driver = webdriver.Chrome()
     # driver.get("https://app.burrow.finance/")
@@ -58,18 +59,18 @@ def handel_burrow_data():
     # 找到第一次出现'USDC'的索引
     first_usdc_index = data_list.index('USDC')
     # 找到第二次出现'USDC'的索引
-    second_usdc_index = data_list.index('USDC', first_usdc_index + 1)
+    # second_usdc_index = data_list.index('USDC', first_usdc_index + 1)
     # 找到紧随第二次'USDC'出现的'Supply APY'的下一个元素
-    next_element_index = data_list.index('Supply APY', second_usdc_index) + 1
-    usdc_api = float(data_list[next_element_index][:-1])
-    api_data_list.append(usdc_api)
-    usdc_e_api = float(data_list[data_list.index("USDC.e") + 5][:-1])
+    # next_element_index = data_list.index('Supply APY', second_usdc_index) + 1
+    # usdc_api = float(data_list[next_element_index][:-1])
+    # api_data_list.append(usdc_api)
+    usdc_e_api = float(data_list[data_list.index("USDC.e") + 5][:4])
     api_data_list.append(usdc_e_api)
-    usdt_api = float(data_list[data_list.index("USDt") + 6][:-1])
-    api_data_list.append(usdt_api)
-    usdt_e_api = float(data_list[data_list.index("USDT.e") + 5][:-1])
+    # usdt_api = float(data_list[data_list.index("USDt") + 6][:-1])
+    # api_data_list.append(usdt_api)
+    usdt_e_api = float(data_list[data_list.index("USDT.e") + 5][:4])
     api_data_list.append(usdt_e_api)
-    dai_api = float(data_list[data_list.index("DAI") + 5][:-1])
+    dai_api = float(data_list[data_list.index("DAI") + 5][:4])
     api_data_list.append(dai_api)
     max_api = 0
     for da in api_data_list:
@@ -84,22 +85,12 @@ def handel_burrow_data():
 
 
 if __name__ == "__main__":
-
-    if len(sys.argv) == 2:
-        start_time = int(time.time())
-        network_id = str(sys.argv[1]).upper()
-        if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
-            print("Staring handel_burrow_data ...")
-            data = handel_burrow_data()
-            print(data)
-            end_time = int(time.time())
-            print("handel_burrow_data consuming time:{}", start_time - end_time)
-        else:
-            print("Error, network_id should be MAINNET, TESTNET or DEVNET")
-            exit(1)
-    else:
-        print("Error, must put NETWORK_ID as arg")
-        exit(1)
+    print("Staring handel_burrow_data ...")
+    start_time = int(time.time())
+    data = handel_burrow_data()
+    print(data)
+    end_time = int(time.time())
+    print("handel_burrow_data consuming time:{}", start_time - end_time)
 
     # data = handel_burrow_data()
     # print(data)
@@ -109,7 +100,7 @@ if __name__ == "__main__":
     # print(content)
     #
     # burrow_data = {"total_supplied": "", "yield_apy": "", "yield_apy_up_to": ""}
-    # data_list = ['Help', 'Bridge', 'Rainbow', 'Ethereum | Aurora', 'Electron Labs', 'Ethereum', '', 'Show Dust', '', '', 'USDC', 'USDT', 'FRAX', 'Total Supplied', '$220.72M', 'Total Borrowed', '$18.77M', 'Available Liquidity', '$201.94M', 'Daily Rewards', '$12,484', 'All Markets', 'Sort by', 'Available Liquidity', 'Total Supplied', 'Supply APY', 'Total Borrowed', 'Borrow APY', 'Price', 'USDt', 'Native', 'Total Supplied', '6.04M', '$6.04M', 'Supply APY', '44.09%', '44.09%', 'Total Borrowed', '4.11M', '$4.11M', 'Borrow APY', '5.08%', 'Available Liquidity', '1.93M', '$1.93M', 'Price', '$1.0006', 'USDC', 'Native', 'Total Supplied', '7.33M', '$7.33M', 'Supply APY', '44.52%', '44.52%', 'Total Borrowed', '5.38M', '$5.38M', 'Borrow APY', '5.49%', 'Available Liquidity', '1.95M', '$1.95M', 'Price', '$1.0003', 'FRAX', 'Total Supplied', '503.74K', '$502.43K', 'Supply APY', '41.37%', '41.37%', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$0.9974', 'BRRR', 'Total Supplied', '184.95M', '$0', 'Supply APY', '0%', '0%', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$0', 'LINEAR', 'Total Supplied', '13.46M', '$131.68M', 'Supply APY', '<0.01%', '<0.01%', 'Total Borrowed', '2.42K', '$23.73K', 'Borrow APY', '<0.01%', 'Available Liquidity', '13.44M', '$131.52M', 'Price', '$9.7853', 'STNEAR', 'Total Supplied', '5.63M', '$58.63M', 'Supply APY', '<0.01%', '<0.01%', 'Total Borrowed', '13.26K', '$138.05K', 'Borrow APY', '0.03%', 'Available Liquidity', '5.61M', '$58.43M', 'Price', '$10.415', 'USDT.e', 'Total Supplied', '2.43M', '$2.43M', 'Supply APY', '4.36%', '4.36%', 'Total Borrowed', '1.91M', '$1.91M', 'Borrow APY', '5.89%', 'Available Liquidity', '519.55K', '$519.86K', 'Price', '$1.0006', 'USDC.e', 'Total Supplied', '2.29M', '$2.29M', 'Supply APY', '7.67%', '7.67%', 'Total Borrowed', '1.88M', '$1.88M', 'Borrow APY', '9.77%', 'Available Liquidity', '411.46K', '$411.58K', 'Price', '$1.0003', 'DAI', 'Total Supplied', '1.44M', '$1.44M', 'Supply APY', '13.74%', '13.74%', 'Total Borrowed', '1.24M', '$1.24M', 'Borrow APY', '16.87%', 'Available Liquidity', '207.49K', '$207.41K', 'Price', '$0.9996', 'NEAR', 'Total Supplied', '795.15K', '$6.50M', 'Supply APY', '3.23%', '3.23%', 'Total Borrowed', '428.64K', '$3.50M', 'Borrow APY', '7.94%', 'Available Liquidity', '366.14K', '$2.99M', 'Price', '$8.1701', 'AURORA', 'Total Supplied', '264.82K', '$120.93K', 'Supply APY', '0.22%', '0.22%', 'Total Borrowed', '21.52K', '$9.83K', 'Borrow APY', '3.48%', 'Available Liquidity', '243.06K', '$110.99K', 'Price', '$0.45665', 'WOO', 'Total Supplied', '20.97K', '$10.66K', 'Supply APY', '7.76%', '7.76%', 'Total Borrowed', '13.09K', '$6.65K', 'Borrow APY', '15.29%', 'Available Liquidity', '7.87K', '$4.00K', 'Price', '$0.508255', 'NearX', 'Total Supplied', '4.61K', '$44.16K', 'Supply APY', '<0.01%', '<0.01%', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$9.5787', 'ETH', 'Total Supplied', '157.42', '$589.93K', 'Supply APY', '0.92%', '0.92%', 'Total Borrowed', '68.06', '$255.06K', 'Borrow APY', '2.67%', 'Available Liquidity', '89.27', '$334.53K', 'Price', '$3747.45', 'WBTC', 'Total Supplied', '12.51', '$857.63K', 'Supply APY', '0.70%', '0.70%', 'Total Borrowed', '4.75', '$325.76K', 'Borrow APY', '2.34%', 'Available Liquidity', '7.75', '$531.34K', 'Price', '$68566.09', 'sFRAX', 'Total Supplied', '5.00', '$5.10', 'Supply APY', '0%', '0%', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$1.0191', 'USDC', 'USDT', 'FRAX']
+    # data_list = ['Docs', 'Bridge', 'Rainbow', 'Ethereum | Aurora', 'Aggregate Bridge', 'Arbitrum | Ethereum | Base Optimism | Scroll', '', 'Show Dust', '', '', 'USDC', 'USDT', 'FRAX', 'USDC', 'USDT', 'FRAX', 'Total Supplied', '$181.75M', 'Total Borrowed', '$49.32M', 'Available Liquidity', '$132.44M', 'Daily Rewards', '$9,403.05', 'All Markets', 'Sort by', 'Available Liquidity', 'Total Supplied', 'Supply APY', 'Total Borrowed', 'Borrow APY', 'Price', 'FRAX', 'Total Supplied', '5.26M', '$5.24M', 'Supply APY', '10.85% ~ 15.60%', '10.85% ~ 15.60%', 'Total Borrowed', '2.60M', '$2.59M', 'Borrow APY', '3.67%', 'Available Liquidity', '2.66M', '$2.65M', 'Price', '$1.00', 'USDCNative', 'Native', 'Total Supplied', '23.48M', '$23.48M', 'Supply APY', '9.00% ~ 11.74%', '9.00% ~ 11.74%', 'Total Borrowed', '18.42M', '$18.41M', 'Borrow APY', '5.88%', 'Available Liquidity', '5.06M', '$5.06M', 'Price', '$1.00', 'USDtNative', 'Native', 'Total Supplied', '26.96M', '$26.97M', 'Supply APY', '10.45% ~ 14.01%', '10.45% ~ 14.01%', 'Total Borrowed', '20.65M', '$20.65M', 'Borrow APY', '5.74%', 'Available Liquidity', '6.31M', '$6.31M', 'Price', '$1.00', 'LINEAR', 'Total Supplied', '15.51M', '$76.89M', 'Supply APY', '<0.01% ', '<0.01% ', 'Total Borrowed', '199.27K', '$988.07K', 'Borrow APY', '0.18%', 'Available Liquidity', '15.29M', '$75.83M', 'Price', '$4.96', 'STNEAR', 'Total Supplied', '5.88M', '$31.02M', 'Supply APY', '<0.01% ', '<0.01% ', 'Total Borrowed', '15.78K', '$83.28K', 'Borrow APY', '0.04%', 'Available Liquidity', '5.86M', '$30.90M', 'Price', '$5.28', 'NEAR', 'Total Supplied', '2.17M', '$8.70M', 'Supply APY', '0.44% ', '0.44% ', 'Total Borrowed', '439.07K', '$1.76M', 'Borrow APY', '2.90%', 'Available Liquidity', '1.73M', '$6.94M', 'Price', '$4.00', 'DAI', 'Total Supplied', '2.55M', '$2.55M', 'Supply APY', '3.19% ', '3.19% ', 'Total Borrowed', '1.80M', '$1.80M', 'Borrow APY', '5.27%', 'Available Liquidity', '749.73K', '$749.50K', 'Price', '$1.00', 'USDC.e', 'Total Supplied', '1.91M', '$1.91M', 'Supply APY', '3.67% ', '3.67% ', 'Total Borrowed', '1.32M', '$1.32M', 'Borrow APY', '5.15%', 'Available Liquidity', '592.29K', '$592.17K', 'Price', '$1.00', 'USDT.e', 'Total Supplied', '1.72M', '$1.72M', 'Supply APY', '2.93% ', '2.93% ', 'Total Borrowed', '1.04M', '$1.04M', 'Borrow APY', '4.51%', 'Available Liquidity', '677.82K', '$677.95K', 'Price', '$1.00', 'ETH', 'Total Supplied', '631.30', '$1.68M', 'Supply APY', '0.25% ', '0.25% ', 'Total Borrowed', '146.45', '$388.61K', 'Borrow APY', '1.42%', 'Available Liquidity', '484.36', '$1.29M', 'Price', '$2,653.43', 'WBTC', 'Total Supplied', '16.35', '$968.67K', 'Supply APY', '0.40% ', '0.40% ', 'Total Borrowed', '4.75', '$281.59K', 'Borrow APY', '1.79%', 'Available Liquidity', '11.59', '$686.39K', 'Price', '$59,236', 'BRRR', 'Total Supplied', '114.18M', '$607.71K', 'Supply APY', '0% ', '0% ', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '<$0.01', 'AURORA', 'Total Supplied', '261.70K', '$35.13K', 'Supply APY', '0.05% ', '0.05% ', 'Total Borrowed', '10.17K', '$1.37K', 'Borrow APY', '1.65%', 'Available Liquidity', '251.28K', '$33.73K', 'Price', '$0.13', 'WOO', 'Total Supplied', '23.09K', '$3.42K', 'Supply APY', '7.47% ', '7.47% ', 'Total Borrowed', '14.12K', '$2.09K', 'Borrow APY', '14.95%', 'Available Liquidity', '8.96K', '$1.33K', 'Price', '$0.15', 'NearX', 'Total Supplied', '596.47', '$2.80K', 'Supply APY', '<0.01% ', '<0.01% ', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$4.69', 'sFRAX', 'Total Supplied', '5.00', '$5.34', 'Supply APY', '0% ', '0% ', 'Total Borrowed', '-', 'Borrow APY', '-', 'Available Liquidity', '-', 'Price', '$1.07', 'USDC', 'USDT', 'FRAX', 'USDC', 'USDT', 'FRAX', '']
     # api_data_list = []
     # # soup = BeautifulSoup(content, 'html.parser')
     # # elements = soup.find_all('span')
@@ -120,18 +111,18 @@ if __name__ == "__main__":
     # # 找到第一次出现'USDC'的索引
     # first_usdc_index = data_list.index('USDC')
     # # 找到第二次出现'USDC'的索引
-    # second_usdc_index = data_list.index('USDC', first_usdc_index + 1)
+    # # second_usdc_index = data_list.index('USDC', first_usdc_index + 1)
     # # 找到紧随第二次'USDC'出现的'Supply APY'的下一个元素
-    # next_element_index = data_list.index('Supply APY', second_usdc_index) + 1
-    # usdc_api = float(data_list[next_element_index][:-1])
-    # api_data_list.append(usdc_api)
-    # usdc_e_api = float(data_list[data_list.index("USDC.e") + 5][:-1])
+    # # next_element_index = data_list.index('Supply APY', second_usdc_index) + 1
+    # # usdc_api = float(data_list[next_element_index][:-1])
+    # # api_data_list.append(usdc_api)
+    # usdc_e_api = float(data_list[data_list.index("USDC.e") + 5][:4])
     # api_data_list.append(usdc_e_api)
-    # usdt_api = float(data_list[data_list.index("USDt") + 6][:-1])
-    # api_data_list.append(usdt_api)
-    # usdt_e_api = float(data_list[data_list.index("USDT.e") + 5][:-1])
+    # # usdt_api = float(data_list[data_list.index("USDt") + 6][:-1])
+    # # api_data_list.append(usdt_api)
+    # usdt_e_api = float(data_list[data_list.index("USDT.e") + 5][:4])
     # api_data_list.append(usdt_e_api)
-    # dai_api = float(data_list[data_list.index("DAI") + 5][:-1])
+    # dai_api = float(data_list[data_list.index("DAI") + 5][:4])
     # api_data_list.append(dai_api)
     # max_api = 0
     # for da in api_data_list:
