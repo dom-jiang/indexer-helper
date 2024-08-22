@@ -48,7 +48,8 @@ def pool_price(network_id, tokens):
                     ret = conn.view_call(src, "get_virtual_price", "NA".encode(encoding='utf-8'))
                     json_str = "".join([chr(x) for x in ret["result"]])
                     price = json.loads(json_str)
-                    price = int(price) / int("1" + "0" * decimal_data[token["NEAR_ID"]])
+                    # price = int(price) / int("1" + "0" * decimal_data[token["NEAR_ID"]])
+                    price = int(price) / 100000000
                 except Exception as e:
                     print("get_virtual_price error:", e)
                     continue
@@ -135,7 +136,7 @@ def update_price(network_id):
                     if token["NEAR_ID"] == "xtoken.ref-finance.near":
                         ref_token_price = get_base_id_price(tokens_price, price_ref, decimals, token["BASE_ID"])
                         if ref_token_price > 0:
-                            price = int(token["price"]) / 100000000 * ref_token_price
+                            price = float(token["price"]) * ref_token_price
                             conn.add_token_price(network_id, token["NEAR_ID"], "%.12f" % price)
                     elif token["NEAR_ID"] == "wrap.near":
                         conn.add_token_price(network_id, token["NEAR_ID"], "%.12f" % token["price"])
@@ -163,7 +164,7 @@ def update_price(network_id):
                     if token["NEAR_ID"] == "xtoken.ref-finance.near":
                         ref_token_price = get_base_id_price(tokens_price, price_ref, decimals, token["BASE_ID"])
                         if ref_token_price > 0:
-                            price = int(token["price"]) / 100000000 * ref_token_price
+                            price = float(token["price"]) * ref_token_price
                             insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": "%.12f" % price, "decimal": decimals[token["NEAR_ID"]]})
                     elif token["NEAR_ID"] == "wrap.near":
                         insert_data_list.append({"contract_address": token["NEAR_ID"], "symbol": get_symbol(token["NEAR_ID"]), "price": "%.12f" % token["price"], "decimal": decimals[token["NEAR_ID"]]})
@@ -207,8 +208,7 @@ def get_base_id_price(tokens_price, price_ref, decimals, base_id):
     for token in tokens_price:
         if token["BASE_ID"] != "":
             if token["BASE_ID"] in price_ref and token["NEAR_ID"] == base_id:
-                ref_token_price = int(token["price"]) / int("1" + "0" * decimals[token["BASE_ID"]]) * float(
-                    price_ref[token["BASE_ID"]])
+                ref_token_price = float(price_ref[base_id])
     return ref_token_price
 
 
