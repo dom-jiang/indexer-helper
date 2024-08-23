@@ -668,6 +668,7 @@ class Cfg:
             {"SYMBOL": "$HOGE", "MD_ID": "blast-hoge"},
             {"SYMBOL": "IONX", "MD_ID": "charged-particles"},
             {"SYMBOL": "PEAS", "MD_ID": "peapods-finance"},
+            {"SYMBOL": "mUSD", "MD_ID": "manta-musd"},
         ],
     }
     MARKET_URL = MARKET_URL
