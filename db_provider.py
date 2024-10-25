@@ -277,25 +277,26 @@ def batch_add_history_token_price(data_list, network_id):
     before_time = now - (1 * 24 * 60 * 60)
     new_token_price = {}
     old_token_price = {}
+    contract_address_ids_list = []
     db_conn = get_db_connect(network_id)
     sql = "insert into mk_history_token_price(contract_address, symbol, price, `decimal`, create_time, update_time, " \
           "`status`, `timestamp`) values(%s,%s,%s,%s, now(), now(), 1, %s)"
-    sql2 = "SELECT contract_address, price FROM mk_history_token_price where contract_address in (%s) " \
-           "and `timestamp` > '%s' group by contract_address"
     insert_data = []
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
         for data in data_list:
             insert_data.append((data["contract_address"], data["symbol"], data["price"], data["decimal"], now))
             new_token_price[data["contract_address"]] = {"symbol": data["symbol"], "price": data["price"], "decimal": data["decimal"]}
+            contract_address_ids_list.append(data["contract_address"])
 
         cursor.executemany(sql, insert_data)
         db_conn.commit()
         end_time = int(time.time())
         print("insert to db time:", end_time - now)
-        contract_address_ids = ""
-        par2 = (contract_address_ids, before_time)
-        cursor.execute(sql2, par2)
+        contract_address_ids_str = ','.join(['%s'] * len(contract_address_ids_list))
+        sql2 = f"SELECT contract_address, price FROM mk_history_token_price where contract_address " \
+               f"in ({contract_address_ids_str}) and `timestamp` > '%s' group by contract_address"
+        cursor.execute(sql2, contract_address_ids_list + [before_time])
         old_rows = cursor.fetchall()
         end_time1 = int(time.time())
         print("query old price time:", end_time1 - end_time)
