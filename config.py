@@ -434,6 +434,10 @@ class Cfg:
              "DECIMAL": 18},
             {"SYMBOL": "mpDAO", "NEAR_ID": "mpdao-token.near", "MD_ID": "v2.ref-finance.near|5438|meta-pool.near",
              "DECIMAL": 6},
+            {"SYMBOL": "gnuff", "NEAR_ID": "gnuff-283.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5539|wrap.near",
+             "DECIMAL": 18},
+            {"SYMBOL": "PUMPKG", "NEAR_ID": "pumpkg-332.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5576|wrap.near",
+             "DECIMAL": 18},
         ],
         "BASE_MAINNET": [
 
