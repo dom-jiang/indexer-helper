@@ -444,6 +444,7 @@ class Cfg:
              "DECIMAL": 18},
             {"SYMBOL": "SIN", "NEAR_ID": "sin-339.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5583|wrap.near",
              "DECIMAL": 18},
+            {"SYMBOL": "USDC", "NEAR_ID": "3.contract.portalbridge.near", "MD_ID": "usd-coin", "DECIMAL": 6},
         ],
         "BASE_MAINNET": [
 
