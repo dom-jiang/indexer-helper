@@ -1002,7 +1002,6 @@ def handel_user_wallet():
 
 
 @app.route('/get-liquidation-log', methods=['GET'])
-@flask_cors.cross_origin()
 def handel_log_liquidation_log():
     ret_data = get_liquidation_log(Cfg.NETWORK_ID)
     ret = {
