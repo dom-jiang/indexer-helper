@@ -40,16 +40,6 @@ def get_db_connect(network_id):
     return conn
 
 
-def get_near_db_connect(network_id):
-    conn = pymysql.connect(
-        host=Cfg.NETWORK[network_id]["DB_HOST"],
-        port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
-        user=Cfg.NETWORK[network_id]["DB_UID"],
-        passwd=Cfg.NETWORK[network_id]["DB_PWD"],
-        db="bob")
-    return conn
-
-
 def add_near_lake_latest_actions(data_list, network_id):
     db_conn = get_db_connect(network_id)
 
@@ -610,20 +600,6 @@ def add_withdraw_reward_data(data_list, network_id):
     finally:
         cursor.close()
         db_conn.close()
-
-
-def query_near_transaction(network_id, block_number):
-    db_conn = get_near_db_connect(network_id)
-    sql = "select * from near_transaction where block_number >= %s order by block_number asc limit 10"
-    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
-    try:
-        cursor.execute(sql, block_number)
-        near_transaction_data = cursor.fetchall()
-        return near_transaction_data
-    except Exception as e:
-        print("query near_transaction to db error:", e)
-    finally:
-        cursor.close()
 
 
 if __name__ == '__main__':

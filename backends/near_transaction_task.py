@@ -6,7 +6,7 @@ import json
 import time
 import base64
 from loguru import logger
-from near_db_provider import query_near_transaction, add_near_lake_latest_actions, add_limit_order_log, add_limit_order_swap_log, \
+from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_burrow_event_log, add_swap_log, add_swap, add_swap_desire, add_liquidity_added, add_liquidity_removed, \
     add_lostfound, add_order_added, add_order_cancelled, add_order_completed, add_claim_charged_fee, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
@@ -14,8 +14,21 @@ from near_db_provider import query_near_transaction, add_near_lake_latest_action
 
 
 def get_near_transaction_data(network_id, block_number):
-    transaction_data_list = query_near_transaction(network_id, block_number)
-    block_number = handel_transaction_data(transaction_data_list, block_number)
+    args = "/api/v1/near/%s/getTransactions?startBlockNumber=%s&limit=20" % (network_id, block_number)
+    try:
+        headers = {
+            'AccessKey': Cfg.DB3_ACCESS_KEY
+        }
+        response = requests.get(Cfg.DB3_URL + args, headers=headers)
+        ret_data = response.text
+        near_transaction_data = json.loads(ret_data)
+        if near_transaction_data["returnCode"] != 20000:
+            print("db3 transaction list error:", near_transaction_data)
+        else:
+            transaction_data_list = near_transaction_data["data"]["transactions"]
+            block_number = handel_transaction_data(transaction_data_list, block_number)
+    except Exception as e:
+        print("get_near_transaction_data error: ", e)
     return block_number
 
 
@@ -24,25 +37,23 @@ def handel_transaction_data(transaction_data_list, block_number):
     swap_data_list = []
     liquidity_data_list = []
     farm_data_list = []
-    latest_actions_list = []
     burrow_date_list = []
     not_registered_data_list = []
     liquidity_pools_list = []
     withdraw_reward_insert_data = []
     for transaction_data in transaction_data_list:
         data_block_number = transaction_data["block_number"]
-        if int(data_block_number) > block_number:
+        if int(data_block_number) >= block_number:
             block_number = int(data_block_number) + 1
         tx_hash = transaction_data["tx_hash"]
         tx_time = transaction_data["tx_time"]
-        logs = json.loads(transaction_data["logs"])
+        logs = transaction_data["logs"]
         receiver_id = transaction_data["receiver_id"]
         receipt_id = transaction_data["receipt_id"]
-        receipt = json.loads(transaction_data["receipt"])
+        receipt = transaction_data["receipt"]
         predecessor_id = transaction_data["predecessor_id"]
         receipt_status = transaction_data["receipt_status"]
-        status_data = json.loads(receipt_status)
-        if "'Success" in receipt_status:
+        if '"Success' in receipt_status:
             handle_log_content(receipt_id, data_block_number, predecessor_id, receiver_id, logs, tx_time,
                                receipt, xref_data_list, swap_data_list, liquidity_data_list,
                                farm_data_list)
@@ -50,20 +61,12 @@ def handel_transaction_data(transaction_data_list, block_number):
             handle_withdraw_reward_content(receipt_id, data_block_number, logs, tx_time, withdraw_reward_insert_data)
             handle_not_registered_logs_content(logs, receipt, tx_hash, receipt_id, tx_time, data_block_number,
                                                receiver_id, not_registered_data_list)
-        status = ""
-        try:
-            for status_key in status_data.keys():
-                status = status_key
-        except Exception as e:
-            logger.error("status error:{}", e)
-        handle_latest_actions_content(receipt, predecessor_id, receipt_id, tx_time, receiver_id, status,
-                                      latest_actions_list, tx_hash)
-        if "contract.main.burrow.near" == receiver_id and "'Success" in receipt_status:
+        if "contract.main.burrow.near" == receiver_id and '"Success' in receipt_status:
             handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, burrow_date_list,
                               receipt)
-        if "dclv2.ref-labs.near" == receiver_id and "'Success" in receipt_status:
-            handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt)
-        if receiver_id == "v2.ref-finance.near" and "'Success" in receipt_status:
+        if "dclv2.ref-labs.near" == receiver_id and '"Success' in receipt_status:
+            handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt, predecessor_id, receiver_id)
+        if receiver_id == "v2.ref-finance.near" and '"Success' in receipt_status:
             handle_liquidity_pools_content(receipt, predecessor_id, receipt_id, liquidity_pools_list)
     if len(swap_data_list) > 0:
         add_swap_log(swap_data_list, network_id)
@@ -73,8 +76,6 @@ def handel_transaction_data(transaction_data_list, block_number):
         add_xref_log(xref_data_list, network_id)
     if len(farm_data_list) > 0:
         add_farm_log(farm_data_list, network_id)
-    if len(latest_actions_list) > 0:
-        add_near_lake_latest_actions(latest_actions_list, network_id)
     if len(burrow_date_list) > 0:
         add_burrow_event_log(burrow_date_list, network_id)
     if len(not_registered_data_list) > 0:
@@ -816,7 +817,7 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                             farm_data_list.append(farm_data)
 
 
-def handle_dcl_log(logs, tx_id, block_id, timestamp, network, receipt):
+def handle_dcl_log(logs, tx_id, block_id, timestamp, network, receipt, predecessor_id, receiver_id):
     for log in logs:
         # logger.info("log:{}", log)
         if not log.startswith("EVENT_JSON:"):
@@ -826,7 +827,7 @@ def handle_dcl_log(logs, tx_id, block_id, timestamp, network, receipt):
         except json.JSONDecodeError:
             logger.error("Error during parsing logs from JSON string to dict")
             continue
-        handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, receipt)
+        handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, receipt, predecessor_id, receiver_id)
 
 
 def handle_dcl_receipt_args_content(content):
@@ -843,10 +844,8 @@ def handle_dcl_receipt_args_content(content):
     return res
 
 
-def handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, receipt):
+def handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, receipt, predecessor_id, receiver_id):
     args = json.dumps(handle_dcl_receipt_args_content(receipt))
-    predecessor_id = receipt.predecessor_id
-    receiver_id = receipt.receiver_id
     event = parsed_log.get("event")
     if "swap" == event:
         swap_date_list = []
@@ -1279,11 +1278,11 @@ def to_under_line(x):
 if __name__ == "__main__":
     print("-----------------------------")
     network_id = "MAINNET"
-    start_block_number = 123369863
-    # while True:
-    #     new_block_number = get_near_transaction_data(network_id, start_block_number)
-    #     print("block_number:", new_block_number)
-    #     time.sleep(1)
+    start_block_number = Cfg.DB3_START_BLOCK_NUMBER
+    while True:
+        start_block_number = get_near_transaction_data(network_id.lower(), start_block_number)
+        print("block_number:", start_block_number)
+        time.sleep(1)
 
-    new_block_number = get_near_transaction_data(network_id, start_block_number)
-    print("new_block_number:", new_block_number)
+    # new_block_number = get_near_transaction_data(network_id, start_block_number)
+    # print("new_block_number:", new_block_number)
