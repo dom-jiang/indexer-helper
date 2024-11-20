@@ -1281,7 +1281,7 @@ if __name__ == "__main__":
     start_block_number = Cfg.DB3_START_BLOCK_NUMBER
     while True:
         start_block_number = get_near_transaction_data(network_id.lower(), start_block_number)
-        print("block_number:", start_block_number)
+        logger.info("block_number:{}", start_block_number)
         time.sleep(1)
 
     # new_block_number = get_near_transaction_data(network_id, start_block_number)
