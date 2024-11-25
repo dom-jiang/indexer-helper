@@ -21,7 +21,7 @@ from db_provider import query_recent_transaction_swap, query_recent_transaction_
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
     query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
     query_dcl_user_tvl, query_dcl_user_change_log, query_burrow_log, get_history_token_price_by_token, add_orderly_trading_data, \
-    add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info
+    add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info, get_liquidation_log
 import re
 # from flask_limiter import Limiter
 from loguru import logger
@@ -998,6 +998,17 @@ def handel_user_wallet():
             "msg": "error",
             "data": e.args
         }
+    return ret
+
+
+@app.route('/get-liquidation-log', methods=['GET'])
+def handel_log_liquidation_log():
+    ret_data = get_liquidation_log(Cfg.NETWORK_ID)
+    ret = {
+        "code": 0,
+        "msg": "success",
+        "data": ret_data
+    }
     return ret
 
 
