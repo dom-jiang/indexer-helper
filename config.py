@@ -50,7 +50,7 @@ except ImportError:
 
 
 try:
-    from db_info import MARKET_KEY, MARKET_URL, AUTH_SWITCH, NOT_AUTH_LIST, SIGN_EXPIRE, CRYPTO_AES_KEY, REF_URL, REF_SDK_URL, DB3_URL, DB3_ACCESS_KEY, DB3_START_BLOCK_NUMBER
+    from db_info import MARKET_KEY, MARKET_URL, AUTH_SWITCH, NOT_AUTH_LIST, SIGN_EXPIRE, CRYPTO_AES_KEY, REF_URL, REF_SDK_URL, DB3_URL, DB3_ACCESS_KEY, DB3_START_ID
 except ImportError:
     MARKET_KEY = ""
     MARKET_URL = ""
@@ -62,7 +62,7 @@ except ImportError:
     REF_SDK_URL = ""
     DB3_URL = ""
     DB3_ACCESS_KEY = ""
-    DB3_START_BLOCK_NUMBER = 132961470
+    DB3_START_ID = 1
 
 """
 
@@ -481,7 +481,7 @@ class Cfg:
                      "token.v2.ref-finance.near", "xtoken.ref-finance.near", "burrow.sputnik-dao.near",
                      "contract.main.burrow.near", "token.burrow.near", "v2.ref-farming.near", "boostfarm.ref-labs.near",
                      "meme-farming_011.ref-labs.near"]
-    DB3_START_BLOCK_NUMBER = DB3_START_BLOCK_NUMBER
+    DB3_START_ID = DB3_START_ID
 
 
 if __name__ == '__main__':
