@@ -858,10 +858,10 @@ def handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, rece
                 pool_id = str(data["pool_ids"])
             if "pool_id" in data:
                 pool_id = data["pool_id"]
-            if "protocol_fee_amounts" in data:
-                protocol_fee_amounts = str(data["protocol_fee_amounts"])
-            if "total_fee_amounts" in data:
-                total_fee_amounts = str(data["total_fee_amounts"])
+            if "protocol_fee" in data:
+                protocol_fee_amounts = str(data["protocol_fee"])
+            if "total_fee" in data:
+                total_fee_amounts = str(data["total_fee"])
             swap_date = {
                 "swapper": data["swapper"],
                 "token_in": data["token_in"],
