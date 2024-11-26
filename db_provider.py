@@ -1374,6 +1374,74 @@ def add_user_wallet_info(network_id, account_id, wallet_address):
         cursor.close()
 
 
+def add_near_lake_latest_actions(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into near_lake_latest_actions(timestamp, tx_id, receiver_account_id, method_name, args, " \
+          "deposit, status, predecessor_account_id, receiver_id, receipt_id, create_time) " \
+          "values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["timestamp"], data["tx_id"], data["receiver_account_id"], data["method_name"],
+                                data["args"], data["deposit"], data["status"], data["predecessor_account_id"],
+                                data["receiver_id"], data["receipt_id"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert near lake latest actions log to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def add_liquidate_log(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into t_liquidate_log(block_number, tx_hash, tx_time, sender, receive, type, sub_type, dapp, gas, " \
+          "trading_usd, extra_data, token_in, token_in_1, token_out, token_out_1, tokens_in, tokens_out, " \
+          "created_time, updated_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["block_number"], data["tx_hash"], data["tx_time"], data["sender"], data["receive"],
+                                data["type"], data["sub_type"], data["dapp"], data["gas"], data["trading_usd"],
+                                data["extra_data"], data["token_in"], data["token_in_1"], data["token_out"],
+                                data["token_out_1"], data["tokens_in"], data["tokens_out"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert liquidata log to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_liquidation_log(network_id):
+    db_conn = get_db_connect(network_id)
+    sql = "select * from t_liquidate_log order by tx_time desc limit 50"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        row = cursor.fetchall()
+        return row
+    except Exception as e:
+        db_conn.rollback()
+        print("query liquidation_log to db error:", e)
+    finally:
+        cursor.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
