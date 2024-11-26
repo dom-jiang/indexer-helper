@@ -460,6 +460,8 @@ class Cfg:
              "MD_ID": "v2.ref-finance.near|5496|wrap.near", "DECIMAL": 18},
             {"SYMBOL": "PURGE", "NEAR_ID": "purge-558.meme-cooking.near",
              "MD_ID": "v2.ref-finance.near|5650|wrap.near", "DECIMAL": 18},
+            {"SYMBOL": "ABG", "NEAR_ID": "abg-966.meme-cooking.near",
+             "MD_ID": "v2.ref-finance.near|5720|wrap.near", "DECIMAL": 18},
         ],
         "BASE_MAINNET": [
 
