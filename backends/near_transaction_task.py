@@ -13,8 +13,8 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_withdraw_reward_data
 
 
-def get_near_transaction_data(network_id, block_number):
-    args = "/api/v1/near/%s/getTransactions?startBlockNumber=%s&limit=20" % (network_id, block_number)
+def get_near_transaction_data(network_id, start_id):
+    args = "/api/v1/near/%s/getTransactions?id=%s&limit=20" % (network_id, start_id)
     try:
         headers = {
             'AccessKey': Cfg.DB3_ACCESS_KEY
@@ -26,13 +26,13 @@ def get_near_transaction_data(network_id, block_number):
             print("db3 transaction list error:", near_transaction_data)
         else:
             transaction_data_list = near_transaction_data["data"]["transactions"]
-            block_number = handel_transaction_data(transaction_data_list, block_number)
+            start_id = handel_transaction_data(transaction_data_list, start_id)
     except Exception as e:
         print("get_near_transaction_data error: ", e)
-    return block_number
+    return start_id
 
 
-def handel_transaction_data(transaction_data_list, block_number):
+def handel_transaction_data(transaction_data_list, start_id):
     xref_data_list = []
     swap_data_list = []
     liquidity_data_list = []
@@ -42,9 +42,10 @@ def handel_transaction_data(transaction_data_list, block_number):
     liquidity_pools_list = []
     withdraw_reward_insert_data = []
     for transaction_data in transaction_data_list:
+        data_id = transaction_data["ID"]
         data_block_number = transaction_data["block_number"]
-        if int(data_block_number) >= block_number:
-            block_number = int(data_block_number) + 1
+        if int(data_id) >= start_id:
+            start_id = int(data_id) + 1
         tx_hash = transaction_data["tx_hash"]
         tx_time = transaction_data["tx_time"]
         logs = transaction_data["logs"]
@@ -84,7 +85,7 @@ def handel_transaction_data(transaction_data_list, block_number):
         add_liquidity_pools(liquidity_pools_list, network_id)
     if len(withdraw_reward_insert_data) > 0:
         add_withdraw_reward_data(withdraw_reward_insert_data, network_id)
-    return block_number
+    return start_id
 
 
 def handle_liquidity_pools_content(receipt, predecessor_id, receipt_id, liquidity_pools_list):
@@ -326,7 +327,6 @@ def handle_burrow_log_content(parsed_log, receipt_id, block_id, timestamp, prede
     args_list = handle_burrow_args(receipt)
     args = args_list[0]
     if event == "liquidate":
-        logger.info("args:{}", args_list[liquidate_number])
         args = args_list[liquidate_number]
         liquidate_number += 1
     event_json_data = parsed_log.get("data")
@@ -858,10 +858,10 @@ def handle_dcl_log_content(parsed_log, tx_id, block_id, timestamp, network, rece
                 pool_id = str(data["pool_ids"])
             if "pool_id" in data:
                 pool_id = data["pool_id"]
-            if "protocol_fee_amounts" in data:
-                protocol_fee_amounts = str(data["protocol_fee_amounts"])
-            if "total_fee_amounts" in data:
-                total_fee_amounts = str(data["total_fee_amounts"])
+            if "protocol_fee" in data:
+                protocol_fee_amounts = str(data["protocol_fee"])
+            if "total_fee" in data:
+                total_fee_amounts = str(data["total_fee"])
             swap_date = {
                 "swapper": data["swapper"],
                 "token_in": data["token_in"],
@@ -1278,11 +1278,8 @@ def to_under_line(x):
 if __name__ == "__main__":
     print("-----------------------------")
     network_id = "MAINNET"
-    start_block_number = Cfg.DB3_START_BLOCK_NUMBER
+    start_id = Cfg.DB3_START_ID
     while True:
-        start_block_number = get_near_transaction_data(network_id.lower(), start_block_number)
-        logger.info("block_number:{}", start_block_number)
+        start_id = get_near_transaction_data(network_id.lower(), start_id)
+        logger.info("start_id:{}", start_id)
         time.sleep(1)
-
-    # new_block_number = get_near_transaction_data(network_id, start_block_number)
-    # print("new_block_number:", new_block_number)
