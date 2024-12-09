@@ -468,6 +468,7 @@ class Cfg:
              "MD_ID": "v2.ref-finance.near|5720|wrap.near", "DECIMAL": 18},
             {"SYMBOL": "DUCT", "NEAR_ID": "duct-1078.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5741|wrap.near",
              "DECIMAL": 18},
+            {"SYMBOL": "Bullish", "NEAR_ID": "bullish-1254.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5787|wrap.near", "DECIMAL": 18},
         ],
         "BASE_MAINNET": [
 
