@@ -10,7 +10,7 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_burrow_event_log, add_swap_log, add_swap, add_swap_desire, add_liquidity_added, add_liquidity_removed, \
     add_lostfound, add_order_added, add_order_cancelled, add_order_completed, add_claim_charged_fee, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
-    add_withdraw_reward_data
+    add_withdraw_reward_data, add_meme_burrow_event_log
 
 
 def get_near_transaction_data(network_id, start_id):
@@ -38,6 +38,7 @@ def handel_transaction_data(transaction_data_list, start_id):
     liquidity_data_list = []
     farm_data_list = []
     burrow_date_list = []
+    meme_burrow_date_list = []
     not_registered_data_list = []
     liquidity_pools_list = []
     withdraw_reward_insert_data = []
@@ -63,8 +64,9 @@ def handel_transaction_data(transaction_data_list, start_id):
             handle_not_registered_logs_content(logs, receipt, tx_hash, receipt_id, tx_time, data_block_number,
                                                receiver_id, not_registered_data_list)
         if "contract.main.burrow.near" == receiver_id and '"Success' in receipt_status:
-            handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, burrow_date_list,
-                              receipt)
+            handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, burrow_date_list, receipt)
+        if "meme-burrow.ref-labs.near" == receiver_id and '"Success' in receipt_status:
+            handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, meme_burrow_date_list, receipt)
         if "dclv2.ref-labs.near" == receiver_id and '"Success' in receipt_status:
             handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt, predecessor_id, receiver_id)
         if receiver_id == "v2.ref-finance.near" and '"Success' in receipt_status:
@@ -79,6 +81,8 @@ def handel_transaction_data(transaction_data_list, start_id):
         add_farm_log(farm_data_list, network_id)
     if len(burrow_date_list) > 0:
         add_burrow_event_log(burrow_date_list, network_id)
+    if len(meme_burrow_date_list) > 0:
+        add_meme_burrow_event_log(meme_burrow_date_list, network_id)
     if len(not_registered_data_list) > 0:
         add_account_not_registered_logs(not_registered_data_list, network_id)
     if len(liquidity_pools_list) > 0:

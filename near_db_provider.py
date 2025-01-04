@@ -150,6 +150,35 @@ def add_burrow_event_log(data_list, network_id):
         db_conn.close()
 
 
+def add_meme_burrow_event_log(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into meme_burrow_event_log(event, account_id, amount, token_id, receipt_id, block_id, " \
+          "predecessor_id, liquidation_account_id, collateral_sum, repaid_sum, booster_amount, duration, " \
+          "x_booster_amount, total_booster_amount, total_x_booster_amount, `timestamp`, create_time, position, args) " \
+          "values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["event"], data["account_id"], data["amount"], data["token_id"], data["receipt_id"],
+                                data["block_id"], data["predecessor_id"], data["liquidation_account_id"],
+                                data["collateral_sum"], data["repaid_sum"], data["booster_amount"], data["duration"],
+                                data["x_booster_amount"], data["total_booster_amount"], data["total_x_booster_amount"],
+                                data["timestamp"], data["position"], data["args"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        logger.error("insert burrow_event_log to db error:{}", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 def add_swap_log(data_list, network_id):
     db_conn = get_db_connect(network_id)
 
