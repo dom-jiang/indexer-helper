@@ -18,6 +18,8 @@
 * * * * * sleep 30; /indexer-helper/backends/backend_update_pools_4.sh
 * * * * * /indexer-helper/backends/backend_update_pools_5.sh
 * * * * * sleep 30; /indexer-helper/backends/backend_update_pools_5.sh
+* * * * * /indexer-helper/backends/backend_update_pools_6.sh
+* * * * * sleep 30; /indexer-helper/backends/backend_update_pools_6.sh
 2 */1 * * * /indexer-helper/backends/backend_dcl_pools.sh
 10 */1 * * * /indexer-helper/backends/backend_analysis_pool_and_farm_data_s3.sh
 10 */1 * * * /indexer-helper/backends/backend_token_price_ratio_report.sh
