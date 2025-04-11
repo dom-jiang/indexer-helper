@@ -347,6 +347,8 @@ def handle_burrow_log_content(parsed_log, receipt_id, block_id, timestamp, prede
         total_booster_amount = 0
         total_x_booster_amount = 0
         position = "REGULAR"
+        collateral_assets = ""
+        repaid_assets = ""
         if "account_id" in data:
             account_id = data["account_id"]
         if "amount" in data:
@@ -371,6 +373,10 @@ def handle_burrow_log_content(parsed_log, receipt_id, block_id, timestamp, prede
             total_x_booster_amount = data["total_x_booster_amount"]
         if "position" in data:
             position = data["position"]
+        if "collateral_assets" in data:
+            collateral_assets = json.dumps(data["collateral_assets"])
+        if "repaid_assets" in data:
+            repaid_assets = json.dumps(data["repaid_assets"])
         burrow_date = {
             "event": event,
             "account_id": account_id,
@@ -389,7 +395,9 @@ def handle_burrow_log_content(parsed_log, receipt_id, block_id, timestamp, prede
             "total_x_booster_amount": total_x_booster_amount,
             "position": position,
             "timestamp": timestamp,
-            "args": args
+            "args": args,
+            "collateral_assets": collateral_assets,
+            "repaid_assets": repaid_assets
         }
         burrow_date_list.append(burrow_date)
 
