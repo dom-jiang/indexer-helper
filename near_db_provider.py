@@ -156,8 +156,8 @@ def add_meme_burrow_event_log(data_list, network_id):
 
     sql = "insert into meme_burrow_event_log(event, account_id, amount, token_id, receipt_id, block_id, " \
           "predecessor_id, liquidation_account_id, collateral_sum, repaid_sum, booster_amount, duration, " \
-          "x_booster_amount, total_booster_amount, total_x_booster_amount, `timestamp`, create_time, position, args) " \
-          "values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)"
+          "x_booster_amount, total_booster_amount, total_x_booster_amount, `timestamp`, create_time, position, args, " \
+          "collateral_assets, repaid_assets) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s)"
 
     insert_data = []
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
@@ -167,7 +167,8 @@ def add_meme_burrow_event_log(data_list, network_id):
                                 data["block_id"], data["predecessor_id"], data["liquidation_account_id"],
                                 data["collateral_sum"], data["repaid_sum"], data["booster_amount"], data["duration"],
                                 data["x_booster_amount"], data["total_booster_amount"], data["total_x_booster_amount"],
-                                data["timestamp"], data["position"], data["args"]))
+                                data["timestamp"], data["position"], data["args"], data["collateral_assets"],
+                                data["repaid_assets"]))
 
         cursor.executemany(sql, insert_data)
         db_conn.commit()
