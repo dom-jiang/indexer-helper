@@ -181,6 +181,30 @@ def add_meme_burrow_event_log(data_list, network_id):
         db_conn.close()
 
 
+def add_burrow_fee_log(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into burrow_fee_log(event, fee_type, interest, prot_fee, reserved, token_id, receipt_id, " \
+          "block_id, timestamp, created_at, updated_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["event"], data["fee_type"], data["interest"], data["prot_fee"], data["reserved"],
+                                data["token_id"], data["receipt_id"], data["block_id"], data["timestamp"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        logger.error("insert burrow_fee_log to db error:{}", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 def add_swap_log(data_list, network_id):
     db_conn = get_db_connect(network_id)
 

@@ -10,7 +10,7 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_burrow_event_log, add_swap_log, add_swap, add_swap_desire, add_liquidity_added, add_liquidity_removed, \
     add_lostfound, add_order_added, add_order_cancelled, add_order_completed, add_claim_charged_fee, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
-    add_withdraw_reward_data, add_meme_burrow_event_log
+    add_withdraw_reward_data, add_meme_burrow_event_log, add_burrow_fee_log
 
 
 def get_near_transaction_data(network_id, start_id):
@@ -42,6 +42,7 @@ def handel_transaction_data(transaction_data_list, start_id):
     not_registered_data_list = []
     liquidity_pools_list = []
     withdraw_reward_insert_data = []
+    burrow_fee_date_list = []
     for transaction_data in transaction_data_list:
         data_id = transaction_data["ID"]
         data_block_number = transaction_data["block_number"]
@@ -65,6 +66,7 @@ def handel_transaction_data(transaction_data_list, start_id):
                                                receiver_id, not_registered_data_list)
         if "contract.main.burrow.near" == receiver_id and '"Success' in receipt_status:
             handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, burrow_date_list, receipt)
+            handle_burrow_fee_log(logs, receipt_id, data_block_number, tx_time, burrow_fee_date_list)
         if "meme-burrow.ref-labs.near" == receiver_id and '"Success' in receipt_status:
             handle_burrow_log(logs, receipt_id, data_block_number, tx_time, predecessor_id, meme_burrow_date_list, receipt)
         if "dclv2.ref-labs.near" == receiver_id and '"Success' in receipt_status:
@@ -89,6 +91,8 @@ def handel_transaction_data(transaction_data_list, start_id):
         add_liquidity_pools(liquidity_pools_list, network_id)
     if len(withdraw_reward_insert_data) > 0:
         add_withdraw_reward_data(withdraw_reward_insert_data, network_id)
+    if len(burrow_fee_date_list) > 0:
+        add_burrow_fee_log(burrow_fee_date_list, network_id)
     return start_id
 
 
@@ -1280,6 +1284,52 @@ def handle_withdraw_reward_content(receipt_id, block_id, logs, timestamp, withdr
         except Exception as e:
             logger.error("analysis withdraw reward log error:{}", e)
             continue
+
+
+def handle_burrow_fee_log(logs, receipt_id, block_id, timestamp, burrow_fee_date_list):
+    for log in logs:
+        if not log.startswith("EVENT_JSON:"):
+            continue
+        try:
+            parsed_log = json.loads(log[len("EVENT_JSON:"):])
+        except json.JSONDecodeError:
+            logger.error("Error during parsing logs from JSON string to dict")
+            continue
+        handle_burrow_fee_log_content(parsed_log, receipt_id, block_id, timestamp, burrow_fee_date_list)
+
+
+def handle_burrow_fee_log_content(parsed_log, receipt_id, block_id, timestamp, burrow_fee_date_list):
+    event = parsed_log.get("event")
+    if event == "fee_detail":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            fee_type = ""
+            interest = 0
+            prot_fee = 0
+            reserved = 0
+            token_id = ""
+            if "fee_type" in data:
+                fee_type = data["fee_type"]
+            if "interest" in data:
+                interest = data["interest"]
+            if "prot_fee" in data:
+                prot_fee = data["prot_fee"]
+            if "reserved" in data:
+                reserved = data["reserved"]
+            if "token_id" in data:
+                token_id = data["token_id"]
+            burrow_date = {
+                "event": event,
+                "fee_type": fee_type,
+                "interest": interest,
+                "prot_fee": prot_fee,
+                "reserved": reserved,
+                "token_id": token_id,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            burrow_fee_date_list.append(burrow_date)
 
 
 def to_under_line(x):
