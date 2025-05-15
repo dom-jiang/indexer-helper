@@ -1457,6 +1457,21 @@ def get_burrow_fee_log_data(network_id):
     return
 
 
+def get_burrow_fee_log_24h_data(network_id, old_time):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select * from burrow_fee_log where `timestamp` >= %s"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, old_time)
+        fee_log_data = cursor.fetchall()
+        return fee_log_data
+    except Exception as e:
+        print("insert get_meme_burrow_event_data to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
 def update_burrow_fee_log_data(network_id, log_id_list):
     db_conn = get_db_connect(network_id)
     log_ids_str = ','.join(['%s'] * len(log_id_list))

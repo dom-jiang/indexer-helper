@@ -23,4 +23,4 @@
 2 */1 * * * /indexer-helper/backends/backend_dcl_pools.sh
 10 */1 * * * /indexer-helper/backends/backend_analysis_pool_and_farm_data_s3.sh
 10 */1 * * * /indexer-helper/backends/backend_token_price_ratio_report.sh
-*/5 * * * * /indexer-helper/backends/backend_burrow_fee_log.sh
+*/10 * * * * /indexer-helper/backends/backend_burrow_fee_log.sh
