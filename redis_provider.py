@@ -310,6 +310,20 @@ def get_market_token_price():
     return ret
 
 
+def get_burrow_total_fee():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("BURROW_TOTAL_FEE")
+    r.close()
+    return ret
+
+
+def get_burrow_total_revenue():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("BURROW_TOTAL_REVENUE")
+    r.close()
+    return ret
+
+
 def get_history_token_price_report(network_id, key):
     r = redis.StrictRedis(connection_pool=pool)
     ret = r.hget(Cfg.NETWORK[network_id]["REDIS_HISTORY_TOKEN_PRICE_REPORT_KEY"], key)
@@ -400,6 +414,12 @@ class RedisProvider(object):
 
     def add_history_token_price_report(self, network_id, key, value):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_HISTORY_TOKEN_PRICE_REPORT_KEY"], key, value)
+
+    def add_burrow_total_fee(self, value):
+        self.r.set("BURROW_TOTAL_FEE", value)
+
+    def add_burrow_total_revenue(self, value):
+        self.r.set("BURROW_TOTAL_REVENUE", value)
 
     def close(self):
         self.r.close()

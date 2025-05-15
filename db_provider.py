@@ -1442,6 +1442,36 @@ def get_liquidation_log(network_id):
         cursor.close()
 
 
+def get_burrow_fee_log_data(network_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select id, interest, prot_fee, reserved, token_id from burrow_fee_log where `is_count` = '0'"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql)
+        fee_log_data = cursor.fetchall()
+        return fee_log_data
+    except Exception as e:
+        print("insert get_meme_burrow_event_data to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def update_burrow_fee_log_data(network_id, log_id_list):
+    db_conn = get_db_connect(network_id)
+    log_ids_str = ','.join(['%s'] * len(log_id_list))
+    update_sql = f"update burrow_fee_log set is_count = '1' where id in ({log_ids_str})"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(update_sql, log_id_list)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_burrow_fee_log_data to db error:", e)
+    finally:
+        cursor.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
