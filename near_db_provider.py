@@ -657,5 +657,32 @@ def add_withdraw_reward_data(data_list, network_id):
         db_conn.close()
 
 
+def add_conversion_token_log(data_list, network_id):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into conversion_token_log(`event`, conversion_id, conversion_type, account_id, source_token_id, target_token_id, " \
+          "source_amount, target_amount, start_time_ms, end_time_ms, token_id, amount, block_id, `timestamp`, receipt_id, " \
+          "created_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["event"], data["conversion_id"], data["conversion_type"], data["account_id"],
+                                data["source_token_id"], data["target_token_id"], data["source_amount"], data["target_amount"], data["start_time_ms"],
+                                data["end_time_ms"], data["token_id"], data["amount"],
+                                data["block_id"], data["timestamp"], data["receipt_id"]))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        logger.error("insert near_lake_swap_log to db error:{}", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     logger.info("#########MAINNET###########")

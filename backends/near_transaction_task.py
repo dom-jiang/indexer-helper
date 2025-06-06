@@ -10,7 +10,7 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_burrow_event_log, add_swap_log, add_swap, add_swap_desire, add_liquidity_added, add_liquidity_removed, \
     add_lostfound, add_order_added, add_order_cancelled, add_order_completed, add_claim_charged_fee, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
-    add_withdraw_reward_data, add_meme_burrow_event_log, add_burrow_fee_log
+    add_withdraw_reward_data, add_meme_burrow_event_log, add_burrow_fee_log, add_conversion_token_log
 
 
 def get_near_transaction_data(network_id, start_id):
@@ -43,6 +43,7 @@ def handel_transaction_data(transaction_data_list, start_id):
     liquidity_pools_list = []
     withdraw_reward_insert_data = []
     burrow_fee_date_list = []
+    conversion_token_date_list = []
     for transaction_data in transaction_data_list:
         data_id = transaction_data["ID"]
         data_block_number = transaction_data["block_number"]
@@ -73,6 +74,8 @@ def handel_transaction_data(transaction_data_list, start_id):
             handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt, predecessor_id, receiver_id)
         if receiver_id == "v2.ref-finance.near" and '"Success' in receipt_status:
             handle_liquidity_pools_content(receipt, predecessor_id, receipt_id, liquidity_pools_list)
+        if "token-conversion.stg.ref-dev-team.near" == receiver_id and '"Success' in receipt_status:
+            handle_conversion_token_log(logs, receipt_id, data_block_number, tx_time, conversion_token_date_list)
     if len(swap_data_list) > 0:
         add_swap_log(swap_data_list, network_id)
     if len(liquidity_data_list) > 0:
@@ -93,6 +96,8 @@ def handel_transaction_data(transaction_data_list, start_id):
         add_withdraw_reward_data(withdraw_reward_insert_data, network_id)
     if len(burrow_fee_date_list) > 0:
         add_burrow_fee_log(burrow_fee_date_list, network_id)
+    if len(conversion_token_date_list) > 0:
+        add_conversion_token_log(conversion_token_date_list, network_id)
     return start_id
 
 
@@ -1330,6 +1335,214 @@ def handle_burrow_fee_log_content(parsed_log, receipt_id, block_id, timestamp, b
                 "timestamp": timestamp,
             }
             burrow_fee_date_list.append(burrow_date)
+
+
+def handle_conversion_token_log(logs, receipt_id, block_id, timestamp, conversion_token_date_list):
+    for log in logs:
+        if not log.startswith("EVENT_JSON:"):
+            continue
+        try:
+            parsed_log = json.loads(log[len("EVENT_JSON:"):])
+        except json.JSONDecodeError:
+            logger.error("Error during parsing logs from JSON string to dict")
+            continue
+        handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list)
+
+
+def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list):
+    conversion_type = ""
+    source_token_id = ""
+    source_amount = ""
+    start_time_ms = ""
+    end_time_ms = ""
+    conversion_id = ""
+    target_token_id = ""
+    target_amount = ""
+    account_id = ""
+    token_id = ""
+    amount = ""
+    event = parsed_log.get("event")
+    if event == "create_conversion":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            if "conversion_id" in data:
+                conversion_id = data["conversion_id"]
+            if "conversion_type" in data:
+                conversion_type = data["conversion_type"]
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "source_token_id" in data:
+                source_token_id = data["source_token_id"]
+            if "target_token_id" in data:
+                target_token_id = data["target_token_id"]
+            if "source_amount" in data:
+                source_amount = data["source_amount"]
+            if "target_amount" in data:
+                target_amount = data["target_amount"]
+            if "start_time_ms" in data:
+                start_time_ms = data["start_time_ms"]
+            if "end_time_ms" in data:
+                end_time_ms = data["end_time_ms"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
+    elif event == "deposit_target_token":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "token_id" in data:
+                token_id = data["token_id"]
+            if "amount" in data:
+                amount = data["amount"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
+    elif event == "claim_succeeded":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            if "conversion_id" in data:
+                conversion_id = data["conversion_id"]
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "target_token_id" in data:
+                target_token_id = data["target_token_id"]
+            if "target_amount" in data:
+                target_amount = data["target_amount"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
+    elif event == "claim_failed":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            if "conversion_id" in data:
+                conversion_id = data["conversion_id"]
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "target_token_id" in data:
+                target_token_id = data["target_token_id"]
+            if "target_amount" in data:
+                target_amount = data["target_amount"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
+    elif event == "withdraw_source_token_succeeded":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            account_id = ""
+            token_id = ""
+            amount = ""
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "token_id" in data:
+                token_id = data["token_id"]
+            if "amount" in data:
+                amount = data["amount"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
+    elif event == "withdraw_source_token_failed":
+        event_json_data = parsed_log.get("data")
+        for data in event_json_data:
+            if "account_id" in data:
+                account_id = data["account_id"]
+            if "token_id" in data:
+                token_id = data["token_id"]
+            if "amount" in data:
+                amount = data["amount"]
+            conversion_token_date = {
+                "event": event,
+                "conversion_id": conversion_id,
+                "conversion_type": conversion_type,
+                "account_id": account_id,
+                "source_token_id": source_token_id,
+                "target_token_id": target_token_id,
+                "source_amount": source_amount,
+                "target_amount": target_amount,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+                "token_id": token_id,
+                "amount": amount,
+                "receipt_id": receipt_id,
+                "block_id": block_id,
+                "timestamp": timestamp,
+            }
+            conversion_token_date_list.append(conversion_token_date)
 
 
 def to_under_line(x):
