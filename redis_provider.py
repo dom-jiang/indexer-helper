@@ -384,6 +384,9 @@ class RedisProvider(object):
 
     def add_token_metadata(self, network_id, contract_id, metadata_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_TOKEN_METADATA_KEY"], contract_id, metadata_str)
+
+    def add_burrow_token_metadata(self, network_id, contract_id, metadata_str):
+        self.r.hset(Cfg.NETWORK[network_id]["REDIS_BURROW_TOKEN_METADATA_KEY"], contract_id, metadata_str)
     
     def add_pools_by_tokens(self, network_id, tokens_str, pool_list_str):
         self.r.hset(Cfg.NETWORK[network_id]["REDIS_POOL_BY_TOKEN_KEY"], tokens_str, pool_list_str)

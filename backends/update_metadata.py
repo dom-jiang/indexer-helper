@@ -79,6 +79,34 @@ def init_token_metadata_to_redis(network_id):
         print("Error: ", e)
 
 
+def update_burrow_asset_token_metadata(network_id):
+    metadata = list_token_metadata(network_id)
+    burrow_token_list = set()
+    try:
+        conn = MultiNodeJsonProvider(network_id)
+        ret = conn.view_call("contract.main.burrow.near", "get_assets_paged", b'{}')
+        json_str = "".join([chr(x) for x in ret["result"]])
+        burrow_token_data = json.loads(json_str)
+        for token in burrow_token_data:
+            burrow_token_list.add(token[0])
+        ret = conn.view_call("meme-burrow.ref-labs.near", "get_assets_paged", b'{}')
+        json_str = "".join([chr(x) for x in ret["result"]])
+        meme_burrow_token_data = json.loads(json_str)
+        for token in meme_burrow_token_data:
+            burrow_token_list.add(token[0])
+        if len(burrow_token_list) > 0:
+            redis_conn = RedisProvider()
+            for token in burrow_token_list:
+                if token in metadata:
+                    redis_conn.add_burrow_token_metadata(network_id, token, json.dumps(metadata[token]))
+                    print("Update burrow metadata to Redis: %s" % token)
+            redis_conn.close()
+    except MultiNodeJsonProviderError as e:
+        print("RPC Error: ", e)
+    except Exception as e:
+        print("Error: ", e)
+
+
 if __name__ == "__main__":
 
     if len(sys.argv) == 2:
@@ -87,6 +115,8 @@ if __name__ == "__main__":
             print("Staring update metadata ...")
             # init_token_metadata_to_redis(network_id)
             update(network_id)
+            print("update Done.")
+            update_burrow_asset_token_metadata(network_id)
             print("Done.")
         else:
             print("Error, network_id should be MAINNET or TESTNET")
