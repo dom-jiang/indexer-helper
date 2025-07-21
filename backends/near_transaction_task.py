@@ -74,8 +74,8 @@ def handel_transaction_data(transaction_data_list, start_id):
             handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt, predecessor_id, receiver_id)
         if receiver_id == "v2.ref-finance.near" and '"Success' in receipt_status:
             handle_liquidity_pools_content(receipt, predecessor_id, receipt_id, liquidity_pools_list)
-        # if "token-conversion.stg.ref-dev-team.near" == receiver_id and '"Success' in receipt_status:
-        #     handle_conversion_token_log(logs, receipt_id, data_block_number, tx_time, conversion_token_date_list)
+        if "conversion.rhealab.near" == receiver_id and '"Success' in receipt_status:
+            handle_conversion_token_log(logs, receipt_id, data_block_number, tx_time, conversion_token_date_list)
     if len(swap_data_list) > 0:
         add_swap_log(swap_data_list, network_id)
     if len(liquidity_data_list) > 0:
