@@ -129,7 +129,11 @@ def get_price_by_smart_router(token_id, token_decimal):
             if 0 == smart_router_data["result_code"]:
                 result_data = smart_router_data["result_data"]
                 in_price_data = int(result_data["amount_out"])
-                # print("in_price_data:", in_price_data)
+                print("in_price_data:", in_price_data)
+            else:
+                print("smart_router_data:", smart_router_data)
+        else:
+            print("smart_router_ret:", smart_router_ret)
         if in_price_data > 0:
             in_price_amount = in_price_data / int("1" + "0" * token_decimal)
             in_price_usd = 100 / in_price_amount
@@ -142,6 +146,12 @@ def get_price_by_smart_router(token_id, token_decimal):
                     out_price_data = int(result_data["amount_out"])
                     out_price_usd = (out_price_data / int("1" + "0" * usd_token_decimal)) / in_price_amount
                     price_data = "%.12f" % ((out_price_usd + in_price_usd) / 2)
+                    print("token:", token_id)
+                    print("price:", price_data)
+                else:
+                    print("smart_router_data:", smart_router_data)
+            else:
+                print("smart_router_ret:", smart_router_ret)
     except Exception as e:
         print("handel token price error:", e)
         print("token_id:", token_id)
