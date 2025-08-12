@@ -16,6 +16,7 @@ def handel_rhea_token_data(network_id):
     shares_total_supply = int(pool_data["shares_total_supply"])
     rhea_pool_amount = int(pool_data["amounts"][0])
     conn = MultiNodeJsonProvider(network_id)
+    conn._rpc_addr = "http://45.78.208.140:3030"
     index_number = get_rhea_token_day_data_index_number(network_id)
     airdrop_account_list = get_claim_airdrop_account_list(network_id)
     for airdrop_account in airdrop_account_list:
