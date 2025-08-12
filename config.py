@@ -25,7 +25,7 @@ except ImportError:
     INDEXER_PORT = "5432"
 
 try:
-    from db_info import DB_DSN, DB_UID, DB_PWD, DB_HOST, DB_PORT, CRM_DB_UID, CRM_DB_PWD, BURROW_DB_UID, BURROW_DB_PWD
+    from db_info import DB_DSN, DB_UID, DB_PWD, DB_HOST, DB_PORT, CRM_DB_UID, CRM_DB_PWD, BURROW_DB_UID, BURROW_DB_PWD, LST_AGO_DAY, LST_RPC, LST_CONTRACT_ID
 except ImportError:
     DB_DSN = "ref"
     DB_UID = "root"
@@ -36,6 +36,9 @@ except ImportError:
     CRM_DB_PWD = "root"
     BURROW_DB_UID = "root"
     BURROW_DB_PWD = "root"
+    LST_CONTRACT_ID = "lst.rhealab.near"
+    LST_RPC = "https://rpc.mainnet.near.org"
+    LST_AGO_DAY = 43800
 
 
 try:
@@ -487,6 +490,8 @@ class Cfg:
             {"SYMBOL": "DONOR", "NEAR_ID": "donor-1517.meme-cooking.near", "MD_ID": "v2.ref-finance.near|5903|wrap.near", "DECIMAL": 2},
             {"SYMBOL": "ZEC", "NEAR_ID": "zec.omft.near", "MD_ID": "v2.ref-finance.near|6065|wrap.near", "DECIMAL": 8},
             {"SYMBOL": "ETH", "NEAR_ID": "eth.bridge.near", "MD_ID": "v2.ref-finance.near|6354|wrap.near", "DECIMAL": 18},
+            {"SYMBOL": "RHEA", "NEAR_ID": "token.rhealab.near", "MD_ID": "v2.ref-finance.near|6458|wrap.near", "DECIMAL": 18},
+            {"SYMBOL": "XRHEA", "NEAR_ID": "xtoken.rhealab.near", "MD_ID": "xtoken.rhealab.near|NA|token.rhealab.near", "DECIMAL": 18},
         ],
         "BASE_MAINNET": [
 
@@ -503,6 +508,12 @@ class Cfg:
                      "contract.main.burrow.near", "token.burrow.near", "v2.ref-farming.near", "boostfarm.ref-labs.near",
                      "meme-farming_011.ref-labs.near"]
     DB3_START_ID = DB3_START_ID
+    TOKEN_HOLDERS_WHITELIST = ["ref-finance.sputnik-dao.near", "conversion.rhealab.near", "refchef.near",
+                               "burrow.sputnik-dao.near", "dao.ref-dev-team.near", "ref.ref-dev-fund.near",
+                               "blackhole.ref-labs.near"]
+    LST_CONTRACT_ID = LST_CONTRACT_ID
+    LST_RPC = LST_RPC
+    LST_AGO_DAY = LST_AGO_DAY
 
 
 if __name__ == '__main__':

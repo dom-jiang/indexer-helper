@@ -1487,6 +1487,165 @@ def update_burrow_fee_log_data(network_id, log_id_list):
         cursor.close()
 
 
+def get_token_day_data_index_number(network_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select index_number from token_day_data order by index_number desc limit 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql)
+        index_number_data = cursor.fetchone()
+        if index_number_data is None:
+            index_number = 0
+        else:
+            index_number = index_number_data["index_number"]
+        return index_number
+    except Exception as e:
+        print("get_token_day_data_index_number to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def add_token_day_data(network_id, data_list, index_number, token_id, timestamp):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into token_day_data(token_id, account_id, balance, index_number, `rank`, `timestamp`, " \
+          "created_time, updated_time) values(%s,%s,%s,%s,%s,%s,now(),now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((token_id, data["account_id"], data["balance"], index_number, data["rank"], timestamp))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert token_day_data to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_conversion_token_log(network_id, start_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select * from conversion_token_log where id > %s limit 1000"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, start_id)
+        conversion_token_log_data = cursor.fetchall()
+        return conversion_token_log_data
+    except Exception as e:
+        print("get_conversion_token_log to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def get_conversion_token_day_data_index_number(network_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select index_number from conversion_token_day_data order by index_number desc limit 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql)
+        index_number_data = cursor.fetchone()
+        if index_number_data is None:
+            index_number = 0
+        else:
+            index_number = index_number_data["index_number"]
+        return index_number
+    except Exception as e:
+        print("get_token_day_data_index_number to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def add_conversion_token_day_data(network_id, data_list, index_number, timestamp):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into conversion_token_day_data(token_id, account_id, balance, index_number, `rank`, target_amount, " \
+          "locking_duration, `type`, `timestamp`, created_time, updated_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["token_id"], data["account_id"], data["balance"], index_number, data["rank"], data["target_amount"], data["locking_duration"], data["type"], timestamp))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert conversion_token_day_data to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_claim_airdrop_account_list(network_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select addr, COALESCE(FORMAT(SUM(reward_amount), 0), '0') AS total_reward_amount from rhea_airdrop_list group by addr"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql)
+        airdrop_account_list = cursor.fetchall()
+        return airdrop_account_list
+    except Exception as e:
+        print("get_claim_airdrop_account_list to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def get_rhea_token_day_data_index_number(network_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select index_number from rhea_token_day_data order by index_number desc limit 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql)
+        index_number_data = cursor.fetchone()
+        if index_number_data is None:
+            index_number = 0
+        else:
+            index_number = index_number_data["index_number"]
+        return index_number
+    except Exception as e:
+        print("get_rhea_token_day_data_index_number to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def add_rhea_token_day_data(network_id, data_list, index_number, timestamp):
+    db_conn = get_db_connect(network_id)
+
+    sql = "insert into rhea_token_day_data(account_id, airdrop_balance, rhea_balance, stake_rhea_balance, lp_balance, " \
+          "lock_boost_balance, lending_balance, index_number, `timestamp`, " \
+          "created_time, updated_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())"
+
+    insert_data = []
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        for data in data_list:
+            insert_data.append((data["account_id"], data["airdrop_balance"], data["rhea_balance"],
+                                data["stake_rhea_balance"], data["lp_balance"],
+                                data["lock_boost_balance"], data["lending_balance"], index_number, timestamp))
+
+        cursor.executemany(sql, insert_data)
+        db_conn.commit()
+
+    except Exception as e:
+        db_conn.rollback()
+        print("insert rhea_token_day_data to db error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
