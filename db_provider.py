@@ -1588,7 +1588,7 @@ def add_conversion_token_day_data(network_id, data_list, index_number, timestamp
 
 def get_claim_airdrop_account_list(network_id):
     db_conn = get_db_connect(network_id)
-    query_sql = "select addr, COALESCE(FORMAT(SUM(reward_amount), 0), '0') AS total_reward_amount from rhea_airdrop_list group by addr"
+    query_sql = "select addr, COALESCE(FORMAT(SUM(reward_amount), 0), '0') AS total_reward_amount from rhea_airdrop_list where `status` = 'claimed' group by addr"
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
         cursor.execute(query_sql)

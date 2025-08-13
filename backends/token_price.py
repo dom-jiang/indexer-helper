@@ -6,6 +6,7 @@ from config import Cfg
 import json
 import time
 from db_provider import batch_add_history_token_price
+from near_multinode_rpc_provider import MultiNodeJsonProvider
 
 usd_token = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
 amount_in = 100000000
@@ -18,12 +19,27 @@ def get_now_millisecond():
 
 
 def pool_price(tokens):
+    rhea_price = 0
+    virtual_price = 0
     pool_tokens_price = []
     decimal_data = get_decimals()
+    conn = MultiNodeJsonProvider(network_id)
     for token in tokens:
-        price = get_price_by_smart_router(token["NEAR_ID"], decimal_data[token["NEAR_ID"]])
+        if token["NEAR_ID"] == "xtoken.rhealab.near":
+            ret = conn.view_call("xtoken.rhealab.near", "get_virtual_price", "NA".encode(encoding='utf-8'))
+            json_str = "".join([chr(x) for x in ret["result"]])
+            virtual_price = json.loads(json_str)
+            print("xtoken get_virtual_price:", virtual_price)
+            virtual_price = int(virtual_price) / 100000000
+            continue
+        else:
+            price = get_price_by_smart_router(token["NEAR_ID"], decimal_data[token["NEAR_ID"]])
         if price is not None:
             pool_tokens_price.append({"NEAR_ID": token["NEAR_ID"], "price": price})
+            if token["NEAR_ID"] == "token.rhealab.near":
+                rhea_price = price
+                print("r_price111:", rhea_price)
+    pool_tokens_price.append({"NEAR_ID": "xtoken.rhealab.near", "price": float(rhea_price) * float(virtual_price)})
     return pool_tokens_price
 
 

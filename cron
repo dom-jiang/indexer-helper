@@ -24,7 +24,6 @@
 10 */1 * * * /indexer-helper/backends/backend_analysis_pool_and_farm_data_s3.sh
 10 */1 * * * /indexer-helper/backends/backend_token_price_ratio_report.sh
 */10 * * * * /indexer-helper/backends/backend_burrow_fee_log.sh
-0 8 * * * /indexer-helper/backends/backend_conversion_token_day_data.sh
-0 8 * * * /indexer-helper/backends/backend_rhea_token_day_data.sh
-0 8 * * * /indexer-helper/backends/backend_token_day_data.sh
-
+0 0 * * * /indexer-helper/backends/backend_conversion_token_day_data.sh
+10 0 * * * /indexer-helper/backends/backend_rhea_token_day_data.sh
+5 0 * * * /indexer-helper/backends/backend_token_day_data.sh
