@@ -141,6 +141,9 @@ def handle_token_price_ratio_report_w(network_id, token_pair, token_price_data, 
             if handle_hour_stamp(now_time) - last_time_w >= 14400:
                 price_list.append(price_data)
                 update_flag = True
+        else:
+            price_list.append(price_data)
+            update_flag = True
         if len(price_list) > 42:
             price_list.pop(0)
             update_flag = True
@@ -231,6 +234,9 @@ def handle_token_price_ratio_report_y(network_id, token_pair, token_price_data, 
             if len(price_list) > 120:
                 price_list.pop(0)
                 update_flag = True
+        else:
+            price_list.append(price_data)
+            update_flag = True
         redis_values["price_list"] = price_list
     if update_flag:
         add_token_price_ratio_to_redis(network_id, redis_key, redis_values)
@@ -274,6 +280,9 @@ def handle_token_price_ratio_report_all(network_id, token_pair, token_price_data
             if handle_day_stamp(now_time) - last_time_all >= 259200:
                 price_list.append(price_data)
                 update_flag = True
+        else:
+            price_list.append(price_data)
+            update_flag = True
         redis_values["price_list"] = price_list
     if update_flag:
         add_token_price_ratio_to_redis(network_id, redis_key, redis_values)
