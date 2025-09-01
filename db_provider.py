@@ -361,6 +361,23 @@ def clear_token_price():
         cursor.close()
 
 
+def clear_dcl_pool_analysis():
+    now = int(time.time())
+    before_time = now - (26*60*60)
+    print("seven days ago time:", before_time)
+    conn = get_db_connect(Cfg.NETWORK_ID)
+    sql = "delete from dcl_pool_analysis where timestamp < %s"
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql, before_time)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(e)
+    finally:
+        cursor.close()
+
+
 def handle_dcl_pools(data_list, network_id):
     old_pools_data = query_dcl_pools(network_id)
     for old_pool in old_pools_data:
