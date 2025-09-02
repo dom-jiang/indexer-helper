@@ -2,7 +2,7 @@
 
 pid=`ps -ef | grep "db_data_clear.py MAINNET" | grep -v grep | /usr/bin/awk '{print $2}'`
 
-cd "indexer-helper/backends"
+cd "/indexer-helper/backends"
 
 # echo ${pid}
 date >> backend_db_data_clear.log
