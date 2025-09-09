@@ -366,10 +366,13 @@ def clear_dcl_pool_analysis():
     before_time = now - (26*60*60)
     print("seven days ago time:", before_time)
     conn = get_db_connect(Cfg.NETWORK_ID)
-    sql = "delete from dcl_pool_analysis where timestamp < %s"
+    sql = "delete from dcl_pool_analysis where `timestamp` < %s"
+    sql2 = "delete from dcl_user_liquidity where `timestamp` < %s"
     cursor = conn.cursor()
     try:
         cursor.execute(sql, before_time)
+        conn.commit()
+        cursor.execute(sql2, before_time)
         conn.commit()
     except Exception as e:
         conn.rollback()
