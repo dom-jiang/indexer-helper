@@ -294,7 +294,7 @@ def batch_add_history_token_price(data_list, network_id):
         end_time = int(time.time())
         print("insert to db time:", end_time - now)
         contract_address_ids_str = ','.join(['%s'] * len(contract_address_ids_list))
-        sql2 = f"SELECT contract_address, MAX(price) FROM mk_history_token_price where contract_address " \
+        sql2 = f"SELECT contract_address, MAX(price) as price FROM mk_history_token_price where contract_address " \
                f"in ({contract_address_ids_str}) and `timestamp` > '%s' group by contract_address"
         cursor.execute(sql2, contract_address_ids_list + [before_time])
         old_rows = cursor.fetchall()
