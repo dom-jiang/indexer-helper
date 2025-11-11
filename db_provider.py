@@ -1666,6 +1666,56 @@ def add_rhea_token_day_data(network_id, data_list, index_number, timestamp):
         db_conn.close()
 
 
+def get_multichain_lending_report_data(network_id):
+    ret_data = []
+    db_conn = get_db_connect(network_id)
+    sql = "select * from multichain_lending_report_data where `status` = 0 and created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR) limit 20"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        ret_data = cursor.fetchall()
+    except Exception as e:
+        db_conn.rollback()
+        print("query multichain_lending_report_data to db error:", e)
+        return ret_data
+    finally:
+        cursor.close()
+    return ret_data
+
+
+def update_multichain_lending_report_data(network_id, request_result, update_id, tx_hash):
+    db_conn = get_db_connect(network_id)
+    sql = "update multichain_lending_report_data set `status` = 1, request_result = %s, request_hash = %s where `id` = %s"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (request_result, tx_hash, update_id))
+        db_conn.commit()
+    except Exception as e:
+        # Rollback on error
+        db_conn.rollback()
+        print("update multichain_lending_report_data to db error:", e)
+        raise e
+    finally:
+        cursor.close()
+
+
+def get_multichain_lending_requests_history(network_id, batch_id):
+    ret_data = None
+    db_conn = get_db_connect(network_id)
+    sql = "select * from multichain_lending_requests_history where `batch_id` = %s limit 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (batch_id, ))
+        ret_data = cursor.fetchone()
+    except Exception as e:
+        db_conn.rollback()
+        print("query get_multichain_lending_requests_history to db error:", e)
+        return ret_data
+    finally:
+        cursor.close()
+    return ret_data
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
