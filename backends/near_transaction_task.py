@@ -11,6 +11,7 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_lostfound, add_order_added, add_order_cancelled, add_order_completed, add_claim_charged_fee, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
     add_withdraw_reward_data, add_meme_burrow_event_log, add_burrow_fee_log, add_conversion_token_log
+from redis_provider import get_token_price
 
 
 def get_near_transaction_data(network_id, start_id):
@@ -26,13 +27,13 @@ def get_near_transaction_data(network_id, start_id):
             print("db3 transaction list error:", near_transaction_data)
         else:
             transaction_data_list = near_transaction_data["data"]["transactions"]
-            start_id = handel_transaction_data(transaction_data_list, start_id)
+            start_id = handel_transaction_data(network_id, transaction_data_list, start_id)
     except Exception as e:
         print("get_near_transaction_data error: ", e)
     return start_id
 
 
-def handel_transaction_data(transaction_data_list, start_id):
+def handel_transaction_data(network_id, transaction_data_list, start_id):
     xref_data_list = []
     swap_data_list = []
     liquidity_data_list = []
@@ -58,9 +59,9 @@ def handel_transaction_data(transaction_data_list, start_id):
         predecessor_id = transaction_data["predecessor_id"]
         receipt_status = transaction_data["receipt_status"]
         if '"Success' in receipt_status:
-            handle_log_content(receipt_id, data_block_number, predecessor_id, receiver_id, logs, tx_time,
+            handle_log_content(network_id, receipt_id, data_block_number, predecessor_id, receiver_id, logs, tx_time,
                                receipt, xref_data_list, swap_data_list, liquidity_data_list,
-                               farm_data_list)
+                               farm_data_list, liquidity_pools_list)
             handle_limit_order_content(data_block_number, receipt_id, logs, tx_time, receipt, network_id)
             handle_withdraw_reward_content(receipt_id, data_block_number, logs, tx_time, withdraw_reward_insert_data)
             handle_not_registered_logs_content(logs, receipt, tx_hash, receipt_id, tx_time, data_block_number,
@@ -448,8 +449,8 @@ def analysis_log_data(content):
     return ret_data
 
 
-def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, timestamp, receipt, xref_data_list,
-                       swap_data_list, liquidity_data_list, farm_data_list):
+def handle_log_content(network_id, block_hash, block_id, predecessor_id, receiver_id, logs, timestamp, receipt, xref_data_list,
+                       swap_data_list, liquidity_data_list, farm_data_list, liquidity_pools_list):
     import re
     stake_value = "assets, get"
     index_number = 0
@@ -522,6 +523,8 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                                 amount_in = action["amount_in"]
                             if "min_amount_out" in action:
                                 min_amount_out = action["min_amount_out"]
+                            token_in_price = get_token_price(network_id, token_in)
+                            token_out_price = get_token_price(network_id, token_out)
                             swap_data = {
                                 "block_hash": block_hash,
                                 "block_id": block_id,
@@ -538,6 +541,8 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                                 "swap_in": swap_in,
                                 "swap_out": swap_out,
                                 "timestamp": timestamp,
+                                "token_in_price": token_in_price,
+                                "token_out_price": token_out_price,
                             }
                             swap_data_list.append(swap_data)
                 else:
@@ -568,6 +573,8 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                             amount_in = action["amount_in"]
                         if "min_amount_out" in action:
                             min_amount_out = action["min_amount_out"]
+                        token_in_price = get_token_price(network_id, token_in)
+                        token_out_price = get_token_price(network_id, token_out)
                         swap_data = {
                             "block_hash": block_hash,
                             "block_id": block_id,
@@ -584,6 +591,8 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                             "swap_in": swap_in,
                             "swap_out": swap_out,
                             "timestamp": timestamp,
+                            "token_in_price": token_in_price,
+                            "token_out_price": token_out_price,
                         }
                         swap_data_list.append(swap_data)
             index_number = index_number + 1
@@ -836,6 +845,53 @@ def handle_log_content(block_hash, block_id, predecessor_id, receiver_id, logs, 
                             farm_data["seed_id"] = data["seed_id"]
                             farm_data["amount"] = data["withdraw_amount"]
                             farm_data_list.append(farm_data)
+
+        try:
+            referral_content = re.findall("Referral (.*?) got (.*?) shares", log)
+            if len(referral_content) > 0:
+                print("Referral log:", log)
+                print("Referral receipt:", block_hash)
+                pattern = r"Referral (.+?) got (\d+) shares"
+                match = re.search(pattern, log)
+                if match:
+                    account_id = match.group(1)
+                    swap_args = handle_receipt_content(receipt)
+                    pool_id = ""
+                    for swap_arg in swap_args:
+                        if "msg" in swap_arg:
+                            msg = swap_arg["msg"]
+                            if "" != msg:
+                                msg_json = json.loads(msg)
+                                actions = []
+                                if "actions" in msg_json:
+                                    actions = msg_json["actions"]
+                                if len(actions) > index_number:
+                                    action = actions[index_number]
+                                    if "pool_id" in action:
+                                        pool_id = action["pool_id"]
+                        else:
+                            actions = []
+                            if "actions" in swap_arg:
+                                actions = swap_arg["actions"]
+                            elif "operation" in swap_arg:
+                                operation = swap_arg["operation"]
+                                if "Swap" in operation:
+                                    swap_json = operation["Swap"]
+                                    actions = swap_json["actions"]
+                            if len(actions) > index_number:
+                                action = actions[index_number]
+                                if "pool_id" in action:
+                                    pool_id = action["pool_id"]
+                    if pool_id != "":
+                        liquidity_pools_data = {
+                            "pool_id": pool_id,
+                            "account_id": account_id,
+                            "receipt_id": block_hash,
+                        }
+                        liquidity_pools_list.append(liquidity_pools_data)
+        except Exception as e:
+            print("Referral log parse error:", e.args)
+            print("log:", log)
 
 
 def handle_dcl_log(logs, tx_id, block_id, timestamp, network, receipt, predecessor_id, receiver_id):

@@ -210,7 +210,7 @@ def add_swap_log(data_list, network_id):
 
     sql = "insert into near_lake_swap_log(block_hash, block_id, predecessor_id, receiver_id, sender_id, amount, " \
           "`force`, pool_id, token_in, token_out, amount_in, min_amount_out, swap_in, swap_out, `timestamp`, " \
-          "create_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
+          "token_in_price,token_out_price,create_time) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())"
 
     insert_data = []
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
@@ -218,8 +218,8 @@ def add_swap_log(data_list, network_id):
         for data in data_list:
             insert_data.append((data["block_hash"], data["block_id"], data["predecessor_id"], data["receiver_id"],
                                 data["sender_id"], data["amount"], data["force"], data["pool_id"], data["token_in"],
-                                data["token_out"], data["amount_in"], data["min_amount_out"],
-                                data["swap_in"], data["swap_out"], data["timestamp"]))
+                                data["token_out"], data["amount_in"], data["min_amount_out"], data["swap_in"],
+                                data["swap_out"], data["timestamp"], data["token_in_price"], data["token_out_price"]))
 
         cursor.executemany(sql, insert_data)
         db_conn.commit()
