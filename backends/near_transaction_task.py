@@ -882,13 +882,13 @@ def handle_log_content(network_id, block_hash, block_id, predecessor_id, receive
                                 action = actions[index_number]
                                 if "pool_id" in action:
                                     pool_id = action["pool_id"]
-                    if pool_id != "":
-                        liquidity_pools_data = {
-                            "pool_id": pool_id,
-                            "account_id": account_id,
-                            "receipt_id": block_hash,
-                        }
-                        liquidity_pools_list.append(liquidity_pools_data)
+                        if pool_id != "":
+                            liquidity_pools_data = {
+                                "pool_id": pool_id,
+                                "account_id": account_id,
+                                "receipt_id": block_hash,
+                            }
+                            liquidity_pools_list.append(liquidity_pools_data)
         except Exception as e:
             print("Referral log parse error:", e.args)
             print("log:", log)
