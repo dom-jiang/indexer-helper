@@ -15,7 +15,7 @@ from redis_provider import get_token_price
 
 
 def get_near_transaction_data(network_id, start_id):
-    args = "/api/v1/near/%s/getTransactions?id=%s&limit=20" % (network_id, start_id)
+    args = "/api/v1/near/%s/getTransactions?id=%s&limit=20" % (network_id.lower(), start_id)
     try:
         headers = {
             'AccessKey': Cfg.DB3_ACCESS_KEY
@@ -1611,6 +1611,6 @@ if __name__ == "__main__":
     network_id = "MAINNET"
     start_id = Cfg.DB3_START_ID
     while True:
-        start_id = get_near_transaction_data(network_id.lower(), start_id)
+        start_id = get_near_transaction_data(network_id, start_id)
         logger.info("start_id:{}", start_id)
         time.sleep(1)
