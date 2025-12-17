@@ -1,7 +1,7 @@
 import decimal
 import pymysql
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import Cfg
 import time
 from redis_provider import RedisProvider, list_history_token_price, list_token_price, get_account_pool_assets, get_pool_point_24h_by_pool_id
@@ -1714,6 +1714,55 @@ def get_multichain_lending_requests_history(network_id, batch_id):
     finally:
         cursor.close()
     return ret_data
+
+
+def query_multichain_lending_zcash_pending(network_id, minutes=10):
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        minutes = 10
+    minutes = max(minutes, 1)
+
+    time_threshold = datetime.utcnow() - timedelta(minutes=minutes)
+    db_conn = get_db_connect(network_id)
+    query_sql = "select * from multichain_lending_zcash_data where `status` = 0 and `created_at` >= %s"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, (time_threshold,))
+        return cursor.fetchall()
+    except Exception as e:
+        print("query multichain_lending_zcash_data to db error:", e)
+    finally:
+        cursor.close()
+    return []
+
+def update_multichain_lending_zcash_data(network_id, hex_data, pre_info, data_id, t_address, encryption_pubkey, mca_id, tx_hash, error_msg, status=1):
+    sql = "UPDATE multichain_lending_zcash_data SET `status` = %s, `hex` = %s, pre_info = %s, t_address = %s, " \
+          "public_key = %s, mca_id = %s, tx_hash = %s, error_msg = %s WHERE id = %s"
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (status, hex_data, pre_info, t_address, encryption_pubkey, mca_id, tx_hash, error_msg, data_id))
+        db_conn.commit()
+    except Exception as e:
+        print("update_multichain_lending_zcash_data to db error:", e)
+    finally:
+        cursor.close()
+
+def add_multichain_lending_zcash_data(network_id, am_id, deposit_address, request_data, type_data, near_number, deposit_uuid):
+    db_conn = get_db_connect(network_id)
+    sql = "insert into multichain_lending_zcash_data(`ma_id`, deposit_address, request_data, `type`, near_number, " \
+          "deposit_uuid, `created_at`, `updated_at`) values(%s,%s,%s,%s,%s,%s,now(),now())"
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (am_id, deposit_address, request_data, type_data, near_number, deposit_uuid))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("insert multichain_lending_zcash_data to db error:", e)
+        raise e
+    finally:
+        cursor.close()
 
 
 if __name__ == '__main__':

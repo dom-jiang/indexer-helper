@@ -29,3 +29,5 @@
 5 0 * * * /indexer-helper/backends/backend_token_day_data.sh
 */5 * * * * /indexer-helper/backends/backend_dcl_points.sh
 * * * * * /indexer-helper/backends/multichain_lending_data_sync.sh > /dev/null
+* * * * * /indexer-helper/backends/sysn_multichain_lending_zcash_data.sh > /dev/null
+* * * * * sleep 30; /indexer-helper/backends/sysn_multichain_lending_zcash_data.sh > /dev/null
