@@ -26,24 +26,19 @@ def sync_zcash_pending_data(network_id):
             if "vin" in transaction_data:
                 vin_data = transaction_data["vin"]
                 if vin_data is not None and len(vin_data) > 0:
-                    vin = vin_data[0]
-                    # vin_address = vin["address"]
-                    # if not vin_address.startswith('t'):
-                    #     error_msg = "Non transparent address transfer"
-                    txid = vin["txid"]
-                    vout_number = vin["vout"]
-                    transaction_data_ret = rpc.getrawtransaction(txid)
-                    if transaction_data_ret is None:
-                        print("transaction_data_ret is None, continue")
-                        continue
-                    if "vout" in transaction_data_ret:
-                        vout_list = transaction_data_ret["vout"]
-                        if len(vout_list) >= vout_number:
-                            vout_data = vout_list[vout_number]
-                            prev = (str(vout_data["valueZat"]), vout_data["scriptPubKey"]["hex"])
-                            prevs.append(prev)
-                # else:
-                #     error_msg = "Non transparent address transfer"
+                    for vin in vin_data:
+                        txid = vin["txid"]
+                        vout_number = vin["vout"]
+                        transaction_data_ret = rpc.getrawtransaction(txid)
+                        if transaction_data_ret is None:
+                            print("transaction_data_ret is None, continue")
+                            continue
+                        if "vout" in transaction_data_ret:
+                            vout_list = transaction_data_ret["vout"]
+                            if len(vout_list) >= vout_number:
+                                vout_data = vout_list[vout_number]
+                                prev = (str(vout_data["valueZat"]), vout_data["scriptPubKey"]["hex"])
+                                prevs.append(prev)
             if error_msg != "":
                 update_multichain_lending_zcash_data(network_id, hex_data, json.dumps(prevs), data_id, "", "", "", tx_id, error_msg, status=3)
                 continue
