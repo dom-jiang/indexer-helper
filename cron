@@ -1,5 +1,5 @@
 */2 * * * * /indexer-helper/backends/backend_farm_and_pool.sh
-*/3 * * * * /indexer-helper/backends/backend_token_price.sh
+*/5 * * * * /indexer-helper/backends/backend_token_price.sh
 # * * * * * sleep 30; /indexer-helper/backends/backend_token_price.sh
 3 * * * * /indexer-helper/backends/backend_update_metadata.sh
 0 0 * * * /indexer-helper/backends/backend_db_data_clear.sh
