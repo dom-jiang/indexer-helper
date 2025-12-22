@@ -138,8 +138,12 @@ def get_price_by_smart_router(token_id, token_decimal):
     price_data = None
     in_price_data = 0
     try:
+        start_time10 = get_now_millisecond()
         smart_router_url = Cfg.REF_SDK_URL + "?amountIn=%s&tokenIn=%s&tokenOut=%s&pathDeep=3&slippage=0" % (amount_in, usd_token, token_id)
+        print("smart_router_url:", smart_router_url)
         smart_router_ret = requests.get(smart_router_url, timeout=10)
+        end_time10 = get_now_millisecond()
+        print("smartrouter time:", end_time10 - start_time10)
         if smart_router_ret.status_code == 200:
             smart_router_data = json.loads(smart_router_ret.content)
             if 0 == smart_router_data["result_code"]:
@@ -153,8 +157,12 @@ def get_price_by_smart_router(token_id, token_decimal):
         if in_price_data > 0:
             in_price_amount = in_price_data / int("1" + "0" * token_decimal)
             in_price_usd = 100 / in_price_amount
+            start_time11 = get_now_millisecond()
             smart_router_url = Cfg.REF_SDK_URL + "?amountIn=%s&tokenIn=%s&tokenOut=%s&pathDeep=3&slippage=0" % (in_price_data, token_id, usd_token)
+            print("smart_router_url1:", smart_router_url)
             smart_router_ret = requests.get(smart_router_url, timeout=5)
+            end_time11 = get_now_millisecond()
+            print("smartrouter time:", end_time11 - start_time11)
             if smart_router_ret.status_code == 200:
                 smart_router_data = json.loads(smart_router_ret.content)
                 if 0 == smart_router_data["result_code"]:
