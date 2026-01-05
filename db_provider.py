@@ -2002,6 +2002,55 @@ def add_multichain_lending_whitelist(network_id, account_address):
     return account_address
 
 
+def query_pyth_price_data(network_id, symbol=None, page_number=1, page_size=10):
+    start_number = handel_page_number(page_number, page_size)
+    db_conn = get_db_connect(network_id)
+    
+    if symbol:
+        sql = """
+        SELECT id, token_id, symbol, price, conf, expo, publish_time, 
+               ema_price, ema_conf, slot, created_time
+        FROM pyth_oracle_price
+        WHERE symbol = %s
+        ORDER BY created_time DESC, publish_time DESC
+        LIMIT %s, %s
+        """
+        sql_count = "SELECT COUNT(*) as total_number FROM pyth_oracle_price WHERE symbol = %s"
+        params = (symbol, start_number, page_size)
+        count_params = (symbol,)
+    else:
+        sql = """
+        SELECT id, token_id, symbol, price, conf, expo, publish_time, 
+               ema_price, ema_conf, slot, created_time
+        FROM pyth_oracle_price
+        ORDER BY created_time DESC, publish_time DESC
+        LIMIT %s, %s
+        """
+        sql_count = "SELECT COUNT(*) as total_number FROM pyth_oracle_price"
+        params = (start_number, page_size)
+        count_params = None
+    
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, params)
+        price_data = cursor.fetchall()
+        
+        if count_params:
+            cursor.execute(sql_count, count_params)
+        else:
+            cursor.execute(sql_count)
+        count_result = cursor.fetchone()
+        total_number = count_result["total_number"] if count_result else 0
+        
+        return price_data, total_number
+    except Exception as e:
+        print("query pyth_price_data to db error:", e)
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()

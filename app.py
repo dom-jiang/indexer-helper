@@ -28,7 +28,7 @@ from db_provider import query_recent_transaction_swap, query_recent_transaction_
     query_meme_burrow_log, get_whitelisted_tokens_to_db, query_conversion_token_record, get_token_day_data_list, \
     get_conversion_token_day_data_list, get_rhea_token_day_data_list, add_user_swap_record, \
     add_multichain_lending_requests, query_multichain_lending_config, query_multichain_lending_data, \
-    query_multichain_lending_history, add_multichain_lending_report, query_dcl_bin_points, query_multichain_lending_account, add_multichain_lending_whitelist, query_multichain_lending_zcash_data
+    query_multichain_lending_history, add_multichain_lending_report, query_dcl_bin_points, query_multichain_lending_account, add_multichain_lending_whitelist, query_multichain_lending_zcash_data, query_pyth_price_data
 import re
 # from flask_limiter import Limiter
 from loguru import logger
@@ -1937,6 +1937,46 @@ def handle_address_balance():
         ret["data"] = e.args
         return jsonify(ret)
     return jsonify(ret)
+
+
+@app.route('/get-pyth-price-data', methods=['GET'])
+def handle_pyth_price_data():
+    symbol = request.args.get("symbol", type=str, default=None)
+    page_number = request.args.get("page_number", type=int, default=1)
+    page_size = request.args.get("page_size", type=int, default=10)
+    
+    if page_size == 0:
+        return ""
+    
+    try:
+        price_data_list, count_number = query_pyth_price_data(
+            Cfg.NETWORK_ID, 
+            symbol=symbol, 
+            page_number=page_number, 
+            page_size=page_size
+        )
+        
+        if count_number % page_size == 0:
+            total_page = int(count_number / page_size)
+        else:
+            total_page = int(count_number / page_size) + 1
+        
+        res = {
+            "record_list": price_data_list,
+            "page_number": page_number,
+            "page_size": page_size,
+            "total_page": total_page,
+            "total_size": count_number,
+        }
+        return compress_response_content(res)
+    except Exception as e:
+        logger.error("handle_pyth_price_data error:{}", e)
+        ret = {
+            "code": -1,
+            "msg": "error",
+            "data": str(e)
+        }
+        return jsonify(ret)
 
 
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
