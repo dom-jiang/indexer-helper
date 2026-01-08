@@ -324,9 +324,18 @@ def get_burrow_total_revenue():
     return ret
 
 
-def get_history_token_price_report(network_id, key):
+def get_cross_chain_total_fee():
+    """从 Redis 获取 cross chain total fee"""
     r = redis.StrictRedis(connection_pool=pool)
-    ret = r.hget(Cfg.NETWORK[network_id]["REDIS_HISTORY_TOKEN_PRICE_REPORT_KEY"], key)
+    ret = r.get("CROSS_CHAIN_TOTAL_FEE")
+    r.close()
+    return ret
+
+
+def get_cross_chain_total_revenue():
+    """从 Redis 获取 cross chain total revenue"""
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("CROSS_CHAIN_TOTAL_REVENUE")
     r.close()
     return ret
 
@@ -423,6 +432,18 @@ class RedisProvider(object):
 
     def add_burrow_total_revenue(self, value):
         self.r.set("BURROW_TOTAL_REVENUE", value)
+
+    def add_lst_total_fee(self, value):
+        self.r.set("LST_TOTAL_FEE", value)
+
+    def add_lst_total_revenue(self, value):
+        self.r.set("LST_TOTAL_REVENUE", value)
+
+    def add_cross_chain_total_fee(self, value):
+        self.r.set("CROSS_CHAIN_TOTAL_FEE", value)
+
+    def add_cross_chain_total_revenue(self, value):
+        self.r.set("CROSS_CHAIN_TOTAL_REVENUE", value)
 
     def close(self):
         self.r.close()
