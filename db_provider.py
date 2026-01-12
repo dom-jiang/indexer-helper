@@ -2059,6 +2059,10 @@ def query_pyth_price_data_chart(network_id, symbol=None, start_time=None, end_ti
     params = [symbol]
     
     # 添加时间过滤条件
+    # 注意：用户传入的时间是本地时间（UTC+8），数据库存储的是UTC时间
+    # 查询时需要将用户时间减去8小时转换为UTC时间
+    time_offset = timedelta(hours=8)
+    
     if start_time:
         where_conditions.append("created_time >= %s")
         # 支持多种时间格式
@@ -2067,7 +2071,9 @@ def query_pyth_price_data_chart(network_id, symbol=None, start_time=None, end_ti
                 start_dt = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%S")
             else:
                 start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-            params.append(start_dt)
+            # 将用户本地时间转换为UTC时间（减去8小时）用于查询数据库
+            start_dt_utc = start_dt - time_offset
+            params.append(start_dt_utc)
         except ValueError as e:
             print(f"Invalid start_time format: {start_time}, error: {e}")
             return []
@@ -2079,7 +2085,9 @@ def query_pyth_price_data_chart(network_id, symbol=None, start_time=None, end_ti
                 end_dt = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S")
             else:
                 end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-            params.append(end_dt)
+            # 将用户本地时间转换为UTC时间（减去8小时）用于查询数据库
+            end_dt_utc = end_dt - time_offset
+            params.append(end_dt_utc)
         except ValueError as e:
             print(f"Invalid end_time format: {end_time}, error: {e}")
             return []
@@ -2096,9 +2104,9 @@ def query_pyth_price_data_chart(network_id, symbol=None, start_time=None, end_ti
         cursor.execute(sql, tuple(params))
         price_data = cursor.fetchall()
         
-        # 修复时区问题：数据库时间比实际时间少8小时，返回时加上8小时
+        # 修复时区问题：数据库存储的是UTC时间，返回时加上8小时转换为用户本地时间
         # 使用 timedelta 高效处理，保持 datetime 对象格式，由 Encoder 自动序列化
-        time_offset = timedelta(hours=8)
+        # time_offset 已在上面定义，这里直接使用
         for record in price_data:
             if record.get('created_time'):
                 # 如果是 datetime 对象，直接加上 8 小时
