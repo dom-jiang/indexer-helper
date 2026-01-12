@@ -2051,6 +2051,82 @@ def query_pyth_price_data(network_id, symbol=None, page_number=1, page_size=10):
         db_conn.close()
 
 
+def query_pyth_price_data_chart(network_id, symbol=None, start_time=None, end_time=None):
+    db_conn = get_db_connect(network_id)
+    
+    # 构建 SQL 查询
+    where_conditions = ["symbol = %s"]
+    params = [symbol]
+    
+    # 添加时间过滤条件
+    if start_time:
+        where_conditions.append("created_time >= %s")
+        # 支持多种时间格式
+        try:
+            if 'T' in start_time:
+                start_dt = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%S")
+            else:
+                start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+            params.append(start_dt)
+        except ValueError as e:
+            print(f"Invalid start_time format: {start_time}, error: {e}")
+            return []
+    
+    if end_time:
+        where_conditions.append("created_time <= %s")
+        try:
+            if 'T' in end_time:
+                end_dt = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S")
+            else:
+                end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+            params.append(end_dt)
+        except ValueError as e:
+            print(f"Invalid end_time format: {end_time}, error: {e}")
+            return []
+    
+    sql = f"""
+    SELECT price, created_time
+    FROM pyth_oracle_price
+    WHERE {' AND '.join(where_conditions)}
+    ORDER BY created_time ASC
+    """
+    
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, tuple(params))
+        price_data = cursor.fetchall()
+        
+        # 修复时区问题：数据库时间比实际时间少8小时，返回时加上8小时
+        # 使用 timedelta 高效处理，保持 datetime 对象格式，由 Encoder 自动序列化
+        time_offset = timedelta(hours=8)
+        for record in price_data:
+            if record.get('created_time'):
+                # 如果是 datetime 对象，直接加上 8 小时
+                if isinstance(record['created_time'], datetime):
+                    record['created_time'] = record['created_time'] + time_offset
+                # 如果是字符串，先解析再转换（pymysql 可能返回字符串）
+                elif isinstance(record['created_time'], str):
+                    try:
+                        # 尝试解析常见的时间格式
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"]:
+                            try:
+                                dt = datetime.strptime(record['created_time'], fmt)
+                                record['created_time'] = dt + time_offset
+                                break
+                            except ValueError:
+                                continue
+                    except Exception:
+                        pass  # 如果解析失败，保持原值
+        
+        return price_data
+    except Exception as e:
+        print("query pyth_price_data to db error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
