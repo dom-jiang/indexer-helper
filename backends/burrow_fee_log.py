@@ -712,9 +712,16 @@ def handel_lst_fee(network_id):
         json_str = "".join([chr(x) for x in ret["result"]])
         account_data = json.loads(json_str)
         print("ref-finance.sputnik-dao.near account_data:", account_data)
-        
+
+        # 1.1 获取已提取的数据
+        counter_ret = conn.view_call("data-warehouse.ref-dev-team.near", "get_counter", '{"name": "LST-Claimed-Fee"}'.encode(encoding='utf-8'))
+        counter_json_str = "".join([chr(x) for x in counter_ret["result"]])
+        counter_data = json.loads(counter_json_str)
+        print("ref-finance.sputnik-dao.near counter_data:", counter_data)
+        counter_number = float(counter_data["value"])
+
         # 计算当前数量（扣除初始值300000）
-        current_quantity = int(account_data["staked_balance"]) / 10**24 - 300000
+        current_quantity = int(account_data["staked_balance"]) / 10**24 - 300000 + counter_number
         current_timestamp = int(time.time())
         
         # 2. 获取当前价格（用于计算历史总值和24小时收益）
@@ -734,14 +741,17 @@ def handel_lst_fee(network_id):
         
         # 5. 先查询24小时前的快照（在记录当前快照之前查询，避免查询到刚记录的快照）
         # 查找最接近24小时前的快照，允许±10分钟误差
-        search_start = cutoff_timestamp - 600  # 24小时前 - 10分钟
-        search_end = cutoff_timestamp + 600    # 24小时前 + 10分钟
+        search_start = cutoff_timestamp - 1200  # 24小时前 - 10分钟
+        search_end = cutoff_timestamp + 1200    # 24小时前 + 10分钟
         
         snapshots = redis_conn.r.zrangebyscore("LST_QUANTITY_SNAPSHOTS", search_start, search_end, start=0, num=1, withscores=True)
         
         if snapshots and len(snapshots) > 0:
             # 找到最接近24小时前的快照
-            quantity_24h_ago_str, snapshot_timestamp = snapshots[0]
+            # member 格式: timestamp:quantity
+            snapshot_member, snapshot_timestamp = snapshots[0]
+            # 解析 member 获取数量
+            quantity_24h_ago_str = snapshot_member.split(":")[1]  # 提取 quantity 部分
             quantity_24h_ago = float(quantity_24h_ago_str)
             actual_time_diff = current_timestamp - snapshot_timestamp
             
@@ -765,10 +775,13 @@ def handel_lst_fee(network_id):
         
         # 保存24小时收益
         redis_conn.pipe.set("LST_TOTAL_FEE_24H", str(fee_24h))
+        redis_conn.pipe.set("LST_TOTAL_REVENUE_24H", str(fee_24h))
         
-        # 记录当前快照到 ZSET（使用时间戳作为 score，数量作为 value）
-        # ZSET key: LST_QUANTITY_SNAPSHOTS, score: timestamp, value: quantity
-        redis_conn.pipe.zadd("LST_QUANTITY_SNAPSHOTS", {str(current_quantity): current_timestamp})
+        # 记录当前快照到 ZSET（使用时间戳作为 member 和 score，确保每次记录唯一）
+        # ZSET key: LST_QUANTITY_SNAPSHOTS, score: timestamp, member: timestamp:quantity
+        # 使用 timestamp:quantity 作为 member，确保即使数量相同也不会覆盖
+        snapshot_member = f"{current_timestamp}:{current_quantity}"
+        redis_conn.pipe.zadd("LST_QUANTITY_SNAPSHOTS", {snapshot_member: current_timestamp})
         
         # 清理7天前的历史快照（节省存储空间）
         # 只保留最近7天的数据，7天前的数据对24小时计算已经没有意义
