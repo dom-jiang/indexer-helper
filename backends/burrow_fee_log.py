@@ -748,15 +748,22 @@ def handel_lst_fee(network_id):
         
         if snapshots and len(snapshots) > 0:
             # 找到最接近24小时前的快照
-            # member 格式: timestamp:quantity
+            # member 格式可能是: timestamp:quantity (新格式) 或 quantity (旧格式)
             snapshot_member, snapshot_timestamp = snapshots[0]
-            # 解析 member 获取数量
-            quantity_24h_ago_str = snapshot_member.split(":")[1]  # 提取 quantity 部分
+            # 解析 member 获取数量，兼容新旧格式
+            if ":" in snapshot_member:
+                # 新格式: timestamp:quantity
+                quantity_24h_ago_str = snapshot_member.split(":")[1]
+            else:
+                # 旧格式: 只有 quantity（兼容历史数据）
+                quantity_24h_ago_str = snapshot_member
             quantity_24h_ago = float(quantity_24h_ago_str)
             actual_time_diff = current_timestamp - snapshot_timestamp
             
             # 计算24小时增长数量
             delta_quantity = current_quantity - quantity_24h_ago
+            if delta_quantity < 0:
+                delta_quantity = 0
             fee_24h = delta_quantity * current_price
             
             print(f"24h data calculated: delta_quantity={delta_quantity:.2f}, fee_24h=${fee_24h:.2f}, "
