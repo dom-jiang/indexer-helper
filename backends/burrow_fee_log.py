@@ -5,7 +5,7 @@ import time
 import os
 from datetime import datetime, timedelta
 sys.path.append('../')
-from redis_provider import RedisProvider, get_burrow_total_fee, get_burrow_total_revenue, get_cross_chain_total_fee, get_cross_chain_total_revenue
+from redis_provider import RedisProvider, get_burrow_total_fee, get_burrow_total_revenue, get_cross_chain_total_fee, get_cross_chain_total_revenue, get_cross_chain_total_volume
 from db_provider import get_burrow_fee_log_data, update_burrow_fee_log_data, get_burrow_fee_log_24h_data
 from config import Cfg
 from near_multinode_rpc_provider import MultiNodeJsonProvider
@@ -106,7 +106,7 @@ def handel_burrow_fee_log_24h(network_id):
             update_burrow_fee_log_data(network_id, log_id_list)
 
 
-def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=0.0, is_first_run=False):
+def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=0.0, incremental_volume=0.0, is_first_run=False):
     """
     处理 cross chain fee，保存到 Redis，同时计算24小时收益数据
 
@@ -114,6 +114,7 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
         network_id: 网络 ID
         incremental_fee: 本次增量费用（USD）
         incremental_revenue: 本次增量收入（USD）
+        incremental_volume: 本次增量交易量（USD）
         is_first_run: 是否是首次运行（全量数据）
     """
     current_timestamp = int(time.time())
@@ -126,28 +127,34 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
                 with open(INTENTS_JSON_FILE, 'r', encoding='utf-8') as f:
                     all_txs = json.load(f)
 
-                # 计算全量费用和收入
+                # 计算全量费用、收入和交易量
                 total_fee = 0.0
+                total_volume = 0.0
                 for tx in all_txs:
                     if tx.get('status') == 'SUCCESS' and tx.get('fee_amount_usd'):
                         total_fee += float(tx['fee_amount_usd'])
+                        if tx.get('amount_in_usd'):
+                            total_volume += float(tx['amount_in_usd'])
 
                 total_revenue = total_fee * REVENUE_PERCENTAGE
 
                 print(
-                    f"First run: calculated total_fee=${total_fee:.2f}, total_revenue=${total_revenue:.2f} from {len(all_txs)} transactions")
+                    f"First run: calculated total_fee=${total_fee:.2f}, total_revenue=${total_revenue:.2f}, total_volume=${total_volume:.2f} from {len(all_txs)} transactions")
             except Exception as e:
                 print(f"Error reading JSON file for first run: {e}")
                 total_fee = incremental_fee
                 total_revenue = incremental_revenue
+                total_volume = incremental_volume
         else:
             # JSON 文件不存在，使用增量值
             total_fee = incremental_fee
             total_revenue = incremental_revenue
+            total_volume = incremental_volume
     else:
         # 后续运行：从 Redis 读取现有值，加上增量
         existing_fee = get_cross_chain_total_fee()
         existing_revenue = get_cross_chain_total_revenue()
+        existing_volume = get_cross_chain_total_volume()
 
         if existing_fee is None:
             existing_fee = 0.0
@@ -159,13 +166,21 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
         else:
             existing_revenue = float(existing_revenue)
 
+        if existing_volume is None:
+            existing_volume = 0.0
+        else:
+            existing_volume = float(existing_volume)
+
         total_fee = existing_fee + incremental_fee
         total_revenue = existing_revenue + incremental_revenue
+        total_volume = existing_volume + incremental_volume
 
         print(
             f"Incremental update: existing_fee=${existing_fee:.2f}, incremental_fee=${incremental_fee:.2f}, new_total_fee=${total_fee:.2f}")
         print(
             f"Incremental update: existing_revenue=${existing_revenue:.2f}, incremental_revenue=${incremental_revenue:.2f}, new_total_revenue=${total_revenue:.2f}")
+        print(
+            f"Incremental update: existing_volume=${existing_volume:.2f}, incremental_volume=${incremental_volume:.2f}, new_total_volume=${total_volume:.2f}")
 
     # 2. 处理24小时收益数据（直接计算过去24小时的交易）
     redis_conn = RedisProvider()
@@ -176,6 +191,7 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
     # 从 JSON 文件筛选24小时内的交易
     fee_24h = 0.0
     revenue_24h = 0.0
+    volume_24h = 0.0
     
     if os.path.exists(INTENTS_JSON_FILE):
         try:
@@ -189,24 +205,28 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
                 if tx_timestamp >= cutoff_timestamp and tx.get('status') == 'SUCCESS' and tx.get('fee_amount_usd'):
                     txs_24h.append(tx)
             
-            # 计算24小时内的费用和收入
+            # 计算24小时内的费用、收入和交易量
             for tx in txs_24h:
                 fee_24h += float(tx['fee_amount_usd'])
+                if tx.get('amount_in_usd'):
+                    volume_24h += float(tx['amount_in_usd'])
             
             revenue_24h = fee_24h * REVENUE_PERCENTAGE
             
-            print(f"24h data calculated: fee_24h=${fee_24h:.2f}, revenue_24h=${revenue_24h:.2f}, "
+            print(f"24h data calculated: fee_24h=${fee_24h:.2f}, revenue_24h=${revenue_24h:.2f}, volume_24h=${volume_24h:.2f}, "
                   f"txs_count={len(txs_24h)}, cutoff_timestamp={cutoff_timestamp}")
             
         except Exception as e:
             print(f"Error reading JSON file for 24h calculation: {e}")
             fee_24h = 0.0
             revenue_24h = 0.0
+            volume_24h = 0.0
     else:
         # JSON 文件不存在
         print("JSON file not found for 24h calculation")
         fee_24h = 0.0
         revenue_24h = 0.0
+        volume_24h = 0.0
     
     # 3. 使用 pipeline 批量写入所有数据到 Redis
     redis_conn.begin_pipe()
@@ -214,17 +234,19 @@ def handel_cross_chain_fee(network_id, incremental_fee=0.0, incremental_revenue=
     # 保存历史总收益（用于其他接口）
     redis_conn.add_cross_chain_total_fee(str(total_fee))
     redis_conn.add_cross_chain_total_revenue(str(total_revenue))
+    redis_conn.add_cross_chain_total_volume(str(total_volume))
     
-    # 保存24小时收益
+    # 保存24小时收益和交易量
     redis_conn.pipe.set("CROSS_CHAIN_TOTAL_FEE_24H", str(fee_24h))
     redis_conn.pipe.set("CROSS_CHAIN_TOTAL_REVENUE_24H", str(revenue_24h))
+    redis_conn.pipe.set("CROSS_CHAIN_TOTAL_VOLUME_24H", str(volume_24h))
     
     redis_conn.end_pipe()
     redis_conn.close()
 
     print(
-        f"Saved to Redis: cross_chain_total_fee=${total_fee:.2f}, cross_chain_total_revenue=${total_revenue:.2f}, "
-        f"cross_chain_fee_24h=${fee_24h:.2f}, cross_chain_revenue_24h=${revenue_24h:.2f}")
+        f"Saved to Redis: cross_chain_total_fee=${total_fee:.2f}, cross_chain_total_revenue=${total_revenue:.2f}, cross_chain_total_volume=${total_volume:.2f}, "
+        f"cross_chain_fee_24h=${fee_24h:.2f}, cross_chain_revenue_24h=${revenue_24h:.2f}, cross_chain_volume_24h=${volume_24h:.2f}")
 
 
 def delay(seconds):
@@ -493,6 +515,7 @@ def calculate_fee_statistics(txs_data):
     """计算费用统计信息"""
     total_fee = 0.0
     total_revenue = 0.0
+    total_volume = 0.0
     success_count = 0
 
     for tx in txs_data:
@@ -500,12 +523,16 @@ def calculate_fee_statistics(txs_data):
             fee_amount = float(tx['fee_amount_usd'])
             total_fee += fee_amount
             success_count += 1
+            # 累加 volume（交易金额）
+            if tx.get('amount_in_usd'):
+                total_volume += float(tx['amount_in_usd'])
 
     total_revenue = total_fee * REVENUE_PERCENTAGE
 
     return {
         'total_fee': total_fee,
         'total_revenue': total_revenue,
+        'total_volume': total_volume,
         'success_count': success_count,
         'total_count': len(txs_data)
     }
@@ -648,12 +675,13 @@ def handel_rhea_intents_txs(intents_api_key, reparse_days=2, append_mode=True, n
     if stats_data:
         stats = calculate_fee_statistics(stats_data)
         print(
-            f"Statistics (this run) - Total Fee: ${stats['total_fee']:.2f}, Total Revenue: ${stats['total_revenue']:.2f}, "
+            f"Statistics (this run) - Total Fee: ${stats['total_fee']:.2f}, Total Revenue: ${stats['total_revenue']:.2f}, Total Volume: ${stats['total_volume']:.2f}, "
             f"Success TXs: {stats['success_count']}/{stats['total_count']}")
 
     # 6. 计算全量统计信息（从 JSON 文件读取所有数据）
     incremental_fee = 0.0
     incremental_revenue = 0.0
+    incremental_volume = 0.0
     is_first_run = not os.path.exists(INTENTS_JSON_FILE)
 
     # 计算本次新增交易的费用（只统计新增的，不统计重新解析的）
@@ -661,7 +689,8 @@ def handel_rhea_intents_txs(intents_api_key, reparse_days=2, append_mode=True, n
         new_txs_stats = calculate_fee_statistics(all_txs_to_save)
         incremental_fee = new_txs_stats['total_fee']
         incremental_revenue = new_txs_stats['total_revenue']
-        print(f"New transactions statistics - Fee: ${incremental_fee:.2f}, Revenue: ${incremental_revenue:.2f}, "
+        incremental_volume = new_txs_stats['total_volume']
+        print(f"New transactions statistics - Fee: ${incremental_fee:.2f}, Revenue: ${incremental_revenue:.2f}, Volume: ${incremental_volume:.2f}, "
                     f"Success TXs: {new_txs_stats['success_count']}/{new_txs_stats['total_count']}")
 
     if os.path.exists(INTENTS_JSON_FILE):
@@ -672,7 +701,7 @@ def handel_rhea_intents_txs(intents_api_key, reparse_days=2, append_mode=True, n
             if all_json_txs:
                 total_stats = calculate_fee_statistics(all_json_txs)
                 print(
-                    f"Statistics (all time) - Total Fee: ${total_stats['total_fee']:.2f}, Total Revenue: ${total_stats['total_revenue']:.2f}, "
+                    f"Statistics (all time) - Total Fee: ${total_stats['total_fee']:.2f}, Total Revenue: ${total_stats['total_revenue']:.2f}, Total Volume: ${total_stats['total_volume']:.2f}, "
                     f"Success TXs: {total_stats['success_count']}/{total_stats['total_count']}")
         except Exception as e:
             print(f"Error calculating total statistics: {e}")
@@ -681,13 +710,13 @@ def handel_rhea_intents_txs(intents_api_key, reparse_days=2, append_mode=True, n
         if stats_data:
             total_stats = calculate_fee_statistics(stats_data)
             print(
-                f"Statistics (first run) - Total Fee: ${total_stats['total_fee']:.2f}, Total Revenue: ${total_stats['total_revenue']:.2f}, "
+                f"Statistics (first run) - Total Fee: ${total_stats['total_fee']:.2f}, Total Revenue: ${total_stats['total_revenue']:.2f}, Total Volume: ${total_stats['total_volume']:.2f}, "
                 f"Success TXs: {total_stats['success_count']}/{total_stats['total_count']}")
             is_first_run = True
 
     # 7. 保存费用统计到 Redis
     if network_id:
-        handel_cross_chain_fee(network_id, incremental_fee, incremental_revenue, is_first_run)
+        handel_cross_chain_fee(network_id, incremental_fee, incremental_revenue, incremental_volume, is_first_run)
 
     # 8. 打印执行时间
     elapsed_time = time.time() - start_time

@@ -340,6 +340,14 @@ def get_cross_chain_total_revenue():
     return ret
 
 
+def get_cross_chain_total_volume():
+    """从 Redis 获取 cross chain total volume"""
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("CROSS_CHAIN_TOTAL_VOLUME")
+    r.close()
+    return ret
+
+
 class RedisProvider(object):
 
     def __init__(self):
@@ -444,6 +452,9 @@ class RedisProvider(object):
 
     def add_cross_chain_total_revenue(self, value):
         self.r.set("CROSS_CHAIN_TOTAL_REVENUE", value)
+
+    def add_cross_chain_total_volume(self, value):
+        self.r.set("CROSS_CHAIN_TOTAL_VOLUME", value)
 
     def close(self):
         self.r.close()
