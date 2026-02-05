@@ -30,7 +30,7 @@ def add_redis_data(network_id, key, redis_key, values):
     except Exception as e:
         # Rollback on error
         db_conn.rollback()
-        print("insert liquidation_result_info to db error:", e)
+        print("insert t_indexer_redis_data to db error:", e)
         raise e
     finally:
         cursor.close()

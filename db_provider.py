@@ -496,7 +496,8 @@ def handle_dcl_pools_to_redis_data(network_id, zero_point):
     sql = "SELECT pool_id, SUM(volume_x_in_grow) AS volume_x_in_grow, SUM(volume_y_in_grow) AS volume_y_in_grow, " \
           "SUM(volume_x_out_grow) AS volume_x_out_grow , SUM(volume_y_out_grow) AS volume_y_out_grow, " \
           "SUM(total_order_x_grow) AS total_order_x_grow, SUM(total_order_y_grow) AS total_order_y_grow, " \
-          "token_x_price, token_y_price, token_x_decimal, token_y_decimal " \
+          "max(token_x_price) as token_x_price, max(token_y_price) as token_y_price, " \
+          "max(token_x_decimal) as token_x_decimal, max(token_y_decimal) as token_y_decimal " \
           "FROM " + db_table + " WHERE `timestamp` >= %s GROUP BY pool_id"
 
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
