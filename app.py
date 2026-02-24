@@ -2202,6 +2202,7 @@ def handle_proxy_api():
             })
 
         authorization = request.headers.get("Authorization", "")
+        logger.info(f"/proxy/api request_data:{request_data}")
         response = proxy_api_request(
             base_url=Cfg.PROXY_API_URL,
             api_path=api_path,
@@ -2210,7 +2211,7 @@ def handle_proxy_api():
             query=query,
             authorization=authorization,
         )
-
+        logger.info(f"/proxy/api response:{response.content}")
         if response.status_code >= 400:
             message = response.text
             try:
