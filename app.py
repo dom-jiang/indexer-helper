@@ -17,7 +17,7 @@ from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, 
     get_burrow_total_revenue, get_nbtc_total_supply, list_burrow_asset_token_metadata, get_whitelist_tokens, \
     get_rnear_apy, add_rnear_apy, get_dcl_point_data, add_dcl_point_data, set_dcl_point_ttl, add_dcl_bin_point_data, \
     get_dcl_bin_point_data, get_multichain_lending_tokens_data, get_multichain_lending_token_icon, get_lst_total_fee_24h, \
-    get_lst_total_revenue_24h, get_cross_chain_total_fee_24h, get_cross_chain_total_revenue_24h, get_cross_chain_total_volume_24h, get_chain_prices
+    get_lst_total_revenue_24h, get_cross_chain_total_fee_24h, get_cross_chain_total_revenue_24h, get_cross_chain_total_volume_24h, get_chain_tokens_with_prices
 from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, is_base64, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
 from config import Cfg
 from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, query_burrow_liquidate_log, update_burrow_liquidate_log
@@ -2080,7 +2080,7 @@ def handle_get_chain_prices():
         ret["msg"] = "error"
         ret["data"] = "request parameter error"
         return jsonify(ret)
-    price_data = get_chain_prices(chain)
+    price_data = get_chain_tokens_with_prices(chain)
     ret["data"] = price_data
     return jsonify(ret)
 
