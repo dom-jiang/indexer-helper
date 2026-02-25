@@ -1172,7 +1172,7 @@ def query_dcl_bin_points(network_id, pool_id, bin_point_number):
         return point_data, point_data_24h, start_point, end_point
     except Exception as e:
         print("query dcl_pool_analysis to db error:", e)
-        return [], None
+        return [], None, 0, 0
     finally:
         cursor.close()
 

@@ -780,23 +780,35 @@ def handle_dcl_bin_points():
 @app.route('/get-dcl-points', methods=['GET'])
 def handle_dcl_points():
     pool_id = request.args.get("pool_id")
-
-    dcl_point_data = get_dcl_point_data(pool_id)
-    if dcl_point_data is None or dcl_point_data["ttl"] < 600:
-        if dcl_point_data is None:
-            ret_data = {"point_data": [], "top_bin_fee_data": {"total_fee": 0, "total_liquidity": 0}}
-        else:
-            ret_data = json.loads(dcl_point_data["value"])
-
-        add_dcl_point_data(pool_id, json.dumps(ret_data))
-        import threading
-        thread = threading.Thread(
-            target=handle_dcl_points_data,
-            args=(pool_id,)
-        )
-        thread.start()
+    slot_number = request.args.get("slot_number", type=int, default=50)
+    if pool_id is None:
+        return "null"
+    ret_data = get_dcl_bin_point_data(pool_id + str(slot_number))
+    if ret_data is None:
+        pool_id_s = pool_id.split("|")
+        token_x = pool_id_s[0]
+        token_y = pool_id_s[1]
+        fee_tier = pool_id_s[-1]
+        fee_tier_delta = {"100": 1, "400": 8, "2000": 40, "10000": 200}
+        point_delta_number = fee_tier_delta.get(fee_tier, 40)
+        bin_point_number = point_delta_number * slot_number
+        token_list = [token_x, token_y]
+        token_price = list_token_price_by_id_list(Cfg.NETWORK_ID, token_list)
+        all_point_data, all_point_data_24h, start_point, end_point = query_dcl_bin_points(Cfg.NETWORK_ID, pool_id,
+                                                                                          bin_point_number)
+        point_data = all_point_data
+        point_data_24h = handle_point_data(all_point_data_24h, int(start_point), int(end_point))
+        ret_point_data = handle_dcl_point_bin(pool_id, point_data, int(slot_number), int(start_point), int(end_point),
+                                              point_data_24h, token_price)
+        ret_data = {}
+        top_bin_fee_data = handle_top_bin_fee(ret_point_data)
+        ret_data["point_data"] = ret_point_data
+        ret_data["top_bin_fee_data"] = top_bin_fee_data
+        add_dcl_bin_point_data(pool_id + str(slot_number), json.dumps(ret_data))
+        top_bin_data = {"point_data": [], "top_bin_fee_data": top_bin_fee_data}
+        add_dcl_point_data(pool_id, json.dumps(top_bin_data))
     else:
-        ret_data = json.loads(dcl_point_data["value"])
+        ret_data = json.loads(ret_data)
     return compress_response_content(ret_data)
 
 
@@ -1781,6 +1793,7 @@ def handel_multichain_lending_tokens_data():
                         response = requests.get(
                             "https://pro-api.coingecko.com/api/v3/onchain/networks/" + blockchain + "/tokens/" + contract_address,
                             headers=headers)
+                        print("coingecko request:", blockchain + ":" + contract_address)
                         coingecko_ret_data = response.text
                         coingecko_token_data = json.loads(coingecko_ret_data)
                         token_icon = coingecko_token_data["data"]["attributes"]["image_url"]
@@ -1797,7 +1810,7 @@ def handel_multichain_lending_tokens_data():
                         conn.add_multichain_lending_token_icon(contract_address, token_icon)
                     except Exception as e:
                         print("coingecko err:", e.args)
-                
+                        conn.add_multichain_lending_token_icon(contract_address, "")
                 # is_s3_url = token_icon and (f"{Cfg.Bucket}.s3.amazonaws.com" in token_icon or f"s3.amazonaws.com/{Cfg.Bucket}" in token_icon)
                 # if token_icon and token_icon.startswith("http") and not is_s3_url:
                 #     try:
@@ -2202,7 +2215,7 @@ def handle_proxy_api():
             })
 
         authorization = request.headers.get("Authorization", "")
-        logger.info(f"/proxy/api request_data:{request_data}")
+        start_time = time.time()
         response = proxy_api_request(
             base_url=Cfg.PROXY_API_URL,
             api_path=api_path,
@@ -2211,7 +2224,9 @@ def handle_proxy_api():
             query=query,
             authorization=authorization,
         )
-        logger.info(f"/proxy/api response:{response.content}")
+        logger.info("proxy_api_request api_path:{}", api_path)
+        end_time = int(time.time())
+        logger.info("proxy_api_request consuming time:{}", start_time - end_time)
         if response.status_code >= 400:
             message = response.text
             try:
