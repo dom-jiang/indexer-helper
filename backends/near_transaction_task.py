@@ -12,6 +12,7 @@ from near_db_provider import add_limit_order_log, add_limit_order_swap_log, \
     add_account_not_registered_logs, add_liquidity_pools, add_liquidity_log, add_xref_log, add_farm_log, \
     add_withdraw_reward_data, add_meme_burrow_event_log, add_burrow_fee_log, add_conversion_token_log
 from redis_provider import get_token_price
+from db_provider import add_heartbeat_alarm_record
 
 
 def get_near_transaction_data(network_id, start_id):
@@ -1610,7 +1611,18 @@ if __name__ == "__main__":
     print("-----------------------------")
     network_id = "MAINNET"
     start_id = Cfg.DB3_START_ID
+    last_heartbeat_time = 0
+    HEARTBEAT_INTERVAL = 60
     while True:
         start_id = get_near_transaction_data(network_id, start_id)
         logger.info("start_id:{}", start_id)
+
+        now = time.time()
+        if now - last_heartbeat_time >= HEARTBEAT_INTERVAL:
+            try:
+                add_heartbeat_alarm_record("near_transaction_task", network_id)
+                last_heartbeat_time = now
+            except Exception as e:
+                logger.error("heartbeat error: {}", e)
+
         time.sleep(1)
