@@ -76,8 +76,8 @@ def handel_transaction_data(network_id, transaction_data_list, start_id):
             handle_dcl_log(logs, receipt_id, data_block_number, tx_time, network_id, receipt, predecessor_id, receiver_id)
         if receiver_id == "v2.ref-finance.near" and '"Success' in receipt_status:
             handle_liquidity_pools_content(receipt, predecessor_id, receipt_id, liquidity_pools_list)
-        if "conversion.rhealab.near" == receiver_id and '"Success' in receipt_status:
-            handle_conversion_token_log(logs, receipt_id, data_block_number, tx_time, conversion_token_date_list)
+        if ("conversion.rhealab.near" == receiver_id or "orhea-conv.rhealab.near" == receiver_id) and '"Success' in receipt_status:
+            handle_conversion_token_log(logs, receipt_id, data_block_number, tx_time, conversion_token_date_list, receiver_id)
     if len(swap_data_list) > 0:
         add_swap_log(swap_data_list, network_id)
     if len(liquidity_data_list) > 0:
@@ -1394,7 +1394,7 @@ def handle_burrow_fee_log_content(parsed_log, receipt_id, block_id, timestamp, b
             burrow_fee_date_list.append(burrow_date)
 
 
-def handle_conversion_token_log(logs, receipt_id, block_id, timestamp, conversion_token_date_list):
+def handle_conversion_token_log(logs, receipt_id, block_id, timestamp, conversion_token_date_list, receiver_id):
     for log in logs:
         if not log.startswith("EVENT_JSON:"):
             continue
@@ -1403,10 +1403,10 @@ def handle_conversion_token_log(logs, receipt_id, block_id, timestamp, conversio
         except json.JSONDecodeError:
             logger.error("Error during parsing logs from JSON string to dict")
             continue
-        handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list)
+        handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list, receiver_id)
 
 
-def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list):
+def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timestamp, conversion_token_date_list, receiver_id):
     conversion_type = ""
     source_token_id = ""
     source_amount = ""
@@ -1483,6 +1483,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
     elif event == "claim_succeeded":
@@ -1512,6 +1513,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
     elif event == "claim_failed":
@@ -1541,6 +1543,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
     elif event == "withdraw_source_token_succeeded":
@@ -1571,6 +1574,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
     elif event == "withdraw_source_token_failed":
@@ -1598,6 +1602,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
 
