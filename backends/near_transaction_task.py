@@ -1456,6 +1456,7 @@ def handle_conversion_token_log_content(parsed_log, receipt_id, block_id, timest
                 "receipt_id": receipt_id,
                 "block_id": block_id,
                 "timestamp": timestamp,
+                "receiver_id": receiver_id
             }
             conversion_token_date_list.append(conversion_token_date)
     elif event == "deposit_target_token":
