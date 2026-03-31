@@ -22,6 +22,30 @@ from bitget_utils import proxy_bitget_request, proxy_okx_request
 
 
 # ============================================================
+# Chain Type Detection
+# ============================================================
+
+CHAIN_TYPE_EVM = "evm"
+CHAIN_TYPE_SOLANA = "solana"
+CHAIN_TYPE_APTOS = "aptos"
+
+SOLANA_CHAIN_IDS = {"solana", "solana-mainnet", "501", 501}
+APTOS_CHAIN_IDS = {"aptos", "aptos-mainnet", "637", 637}
+
+OKX_SOLANA_CHAIN_INDEX = "501"
+
+
+def detect_chain_type(chain_id, chain_type_hint=None) -> str:
+    if chain_type_hint:
+        return chain_type_hint
+    if chain_id in SOLANA_CHAIN_IDS:
+        return CHAIN_TYPE_SOLANA
+    if chain_id in APTOS_CHAIN_IDS:
+        return CHAIN_TYPE_APTOS
+    return CHAIN_TYPE_EVM
+
+
+# ============================================================
 # Constants
 # ============================================================
 
@@ -998,3 +1022,506 @@ def get_supported_routers(chain_id: int = None) -> Dict:
 
         return {"chains": all_chains}
 
+
+# ============================================================
+# Solana Aggregation (Jupiter + OKX)
+# ============================================================
+
+SOLANA_BLUECHIP_TOKENS = {
+    "SOL": {"address": "So11111111111111111111111111111111111111112", "symbol": "SOL", "decimals": 9},
+    "USDC": {"address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "decimals": 6},
+    "USDT": {"address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "symbol": "USDT", "decimals": 6},
+}
+
+
+def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
+    """Parse Jupiter /swap/v2/order response into unified format."""
+    if not data or "error" in data:
+        return None
+
+    out_amount = data.get("outAmount") or data.get("outputAmount")
+    if not out_amount:
+        return None
+
+    try:
+        amount_out = Decimal(str(out_amount))
+    except (InvalidOperation, ValueError):
+        return None
+
+    if amount_out <= 0:
+        return None
+
+    min_amount_out = int(amount_out * (Decimal("1") - Decimal(str(slippage_decimal))))
+    token_out_decimals = token_out.get("decimals", 9)
+
+    return {
+        "router": "jupiter",
+        "amountOut": str(int(amount_out)),
+        "amountOutReadable": shrink_token(str(int(amount_out)), token_out_decimals),
+        "minAmountOut": str(min_amount_out),
+        "gasEstimate": "",
+        "swapTransaction": data.get("swapTransaction", ""),
+        "_amountOutDecimal": amount_out,
+    }
+
+
+def _parse_okx_solana_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
+    """Parse OKX quote response for Solana."""
+    return _parse_okx_quote(data, token_out, slippage_decimal)
+
+
+def aggregate_solana_quote(
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+) -> Dict:
+    """
+    Aggregate quotes from Jupiter and OKX for Solana swaps.
+
+    Args:
+        token_in: {"address": "So11...112", "symbol": "SOL", "decimals": 9}
+        token_out: {"address": "EPjF...t1v", "symbol": "USDC", "decimals": 6}
+        amount_in: smallest unit (lamports)
+        slippage: flexible input
+        sender: wallet public key
+    """
+    from jupiter_utils import jupiter_order
+
+    if not recipient:
+        recipient = sender
+
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    slippage_bps = max(1, int(slippage_decimal * 10000))
+
+    token_in_addr = token_in.get("address", "")
+    token_out_addr = token_out.get("address", "")
+
+    routers = [
+        ("jupiter", lambda: jupiter_order(
+            input_mint=token_in_addr,
+            output_mint=token_out_addr,
+            amount=amount_in,
+            slippage_bps=slippage_bps,
+            taker=sender,
+        )),
+        ("okx", lambda: okx_quote(
+            chain_id=501,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            slippage=slippage_decimal,
+            user_address=sender,
+        )),
+    ]
+
+    quotes = []
+    errors = []
+
+    with ThreadPoolExecutor(max_workers=len(routers)) as executor:
+        futures = {}
+        for name, fn in routers:
+            futures[executor.submit(fn)] = name
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                result = future.result()
+                if result.get("success"):
+                    quotes.append(result)
+                else:
+                    errors.append({"router": name, "error": result.get("error", "Unknown")})
+            except Exception as e:
+                errors.append({"router": name, "error": str(e)})
+
+    if not quotes:
+        return {"success": False, "error": "All Solana routers failed", "details": errors}
+
+    parsed = []
+    for q in quotes:
+        router = q["router"]
+        data = q["data"]
+        p = None
+        if router == "jupiter":
+            p = _parse_jupiter_order(data, token_out, slippage_decimal)
+        elif router == "okx":
+            p = _parse_okx_solana_quote(data, token_out, slippage_decimal)
+        if p:
+            parsed.append(p)
+        else:
+            errors.append({"router": router, "error": "Invalid quote response"})
+
+    if not parsed:
+        return {"success": False, "error": "No valid Solana quotes", "details": errors}
+
+    best = max(parsed, key=lambda q: q["_amountOutDecimal"])
+    best.pop("_amountOutDecimal", None)
+
+    all_summary = [{k: v for k, v in pq.items() if not k.startswith("_")} for pq in parsed]
+
+    return {
+        "success": True,
+        "chainType": CHAIN_TYPE_SOLANA,
+        "quote": {
+            **best,
+            "chainId": "solana-mainnet",
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "amountIn": amount_in,
+            "slippage": slippage_decimal,
+            "sender": sender,
+            "recipient": recipient,
+        },
+        "allQuotes": all_summary,
+        "errors": errors if errors else None,
+    }
+
+
+def build_solana_swap_tx(
+    router: str,
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+) -> Dict:
+    """
+    Build Solana swap transaction.
+
+    For Jupiter: returns pre-built base64 transaction for wallet signing.
+    For OKX: returns OKX Solana swap transaction.
+    """
+    from jupiter_utils import jupiter_order
+
+    if not recipient:
+        recipient = sender
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    slippage_bps = max(1, int(slippage_decimal * 10000))
+
+    if router == "jupiter":
+        result = jupiter_order(
+            input_mint=token_in.get("address", ""),
+            output_mint=token_out.get("address", ""),
+            amount=amount_in,
+            slippage_bps=slippage_bps,
+            taker=sender,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Jupiter order failed")}
+
+        data = result["data"]
+        swap_tx = data.get("swapTransaction", "")
+        if not swap_tx:
+            return {"success": False, "error": "Jupiter: no swapTransaction in response"}
+
+        return {
+            "success": True,
+            "chainType": CHAIN_TYPE_SOLANA,
+            "tx": {
+                "transaction": swap_tx,
+                "format": "base64",
+            },
+            "router": "jupiter",
+        }
+
+    elif router == "okx":
+        result = okx_swap(
+            chain_id=501,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            slippage=slippage_decimal,
+            from_address=sender,
+            to_address=recipient,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "OKX Solana swap failed")}
+
+        data = result["data"]
+        if str(data.get("code")) != "0" or not data.get("data"):
+            return {"success": False, "error": data.get("msg", "OKX Solana swap error")}
+
+        tx_data = data["data"][0] if isinstance(data["data"], list) else data["data"]
+        tx = tx_data.get("tx") or tx_data
+
+        return {
+            "success": True,
+            "chainType": CHAIN_TYPE_SOLANA,
+            "tx": {
+                "transaction": tx.get("data", ""),
+                "format": "base64",
+            },
+            "router": "okx",
+        }
+
+    return {"success": False, "error": f"Unknown Solana router: {router}"}
+
+
+# ============================================================
+# Aptos Aggregation (Panora)
+# ============================================================
+
+APTOS_BLUECHIP_TOKENS = {
+    "APT": {"address": "0xa", "symbol": "APT", "decimals": 8},
+    "USDC": {"address": "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", "symbol": "USDC", "decimals": 6},
+    "USDT": {"address": "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b", "symbol": "USDT", "decimals": 6},
+}
+
+
+def aggregate_aptos_quote(
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+) -> Dict:
+    """
+    Get Aptos swap quote from Panora.
+
+    Note: Panora accepts human-readable amounts, so we convert from smallest unit.
+    """
+    from panora_utils import panora_swap
+
+    if not recipient:
+        recipient = sender
+
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    slippage_pct = slippage_decimal * 100
+
+    token_in_decimals = token_in.get("decimals", 8)
+    readable_amount = shrink_token(amount_in, token_in_decimals)
+
+    result = panora_swap(
+        from_token=token_in.get("address", ""),
+        to_token=token_out.get("address", ""),
+        from_amount=readable_amount,
+        to_wallet=recipient or sender,
+        slippage=slippage_pct,
+    )
+
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error", "Panora API failed")}
+
+    data = result["data"]
+    quotes_list = data if isinstance(data, list) else data.get("quotes", [data])
+
+    if not quotes_list:
+        return {"success": False, "error": "Panora returned no quotes"}
+
+    parsed = []
+    for q in quotes_list:
+        to_amount = q.get("toTokenAmount")
+        if not to_amount:
+            continue
+        try:
+            amount_out_readable = Decimal(str(to_amount))
+        except (InvalidOperation, ValueError):
+            continue
+
+        token_out_decimals = token_out.get("decimals", 8)
+        amount_out_raw = int(amount_out_readable * Decimal(10 ** token_out_decimals))
+        min_out = int(amount_out_raw * (Decimal("1") - Decimal(str(slippage_decimal))))
+
+        tx_data = q.get("txData", {})
+
+        parsed.append({
+            "router": "panora",
+            "amountOut": str(amount_out_raw),
+            "amountOutReadable": str(to_amount),
+            "minAmountOut": str(min_out),
+            "priceImpact": q.get("priceImpact", ""),
+            "txData": tx_data,
+            "_amountOutDecimal": Decimal(str(amount_out_raw)),
+        })
+
+    if not parsed:
+        return {"success": False, "error": "No valid Aptos quotes from Panora"}
+
+    best = max(parsed, key=lambda q: q["_amountOutDecimal"])
+    best.pop("_amountOutDecimal", None)
+    all_summary = [{k: v for k, v in pq.items() if not k.startswith("_")} for pq in parsed]
+
+    return {
+        "success": True,
+        "chainType": CHAIN_TYPE_APTOS,
+        "quote": {
+            **best,
+            "chainId": "aptos-mainnet",
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "amountIn": amount_in,
+            "slippage": slippage_decimal,
+            "sender": sender,
+            "recipient": recipient or sender,
+        },
+        "allQuotes": all_summary,
+    }
+
+
+def build_aptos_swap_tx(
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+) -> Dict:
+    """
+    Build Aptos swap transaction via Panora.
+
+    Panora returns txData in the quote response, so we call the same endpoint.
+    Returns Move entry function data for Aptos wallet adapter.
+    """
+    from panora_utils import panora_swap
+
+    if not recipient:
+        recipient = sender
+
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    slippage_pct = slippage_decimal * 100
+
+    token_in_decimals = token_in.get("decimals", 8)
+    readable_amount = shrink_token(amount_in, token_in_decimals)
+
+    result = panora_swap(
+        from_token=token_in.get("address", ""),
+        to_token=token_out.get("address", ""),
+        from_amount=readable_amount,
+        to_wallet=recipient,
+        slippage=slippage_pct,
+    )
+
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error", "Panora swap failed")}
+
+    data = result["data"]
+    quotes_list = data if isinstance(data, list) else data.get("quotes", [data])
+    if not quotes_list:
+        return {"success": False, "error": "Panora returned no transaction data"}
+
+    best_quote = quotes_list[0]
+    tx_data = best_quote.get("txData", {})
+
+    if not tx_data:
+        return {"success": False, "error": "Panora: no txData in response"}
+
+    return {
+        "success": True,
+        "chainType": CHAIN_TYPE_APTOS,
+        "tx": tx_data,
+        "router": "panora",
+    }
+
+
+# ============================================================
+# Unified Multi-Chain Entry Points
+# ============================================================
+
+def multi_chain_quote(
+    chain_id,
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+    chain_type: str = None,
+) -> Dict:
+    """
+    Unified quote entry point for all chains.
+    Detects chain type and routes to the appropriate aggregator.
+    """
+    ct = detect_chain_type(chain_id, chain_type)
+
+    if ct == CHAIN_TYPE_SOLANA:
+        return aggregate_solana_quote(token_in, token_out, amount_in, slippage, sender, recipient)
+    elif ct == CHAIN_TYPE_APTOS:
+        return aggregate_aptos_quote(token_in, token_out, amount_in, slippage, sender, recipient)
+    else:
+        result = aggregate_quote(chain_id, token_in, token_out, amount_in, slippage, sender, recipient)
+        if result.get("success") and "chainType" not in result:
+            result["chainType"] = CHAIN_TYPE_EVM
+        return result
+
+
+def multi_chain_build_tx(
+    chain_id,
+    router: str,
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str = None,
+    market: str = None,
+    chain_type: str = None,
+) -> Dict:
+    """
+    Unified build-tx entry point for all chains.
+    """
+    ct = detect_chain_type(chain_id, chain_type)
+
+    if ct == CHAIN_TYPE_SOLANA:
+        return build_solana_swap_tx(router, token_in, token_out, amount_in, slippage, sender, recipient)
+    elif ct == CHAIN_TYPE_APTOS:
+        return build_aptos_swap_tx(token_in, token_out, amount_in, slippage, sender, recipient)
+    else:
+        return build_swap_tx(chain_id, router, token_in, token_out, amount_in, slippage, sender, recipient, market)
+
+
+def multi_chain_approve_tx(
+    chain_id,
+    router: str,
+    token_address: str,
+    approve_amount: str,
+    spender: str = None,
+    chain_type: str = None,
+) -> Dict:
+    """
+    Unified approve-tx entry point.
+    Aptos and Solana do not need approvals.
+    """
+    ct = detect_chain_type(chain_id, chain_type)
+
+    if ct == CHAIN_TYPE_SOLANA:
+        return {"success": True, "msg": "Solana tokens do not require approval"}
+    elif ct == CHAIN_TYPE_APTOS:
+        return {"success": True, "msg": "Aptos tokens do not require approval"}
+    else:
+        return build_approve_tx(chain_id, router, token_address, approve_amount, spender)
+
+
+def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
+    """Get supported routers for all chain types."""
+    if chain_type == CHAIN_TYPE_SOLANA or chain_id in SOLANA_CHAIN_IDS:
+        return {
+            "chainType": CHAIN_TYPE_SOLANA,
+            "chainId": "solana-mainnet",
+            "routers": [
+                {"name": "jupiter", "supported": True},
+                {"name": "okx", "chainId": "501", "supported": True},
+            ],
+            "bluechipTokens": [
+                {"symbol": k, "address": v["address"], "decimals": v["decimals"]}
+                for k, v in SOLANA_BLUECHIP_TOKENS.items()
+            ],
+            "needsApproval": False,
+        }
+    elif chain_type == CHAIN_TYPE_APTOS or chain_id in APTOS_CHAIN_IDS:
+        return {
+            "chainType": CHAIN_TYPE_APTOS,
+            "chainId": "aptos-mainnet",
+            "routers": [
+                {"name": "panora", "supported": True},
+            ],
+            "bluechipTokens": [
+                {"symbol": k, "address": v["address"], "decimals": v["decimals"]}
+                for k, v in APTOS_BLUECHIP_TOKENS.items()
+            ],
+            "needsApproval": False,
+        }
+    else:
+        return get_supported_routers(chain_id)

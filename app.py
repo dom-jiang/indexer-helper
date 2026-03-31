@@ -6,6 +6,7 @@ from flask import Flask
 from flask import request
 from flask import jsonify
 from flask import Response
+from flask import g
 import json
 import logging
 from indexer_provider import get_proposal_id_hash
@@ -20,7 +21,7 @@ from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, 
     get_lst_total_revenue_24h, get_cross_chain_total_fee_24h, get_cross_chain_total_revenue_24h, get_cross_chain_total_volume_24h, get_chain_tokens_with_prices
 from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, is_base64, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
 from config import Cfg
-from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, query_burrow_liquidate_log, update_burrow_liquidate_log, get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
+from db_provider import get_db_connect, get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, query_burrow_liquidate_log, update_burrow_liquidate_log, get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
 from db_provider import query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
     query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
@@ -47,7 +48,11 @@ from s3_client import AwsS3Config, download_and_upload_image_to_s3
 from zcash_utils import get_deposit_address, verify_add_zcash, ZcashRPC, call_evm_mpc_contract
 from bitget_utils import proxy_bitget_request, proxy_okx_request
 from proxy_api_utils import proxy_api_request
-from swap_utils import aggregate_quote, build_swap_tx, build_approve_tx, get_supported_routers
+from swap_utils import aggregate_quote, build_swap_tx, build_approve_tx, get_supported_routers, \
+    multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx, multi_chain_supported_routers, detect_chain_type
+from boss.routes import init_boss_routes
+from boss.auth import validate_swap_jwt
+from boss.rate_limiter import check_rate_limit
 from trxx_utils import (
     trxx_create_order, trxx_query_order, trxx_estimate_price, trxx_get_index_data,
     trxx_reclaim_order, trxx_transfer_activate, verify_trxx_webhook_signature,
@@ -64,20 +69,39 @@ service_version = "20260318.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
-app = Flask(__name__)
-# limiter = Limiter(
-#     app,
-#     key_func=get_ip_address,
-#     default_limits=["20 per second"],
-#     # storage_uri="redis://:@127.0.0.1:6379/2"
-#     storage_uri="redis://:@" + Cfg.REDIS["REDIS_HOST"] + ":6379/2"
-# )
+app = Flask(__name__, static_folder="boss-frontend/dist", static_url_path="/boss-ui")
+
+init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
+
+
+def _get_swap_endpoint_group(path: str) -> str | None:
+    if "/api/swap/quote" in path or "/api/swap/supported-routers" in path:
+        return "quote"
+    if "/api/swap/build-tx" in path or "/api/swap/approve-tx" in path:
+        return "build"
+    return None
 
 
 @app.before_request
 def before_request():
-    # Processing get requests
     path = request.path
+
+    # Boss UI and API routes skip legacy auth
+    if path.startswith("/boss"):
+        return None
+
+    # Swap API: JWT auth + rate limiting
+    endpoint_group = _get_swap_endpoint_group(path)
+    if endpoint_group:
+        api_token = validate_swap_jwt(lambda: get_db_connect(Cfg.NETWORK_ID))
+        if not api_token:
+            return jsonify({"code": 401, "msg": "Valid JWT token required in Authorization header"}), 401
+        rl = check_rate_limit(g.app_id, endpoint_group, lambda: get_db_connect(Cfg.NETWORK_ID))
+        if not rl["allowed"]:
+            return jsonify({"code": 429, "msg": rl["reason"]}), 429
+        return None
+
+    # Legacy AES-based auth for non-swap routes
     if Cfg.NETWORK[Cfg.NETWORK_ID]["AUTH_SWITCH"] and path not in Cfg.NETWORK[Cfg.NETWORK_ID]["NOT_AUTH_LIST"]:
         try:
             headers_authentication = request.headers.get("Authentication")
@@ -2422,18 +2446,19 @@ def handle_get_supported_chains():
 @app.route('/api/swap/quote', methods=['POST'])
 def api_swap_quote():
     """
-    Aggregated DEX quote from Bitget/OKX.
-    Queries multiple DEX routers in parallel and returns the best quote.
+    Multi-chain aggregated DEX quote.
+    Supports EVM, Solana, and Aptos chains.
 
     Request body:
     {
-        "chainId": 1,
+        "chainId": 1,                 // EVM chain ID (int) or "solana-mainnet" / "aptos-mainnet"
+        "chainType": "evm",           // optional: "evm" / "solana" / "aptos" (auto-detected from chainId)
         "tokenIn": {"address": "0x...", "symbol": "USDT", "decimals": 6},
         "tokenOut": {"address": "0x...", "symbol": "USDC", "decimals": 6},
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
-        "recipient": "0x..."  // optional, defaults to sender
+        "recipient": "0x..."          // optional, defaults to sender
     }
     """
     try:
@@ -2445,6 +2470,7 @@ def api_swap_quote():
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
         chain_id = body.get("chainId")
+        chain_type = body.get("chainType")
         token_in = body.get("tokenIn")
         token_out = body.get("tokenOut")
         amount_in = body.get("amountIn")
@@ -2452,9 +2478,8 @@ def api_swap_quote():
         sender = body.get("sender")
         recipient = body.get("recipient")
 
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
+        if not chain_id:
+            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
         if not token_in or not isinstance(token_in, dict):
             return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
         if not token_out or not isinstance(token_out, dict):
@@ -2464,7 +2489,7 @@ def api_swap_quote():
         if not sender:
             return jsonify({"code": -1, "msg": "sender address is required", "data": None})
 
-        result = aggregate_quote(
+        result = multi_chain_quote(
             chain_id=chain_id,
             token_in=token_in,
             token_out=token_out,
@@ -2472,6 +2497,7 @@ def api_swap_quote():
             slippage=float(slippage),
             sender=sender,
             recipient=recipient,
+            chain_type=chain_type,
         )
 
         if result.get("success"):
@@ -2486,20 +2512,20 @@ def api_swap_quote():
 @app.route('/api/swap/build-tx', methods=['POST'])
 def api_swap_build_tx():
     """
-    Build swap transaction parameters for wallet signing.
-    Frontend calls this after getting a quote, then sends the tx via wallet.
+    Multi-chain build swap transaction for wallet signing.
 
     Request body:
     {
         "chainId": 1,
-        "router": "bitget",
-        "tokenIn": {"address": "0x...", "symbol": "USDT", "decimals": 6},
-        "tokenOut": {"address": "0x...", "symbol": "USDC", "decimals": 6},
+        "chainType": "evm",           // optional
+        "router": "bitget",           // "bitget" / "okx" / "jupiter" / "panora"
+        "tokenIn": {...},
+        "tokenOut": {...},
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
         "recipient": "0x...",
-        "market": "..."  // required for Bitget (from quote response)
+        "market": "..."               // required for Bitget (from quote response)
     }
     """
     try:
@@ -2511,6 +2537,7 @@ def api_swap_build_tx():
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
         chain_id = body.get("chainId")
+        chain_type = body.get("chainType")
         router = body.get("router")
         token_in = body.get("tokenIn")
         token_out = body.get("tokenOut")
@@ -2520,11 +2547,10 @@ def api_swap_build_tx():
         recipient = body.get("recipient")
         market = body.get("market")
 
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
-        if not router or router not in ("bitget", "okx"):
-            return jsonify({"code": -1, "msg": "router is required and must be 'bitget' or 'okx'", "data": None})
+        if not chain_id:
+            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
+        if not router:
+            return jsonify({"code": -1, "msg": "router is required", "data": None})
         if not token_in or not isinstance(token_in, dict):
             return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
         if not token_out or not isinstance(token_out, dict):
@@ -2536,7 +2562,7 @@ def api_swap_build_tx():
         if not recipient:
             recipient = sender
 
-        result = build_swap_tx(
+        result = multi_chain_build_tx(
             chain_id=chain_id,
             router=router,
             token_in=token_in,
@@ -2546,6 +2572,7 @@ def api_swap_build_tx():
             sender=sender,
             recipient=recipient,
             market=market,
+            chain_type=chain_type,
         )
 
         if result.get("success"):
@@ -2561,15 +2588,16 @@ def api_swap_build_tx():
 def api_swap_approve_tx():
     """
     Build ERC20 approve transaction for wallet signing.
-    Required before swap if token allowance is insufficient.
+    Not needed for Solana/Aptos (returns success with message).
 
     Request body:
     {
         "chainId": 1,
+        "chainType": "evm",           // optional
         "router": "okx",
         "tokenAddress": "0x...",
-        "approveAmount": "1000000",  // or "max" for unlimited
-        "spender": "0x..."  // required for Bitget (from build-tx 'approveSpender')
+        "approveAmount": "1000000",    // or "max" for unlimited
+        "spender": "0x..."             // required for Bitget (from build-tx 'approveSpender')
     }
     """
     try:
@@ -2581,33 +2609,28 @@ def api_swap_approve_tx():
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
         chain_id = body.get("chainId")
-        router = body.get("router")
+        chain_type = body.get("chainType")
+        router = body.get("router", "")
         token_address = body.get("tokenAddress")
         approve_amount = body.get("approveAmount", "max")
         spender = body.get("spender")
 
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
-        if not router or router not in ("bitget", "okx"):
-            return jsonify({"code": -1, "msg": "router is required and must be 'bitget' or 'okx'", "data": None})
-        if not token_address:
-            return jsonify({"code": -1, "msg": "tokenAddress is required", "data": None})
+        if not chain_id:
+            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
 
-        # Convert "max"/"unlimited" to a large number for OKX API
         if approve_amount in ("max", "unlimited"):
-            # Use a very large number (2^255) for OKX API; for Bitget we use MaxUint256 directly
             if router == "okx":
                 approve_amount = str(2 ** 255)
         else:
             approve_amount = str(approve_amount)
 
-        result = build_approve_tx(
+        result = multi_chain_approve_tx(
             chain_id=chain_id,
             router=router,
-            token_address=token_address,
+            token_address=token_address or "",
             approve_amount=approve_amount,
             spender=spender,
+            chain_type=chain_type,
         )
 
         if result.get("success"):
@@ -2623,20 +2646,126 @@ def api_swap_approve_tx():
 def api_swap_supported_routers():
     """
     Get supported DEX routers and chain information.
+    Supports EVM, Solana, and Aptos.
 
     Query params:
         chainId (optional): specific chain ID to query
+        chainType (optional): "evm" / "solana" / "aptos"
     """
     try:
         chain_id_str = request.args.get("chainId")
-        chain_id = int(chain_id_str) if chain_id_str else None
+        chain_type = request.args.get("chainType")
 
-        result = get_supported_routers(chain_id=chain_id)
+        chain_id = None
+        if chain_id_str:
+            try:
+                chain_id = int(chain_id_str)
+            except ValueError:
+                chain_id = chain_id_str
+
+        result = multi_chain_supported_routers(chain_id=chain_id, chain_type=chain_type)
 
         return jsonify({"code": 0, "msg": "success", "data": result})
     except Exception as e:
         logger.error(f"api_swap_supported_routers error: {e}")
         return jsonify({"code": -1, "msg": str(e), "data": None})
+
+
+# ============================================================
+# Cross-Chain Swap API (OmniBridge)
+# ============================================================
+
+@app.route('/api/swap/cross-chain/quote', methods=['POST'])
+def api_cross_chain_quote():
+    """
+    Get cross-chain swap quote via OmniBridge.
+
+    Request body:
+    {
+        "fromChain": "ethereum",
+        "toChain": "bsc",
+        "tokenIn": {"address": "...", "symbol": "ETH", "decimals": 18},
+        "tokenOut": {"address": "...", "symbol": "BNB", "decimals": 18},
+        "amountIn": "1000000000000000000",
+        "sender": "0x...",
+        "recipient": "0x..."
+    }
+    """
+    try:
+        from omnibridge_utils import cross_chain_quote
+
+        body = request.get_json()
+        if not body:
+            return jsonify({"code": -1, "msg": "Request body required"})
+
+        result = cross_chain_quote(
+            from_chain=body.get("fromChain", ""),
+            to_chain=body.get("toChain", ""),
+            token_in=body.get("tokenIn", {}),
+            token_out=body.get("tokenOut", {}),
+            amount_in=str(body.get("amountIn", "0")),
+            sender=body.get("sender", ""),
+            recipient=body.get("recipient"),
+        )
+
+        if result.get("success"):
+            return jsonify({"code": 0, "msg": "success", "data": result})
+        else:
+            return jsonify({"code": -1, "msg": result.get("error", "Cross-chain quote failed"), "data": result})
+    except Exception as e:
+        logger.error(f"api_cross_chain_quote error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+@app.route('/api/swap/cross-chain/build-tx', methods=['POST'])
+def api_cross_chain_build_tx():
+    """
+    Create a cross-chain swap order via OmniBridge.
+    Returns deposit address and amount.
+    """
+    try:
+        from omnibridge_utils import cross_chain_build_tx
+
+        body = request.get_json()
+        if not body:
+            return jsonify({"code": -1, "msg": "Request body required"})
+
+        result = cross_chain_build_tx(
+            from_chain=body.get("fromChain", ""),
+            to_chain=body.get("toChain", ""),
+            token_in=body.get("tokenIn", {}),
+            token_out=body.get("tokenOut", {}),
+            amount_in=str(body.get("amountIn", "0")),
+            sender=body.get("sender", ""),
+            recipient=body.get("recipient", body.get("sender", "")),
+            slippage=float(body.get("slippage", 0.5)),
+        )
+
+        if result.get("success"):
+            return jsonify({"code": 0, "msg": "success", "data": result})
+        else:
+            return jsonify({"code": -1, "msg": result.get("error", "Cross-chain order failed"), "data": result})
+    except Exception as e:
+        logger.error(f"api_cross_chain_build_tx error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+@app.route('/api/swap/cross-chain/order-status', methods=['GET'])
+def api_cross_chain_order_status():
+    """Query OmniBridge cross-chain order status."""
+    try:
+        from omnibridge_utils import omni_get_order_status
+        order_id = request.args.get("orderId")
+        if not order_id:
+            return jsonify({"code": -1, "msg": "orderId required"})
+        result = omni_get_order_status(order_id)
+        if result.get("success"):
+            return jsonify({"code": 0, "msg": "success", "data": result["data"]})
+        else:
+            return jsonify({"code": -1, "msg": result.get("error", "Query failed")})
+    except Exception as e:
+        logger.error(f"api_cross_chain_order_status error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
 
 
 # ============================================================
@@ -3278,6 +3407,18 @@ def _format_order_response(order):
         "createdAt": str(order.get("created_at", "")),
         "updatedAt": str(order.get("updated_at", "")),
     }
+
+
+@app.route("/boss-ui/")
+@app.route("/boss-ui/<path:path>")
+def serve_boss_ui(path="index.html"):
+    """Serve Boss frontend SPA - all routes fall back to index.html"""
+    import os
+    static_dir = os.path.join(app.root_path, "boss-frontend", "dist")
+    file_path = os.path.join(static_dir, path)
+    if os.path.isfile(file_path):
+        return app.send_static_file(path)
+    return app.send_static_file("index.html")
 
 
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")

@@ -7,6 +7,8 @@ import time
 import requests
 from redis_provider import RedisProvider, list_history_token_price, list_token_price, list_token_metadata, get_account_pool_assets, get_pool_point_24h_by_pool_id
 from data_utils import add_redis_data
+from dbutils.pooled_db import PooledDB
+from loguru import logger
 
 
 class Encoder(json.JSONEncoder):
@@ -24,7 +26,72 @@ class Encoder(json.JSONEncoder):
         super(Encoder, self).default(o)
 
 
+_POOL_DEFAULTS = dict(creator=pymysql, mincached=2, maxcached=10, maxconnections=20, blocking=True, charset="utf8mb4")
+
+
+def _make_pool(network_id, user_key, pwd_key, db_key, host_key="DB_HOST", port_key="DB_PORT"):
+    net = Cfg.NETWORK[network_id]
+    return PooledDB(
+        **_POOL_DEFAULTS,
+        host=net[host_key],
+        port=int(net[port_key]),
+        user=net[user_key],
+        passwd=net[pwd_key],
+        db=net[db_key] if db_key in net else db_key,
+    )
+
+
+_nid = Cfg.NETWORK_ID
+try:
+    _db_pool = _make_pool(_nid, "DB_UID", "DB_PWD", "DB_DSN")
+except Exception as e:
+    logger.warning(f"Failed to create main DB pool: {e}")
+    _db_pool = None
+
+try:
+    _lake_pool = _make_pool(_nid, "NEAR_LAKE_DB_UID", "NEAR_LAKE_DB_PWD", "NEAR_LAKE_DB_DSN",
+                            host_key="NEAR_LAKE_DB_HOST", port_key="NEAR_LAKE_DB_PORT")
+except Exception as e:
+    logger.warning(f"Failed to create NEAR lake DB pool: {e}")
+    _lake_pool = None
+
+try:
+    _lake_dcl_pool = _make_pool(_nid, "NEAR_LAKE_DB_UID", "NEAR_LAKE_DB_PWD", "NEAR_LAKE_DCL_DB_DSN",
+                                host_key="NEAR_LAKE_DB_HOST", port_key="NEAR_LAKE_DB_PORT")
+except Exception as e:
+    logger.warning(f"Failed to create NEAR lake DCL pool: {e}")
+    _lake_dcl_pool = None
+
+try:
+    _crm_pool = PooledDB(
+        **_POOL_DEFAULTS,
+        host=Cfg.NETWORK[_nid]["DB_HOST"],
+        port=int(Cfg.NETWORK[_nid]["DB_PORT"]),
+        user=Cfg.NETWORK[_nid].get("CRM_DB_UID", Cfg.NETWORK[_nid]["DB_UID"]),
+        passwd=Cfg.NETWORK[_nid].get("CRM_DB_PWD", Cfg.NETWORK[_nid]["DB_PWD"]),
+        db="crm",
+    )
+except Exception as e:
+    logger.warning(f"Failed to create CRM DB pool: {e}")
+    _crm_pool = None
+
+try:
+    _burrow_pool = PooledDB(
+        **_POOL_DEFAULTS,
+        host=Cfg.NETWORK[_nid]["DB_HOST"],
+        port=int(Cfg.NETWORK[_nid]["DB_PORT"]),
+        user=Cfg.NETWORK[_nid].get("BURROW_DB_UID", Cfg.NETWORK[_nid]["DB_UID"]),
+        passwd=Cfg.NETWORK[_nid].get("BURROW_DB_PWD", Cfg.NETWORK[_nid]["DB_PWD"]),
+        db="burrow",
+    )
+except Exception as e:
+    logger.warning(f"Failed to create Burrow DB pool: {e}")
+    _burrow_pool = None
+
+
 def get_db_connect(network_id: str):
+    if _db_pool:
+        return _db_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
@@ -35,6 +102,8 @@ def get_db_connect(network_id: str):
 
 
 def get_near_lake_connect(network_id: str):
+    if _lake_pool:
+        return _lake_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["NEAR_LAKE_DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["NEAR_LAKE_DB_PORT"]),
@@ -45,6 +114,8 @@ def get_near_lake_connect(network_id: str):
 
 
 def get_near_lake_dcl_connect(network_id: str):
+    if _lake_dcl_pool:
+        return _lake_dcl_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["NEAR_LAKE_DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["NEAR_LAKE_DB_PORT"]),
@@ -55,6 +126,8 @@ def get_near_lake_dcl_connect(network_id: str):
 
 
 def get_crm_db_connect(network_id: str):
+    if _crm_pool:
+        return _crm_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
@@ -65,6 +138,8 @@ def get_crm_db_connect(network_id: str):
 
 
 def get_burrow_connect(network_id: str):
+    if _burrow_pool:
+        return _burrow_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
