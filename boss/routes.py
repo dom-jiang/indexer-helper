@@ -21,6 +21,7 @@ Admin:
   PUT  /boss/admin/tokens/<app_id>/rate-limits
 """
 
+import hashlib
 import secrets
 from flask import Blueprint, request, jsonify, g
 from loguru import logger
@@ -37,9 +38,10 @@ from boss.auth import (
     generate_jwt, generate_boss_session_token, boss_login_required, boss_admin_required,
 )
 from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
+from config import Cfg
 
-
-BOSS_SESSION_SECRET = secrets.token_urlsafe(32)
+_aes_key = getattr(Cfg, "CRYPTO_AES_KEY", "") or ""
+BOSS_SESSION_SECRET = hashlib.sha256(f"boss_session_{_aes_key}".encode()).hexdigest()
 
 boss_bp = Blueprint("boss", __name__, url_prefix="/boss")
 
