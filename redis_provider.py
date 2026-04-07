@@ -441,6 +441,23 @@ class RedisProvider(object):
     def add_burrow_total_revenue(self, value):
         self.r.set("BURROW_TOTAL_REVENUE", value)
 
+    def save_burrow_fee_baseline(self, snapshot_data):
+        """Save the 24h baseline snapshot. Only called when baseline is stale (>24h)."""
+        pipe = self.r.pipeline()
+        pipe.delete("BURROW_FEE_BASELINE")
+        for token_id, data in snapshot_data.items():
+            pipe.hset("BURROW_FEE_BASELINE", token_id, json.dumps(data))
+        pipe.execute()
+
+    def get_burrow_fee_baseline(self):
+        """Get the 24h baseline snapshot."""
+        raw = self.r.hgetall("BURROW_FEE_BASELINE")
+        result = {}
+        for token_id, val in raw.items():
+            key = token_id.decode() if isinstance(token_id, bytes) else token_id
+            result[key] = json.loads(val)
+        return result
+
     def add_lst_total_fee(self, value):
         self.r.set("LST_TOTAL_FEE", value)
 
@@ -458,6 +475,34 @@ class RedisProvider(object):
 
     def close(self):
         self.r.close()
+
+
+def get_lst_total_fee_24h():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("LST_TOTAL_FEE_24H")
+    r.close()
+    return ret
+
+
+def get_cross_chain_total_fee_24h():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("CROSS_CHAIN_TOTAL_FEE_24H")
+    r.close()
+    return ret
+
+
+def get_lst_total_revenue_24h():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("LST_TOTAL_REVENUE_24H")
+    r.close()
+    return ret
+
+
+def get_cross_chain_total_revenue_24h():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("CROSS_CHAIN_TOTAL_REVENUE_24H")
+    r.close()
+    return ret
 
 
 if __name__ == '__main__':

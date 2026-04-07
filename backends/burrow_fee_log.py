@@ -83,18 +83,26 @@ def handel_burrow_fee_log_24h(network_id):
         burrow_fee_log_list = get_burrow_fee_log_24h_data(network_id, old_time)
         burrow_total_fee = 0.0
         burrow_total_revenue = 0.0
+        skipped_count = 0
         for burrow_fee_log in burrow_fee_log_list:
             token_id = burrow_fee_log["token_id"]
             if token_id not in token_price_data:
                 print("token not in token_price_data:", token_id)
+                skipped_count += 1
                 continue
             if token_id not in token_config_data:
                 print("token not in token_config_ret:", token_id)
+                skipped_count += 1
                 continue
             usd_token_decimal = token_price_data[token_id]["decimal"] + token_config_data[token_id]
             burrow_total_fee += (int(burrow_fee_log["interest"]) / int("1" + "0" * usd_token_decimal)) * float(token_price_data[token_id]["price"])
             burrow_total_revenue += ((int(burrow_fee_log["prot_fee"]) + int(burrow_fee_log["reserved"])) / int("1" + "0" * usd_token_decimal)) * float(token_price_data[token_id]["price"])
             log_id_list.append(burrow_fee_log["id"])
+
+        print(f"[LOG_METHOD] burrow_fee_log records (24h): {len(burrow_fee_log_list)}, "
+              f"processed: {len(log_id_list)}, skipped: {skipped_count}")
+        print(f"[LOG_METHOD] 24h burrow_total_fee (interest-based):  ${burrow_total_fee:,.2f}")
+        print(f"[LOG_METHOD] 24h burrow_total_revenue (prot_fee+reserved): ${burrow_total_revenue:,.2f}")
 
         conn = RedisProvider()
         conn.begin_pipe()
@@ -737,7 +745,7 @@ def handel_lst_fee(network_id):
     try:
         # 1. 获取当前数量（不乘以价格）
         conn = MultiNodeJsonProvider(network_id)
-        ret = conn.view_call("lst.rhealab.near", "get_account", '{"account_id": "ref-finance.sputnik-dao.near"}'.encode(encoding='utf-8'))
+        ret = conn.view_call("lst.rhealab.near", "ft_balance_of", '{"account_id": "ref-finance.sputnik-dao.near"}'.encode(encoding='utf-8'))
         json_str = "".join([chr(x) for x in ret["result"]])
         account_data = json.loads(json_str)
         print("ref-finance.sputnik-dao.near account_data:", account_data)
@@ -750,31 +758,31 @@ def handel_lst_fee(network_id):
         counter_number = float(counter_data["value"])
 
         # 计算当前数量（扣除初始值300000）
-        current_quantity = int(account_data["staked_balance"]) / 10**24 - 300000 + counter_number
+        current_quantity = int(account_data) / 10**24 - 300000 + counter_number
         current_timestamp = int(time.time())
-        
+
         # 2. 获取当前价格（用于计算历史总值和24小时收益）
         price_url = "https://api.ref.finance/get-token-price?token_id=lst.rhealab.near"
         token_price_data = requests.get(price_url).text
         token_price_data = json.loads(token_price_data)
         current_price = float(token_price_data["price"])
-        
+
         # 3. 计算历史总收益（用于其他接口）
         total_fee = current_quantity * current_price
-        
+
         # 4. 使用历史快照计算24小时收益（使用 ZSET 存储历史快照）
         redis_conn = RedisProvider()
-        
+
         # 计算24小时前的时间戳
         cutoff_timestamp = current_timestamp - 24 * 3600
-        
+
         # 5. 先查询24小时前的快照（在记录当前快照之前查询，避免查询到刚记录的快照）
         # 查找最接近24小时前的快照，允许±10分钟误差
         search_start = cutoff_timestamp - 1200  # 24小时前 - 10分钟
         search_end = cutoff_timestamp + 1200    # 24小时前 + 10分钟
-        
+
         snapshots = redis_conn.r.zrangebyscore("LST_QUANTITY_SNAPSHOTS", search_start, search_end, start=0, num=1, withscores=True)
-        
+
         if snapshots and len(snapshots) > 0:
             # 找到最接近24小时前的快照
             # member 格式可能是: timestamp:quantity (新格式) 或 quantity (旧格式)
@@ -788,45 +796,45 @@ def handel_lst_fee(network_id):
                 quantity_24h_ago_str = snapshot_member
             quantity_24h_ago = float(quantity_24h_ago_str)
             actual_time_diff = current_timestamp - snapshot_timestamp
-            
+
             # 计算24小时增长数量
             delta_quantity = current_quantity - quantity_24h_ago
             if delta_quantity < 0:
                 delta_quantity = 0
             fee_24h = delta_quantity * current_price
-            
+
             print(f"24h data calculated: delta_quantity={delta_quantity:.2f}, fee_24h=${fee_24h:.2f}, "
                   f"snapshot_timestamp={int(snapshot_timestamp)}, actual_time_diff={actual_time_diff/3600:.2f}h")
         else:
             # 没有找到24小时前的快照（首次运行或数据不足）
             print("No 24h ago snapshot found, setting fee_24h=0 (first run or insufficient data)")
             fee_24h = 0.0
-        
+
         # 6. 使用 pipeline 批量写入所有数据到 Redis
         redis_conn.begin_pipe()
-        
+
         # 保存历史总收益（用于其他接口）
         redis_conn.add_lst_total_fee(str(total_fee))
         redis_conn.add_lst_total_revenue(str(total_fee))
-        
+
         # 保存24小时收益
         redis_conn.pipe.set("LST_TOTAL_FEE_24H", str(fee_24h))
         redis_conn.pipe.set("LST_TOTAL_REVENUE_24H", str(fee_24h))
-        
+
         # 记录当前快照到 ZSET（使用时间戳作为 member 和 score，确保每次记录唯一）
         # ZSET key: LST_QUANTITY_SNAPSHOTS, score: timestamp, member: timestamp:quantity
         # 使用 timestamp:quantity 作为 member，确保即使数量相同也不会覆盖
         snapshot_member = f"{current_timestamp}:{current_quantity}"
         redis_conn.pipe.zadd("LST_QUANTITY_SNAPSHOTS", {snapshot_member: current_timestamp})
-        
+
         # 清理7天前的历史快照（节省存储空间）
         # 只保留最近7天的数据，7天前的数据对24小时计算已经没有意义
         cleanup_timestamp = current_timestamp - 7 * 24 * 3600
         redis_conn.pipe.zremrangebyscore("LST_QUANTITY_SNAPSHOTS", 0, cleanup_timestamp)
-        
+
         redis_conn.end_pipe()
         redis_conn.close()
-        
+
         print(f"LST fee updated: current_quantity={current_quantity:.2f}, current_price=${current_price:.2f}, "
               f"total_fee=${total_fee:.2f}, fee_24h=${fee_24h:.2f}")
         
@@ -836,6 +844,177 @@ def handel_lst_fee(network_id):
         traceback.print_exc()
 
 
+BURROW_CONTRACT = "contract.main.burrow.near"
+
+
+def query_burrow_contract_fees(network_id):
+    """Query cumulative per-token fees directly from the Burrow contract via RPC.
+    Returns: {token_id: {"cumulative_fee": int, "extra_decimals": int}}
+    """
+    try:
+        conn = MultiNodeJsonProvider(network_id)
+        ret = conn.view_call(
+            Cfg.NETWORK[network_id].get("BURROW_CONTRACT", BURROW_CONTRACT),
+            "get_assets_paged_detailed",
+            b'{}',
+        )
+        raw = "".join([chr(x) for x in ret["result"]])
+        assets = json.loads(raw)
+    except Exception as e:
+        print(f"[CONTRACT_VERIFY] Failed to query Burrow contract: {e}")
+        return None
+
+    result = {}
+    for asset in assets:
+        token_id = asset.get("token_id")
+        if not token_id:
+            continue
+        prot_fee = int(asset.get("prot_fee", "0"))
+        beneficiary_total = sum(
+            int(v) for v in asset.get("beneficiary_fees", {}).values()
+        )
+        cumulative_fee = prot_fee + beneficiary_total
+        extra_decimals = asset.get("config", {}).get("extra_decimals", 0)
+        result[token_id] = {
+            "cumulative_fee": cumulative_fee,
+            "extra_decimals": extra_decimals,
+        }
+    return result
+
+
+BASELINE_REFRESH_SECONDS = 24 * 60 * 60  # 24h
+
+
+def verify_burrow_fee_by_contract(network_id):
+    """Cross-verify burrow_fee using on-chain contract state.
+
+    Uses a "baseline" snapshot in Redis that is refreshed every ~24h.
+    Each run (every 10 min) compares the live contract state against
+    the baseline, so the delta always represents a ~24h window.
+
+    Flow:
+      1. Query contract → current cumulative fees
+      2. Load baseline from Redis
+      3. If no baseline or baseline older than 24h → rotate:
+         save current as new baseline, use old baseline for this comparison
+      4. delta = current - baseline, convert to USD
+    """
+    print("[CONTRACT_VERIFY] Starting contract-based burrow fee verification ...")
+
+    contract_data = query_burrow_contract_fees(network_id)
+    if contract_data is None:
+        print("[CONTRACT_VERIFY] Skipped: contract query failed")
+        return None
+
+    now_ts = int(time.time())
+    print(f"[CONTRACT_VERIFY] Got {len(contract_data)} tokens from contract")
+
+    try:
+        price_url = "https://api.ref.finance/list-token-price"
+        token_price_data = json.loads(requests.get(price_url).text)
+    except Exception as e:
+        print(f"[CONTRACT_VERIFY] Failed to fetch token prices: {e}")
+        return None
+
+    redis_conn = RedisProvider()
+    baseline = redis_conn.get_burrow_fee_baseline()
+
+    # Build current snapshot dict
+    current_snapshot = {}
+    for token_id, data in contract_data.items():
+        current_snapshot[token_id] = {
+            "fee": str(data["cumulative_fee"]),
+            "timestamp": now_ts,
+        }
+
+    if not baseline:
+        # First ever run: save baseline, no comparison possible
+        redis_conn.save_burrow_fee_baseline(current_snapshot)
+        redis_conn.close()
+        print(f"[CONTRACT_VERIFY] First run — saved baseline for {len(current_snapshot)} tokens. "
+              "Verification available after ~24h.")
+        return None
+
+    # Determine baseline age
+    baseline_ts_list = [d["timestamp"] for d in baseline.values() if "timestamp" in d]
+    baseline_ts = min(baseline_ts_list) if baseline_ts_list else 0
+    elapsed_sec = now_ts - baseline_ts
+    elapsed_hours = elapsed_sec / 3600
+
+    print(f"[CONTRACT_VERIFY] Baseline age: {elapsed_hours:.1f}h "
+          f"(from {datetime.fromtimestamp(baseline_ts).strftime('%Y-%m-%d %H:%M:%S')})")
+
+    # Rotate baseline if it's older than 24h
+    compare_baseline = baseline
+    if elapsed_sec >= BASELINE_REFRESH_SECONDS:
+        redis_conn.save_burrow_fee_baseline(current_snapshot)
+        print(f"[CONTRACT_VERIFY] Baseline rotated (was {elapsed_hours:.1f}h old)")
+
+    redis_conn.close()
+
+    # Compute current cumulative total (USD), baseline total (USD), and delta
+    current_total_usd = 0.0
+    baseline_total_usd = 0.0
+    verified_fee = 0.0
+    token_details = []
+
+    for token_id, data in contract_data.items():
+        current_fee = data["cumulative_fee"]
+        extra_decimals = data["extra_decimals"]
+
+        if token_id not in token_price_data:
+            continue
+        token_decimal = int(token_price_data[token_id].get("decimal", 0))
+        token_price = float(token_price_data[token_id].get("price", 0))
+        if token_price <= 0:
+            continue
+
+        usd_decimal = token_decimal + extra_decimals
+        divisor = 10 ** usd_decimal
+
+        current_usd = (current_fee / divisor) * token_price
+        current_total_usd += current_usd
+
+        prev = compare_baseline.get(token_id)
+        if prev is not None:
+            prev_fee = int(prev["fee"])
+            baseline_usd = (prev_fee / divisor) * token_price
+            baseline_total_usd += baseline_usd
+
+            delta = current_fee - prev_fee
+            if delta > 0:
+                fee_usd = (delta / divisor) * token_price
+                verified_fee += fee_usd
+                if fee_usd >= 0.01:
+                    token_details.append((token_id, fee_usd, delta, token_price))
+
+    print(f"[CONTRACT_VERIFY] Current cumulative total (USD):  ${current_total_usd:,.2f}")
+    print(f"[CONTRACT_VERIFY] Baseline total (24h ago, USD):   ${baseline_total_usd:,.2f}")
+    print(f"[CONTRACT_VERIFY] Delta (current - baseline):      ${verified_fee:,.2f}")
+
+    # Print top contributing tokens
+    token_details.sort(key=lambda x: -x[1])
+    if token_details:
+        print(f"[CONTRACT_VERIFY] Top tokens by fee contribution:")
+    for tid, fusd, delta, price in token_details[:10]:
+        short_id = tid if len(tid) <= 30 else tid[:27] + "..."
+        print(f"[CONTRACT_VERIFY]   {short_id}: ${fusd:,.2f} (delta={delta}, price={price})")
+
+    # Normalize to exact 24h if baseline age drifts
+    if elapsed_hours > 0:
+        normalized_fee = verified_fee * (24.0 / elapsed_hours)
+        if abs(elapsed_hours - 24.0) > 0.5:
+            print(f"[CONTRACT_VERIFY] Raw fee for {elapsed_hours:.1f}h: ${verified_fee:,.2f}, "
+                  f"normalized to 24h: ${normalized_fee:,.2f}")
+        else:
+            normalized_fee = verified_fee
+    else:
+        normalized_fee = verified_fee
+
+    print(f"[CONTRACT_VERIFY] Verified 24h burrow_fee: ${normalized_fee:,.2f}")
+    return normalized_fee
+
+
 if __name__ == '__main__':
     print("start burrow fee log task")
     if len(sys.argv) == 2:
@@ -843,6 +1022,22 @@ if __name__ == '__main__':
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
             # handel_burrow_fee_log(network_id)
             handel_burrow_fee_log_24h(network_id)
+
+            # Contract-based verification (compare against revenue, same metric)
+            verified_fee = verify_burrow_fee_by_contract(network_id)
+            log_based_revenue = get_burrow_total_revenue()
+            log_based_revenue = float(log_based_revenue) if log_based_revenue else 0.0
+            print("=" * 60)
+            print(f"[COMPARISON] Log-based burrow_revenue (prot_fee+reserved): ${log_based_revenue:,.2f}")
+            if verified_fee is not None:
+                diff = verified_fee - log_based_revenue
+                diff_pct = (diff / log_based_revenue * 100) if log_based_revenue > 0 else 0
+                print(f"[COMPARISON] Contract-based (prot_fee+beneficiary):     ${verified_fee:,.2f}")
+                print(f"[COMPARISON] Difference: ${diff:,.2f} ({diff_pct:+.1f}%)")
+            else:
+                print("[COMPARISON] Contract-based verification not available yet (first run or error)")
+            print("=" * 60)
+
             handel_lst_fee(network_id)
             intents_api_key = Cfg.INTENTS_API_KEY
             print("intents_api_key:", intents_api_key)
