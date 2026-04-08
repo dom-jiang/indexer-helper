@@ -886,20 +886,15 @@ BASELINE_REFRESH_SECONDS = 24 * 60 * 60  # 24h
 
 
 def verify_burrow_fee_by_contract(network_id):
-    """Cross-verify burrow_fee using on-chain contract state.
+    """Cross-verify burrow revenue using on-chain contract state.
 
-    Uses a "baseline" snapshot in Redis that is refreshed every ~24h.
-    Each run (every 10 min) compares the live contract state against
-    the baseline, so the delta always represents a ~24h window.
+    Compares two methods over the SAME time window (baseline age):
+      - Contract method: (current cumulative fee - baseline) * price
+      - Log method: sum(prot_fee + reserved) from burrow_fee_log in same window
 
-    Flow:
-      1. Query contract → current cumulative fees
-      2. Load baseline from Redis
-      3. If no baseline or baseline older than 24h → rotate:
-         save current as new baseline, use old baseline for this comparison
-      4. delta = current - baseline, convert to USD
+    Returns dict with comparison data, or None if not available.
     """
-    print("[CONTRACT_VERIFY] Starting contract-based burrow fee verification ...")
+    print("[CONTRACT_VERIFY] Starting contract-based verification ...")
 
     contract_data = query_burrow_contract_fees(network_id)
     if contract_data is None:
@@ -919,7 +914,6 @@ def verify_burrow_fee_by_contract(network_id):
     redis_conn = RedisProvider()
     baseline = redis_conn.get_burrow_fee_baseline()
 
-    # Build current snapshot dict
     current_snapshot = {}
     for token_id, data in contract_data.items():
         current_snapshot[token_id] = {
@@ -928,34 +922,32 @@ def verify_burrow_fee_by_contract(network_id):
         }
 
     if not baseline:
-        # First ever run: save baseline, no comparison possible
         redis_conn.save_burrow_fee_baseline(current_snapshot)
         redis_conn.close()
         print(f"[CONTRACT_VERIFY] First run — saved baseline for {len(current_snapshot)} tokens. "
-              "Verification available after ~24h.")
+              "Comparison available on next run.")
         return None
 
-    # Determine baseline age
     baseline_ts_list = [d["timestamp"] for d in baseline.values() if "timestamp" in d]
     baseline_ts = min(baseline_ts_list) if baseline_ts_list else 0
     elapsed_sec = now_ts - baseline_ts
     elapsed_hours = elapsed_sec / 3600
 
-    print(f"[CONTRACT_VERIFY] Baseline age: {elapsed_hours:.1f}h "
-          f"(from {datetime.fromtimestamp(baseline_ts).strftime('%Y-%m-%d %H:%M:%S')})")
+    baseline_time_str = datetime.fromtimestamp(baseline_ts).strftime('%Y-%m-%d %H:%M:%S')
+    now_time_str = datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[CONTRACT_VERIFY] Time window: {baseline_time_str} → {now_time_str} ({elapsed_hours:.1f}h)")
 
-    # Rotate baseline if it's older than 24h
     compare_baseline = baseline
     if elapsed_sec >= BASELINE_REFRESH_SECONDS:
         redis_conn.save_burrow_fee_baseline(current_snapshot)
-        print(f"[CONTRACT_VERIFY] Baseline rotated (was {elapsed_hours:.1f}h old)")
+        print(f"[CONTRACT_VERIFY] Baseline rotated (was {elapsed_hours:.1f}h old, new baseline saved)")
 
     redis_conn.close()
 
-    # Compute current cumulative total (USD), baseline total (USD), and delta
+    # ── Contract method: delta of cumulative fees ──
     current_total_usd = 0.0
     baseline_total_usd = 0.0
-    verified_fee = 0.0
+    contract_revenue = 0.0
     token_details = []
 
     for token_id, data in contract_data.items():
@@ -972,47 +964,74 @@ def verify_burrow_fee_by_contract(network_id):
         usd_decimal = token_decimal + extra_decimals
         divisor = 10 ** usd_decimal
 
-        current_usd = (current_fee / divisor) * token_price
-        current_total_usd += current_usd
+        current_total_usd += (current_fee / divisor) * token_price
 
         prev = compare_baseline.get(token_id)
         if prev is not None:
             prev_fee = int(prev["fee"])
-            baseline_usd = (prev_fee / divisor) * token_price
-            baseline_total_usd += baseline_usd
-
+            baseline_total_usd += (prev_fee / divisor) * token_price
             delta = current_fee - prev_fee
             if delta > 0:
                 fee_usd = (delta / divisor) * token_price
-                verified_fee += fee_usd
+                contract_revenue += fee_usd
                 if fee_usd >= 0.01:
                     token_details.append((token_id, fee_usd, delta, token_price))
 
     print(f"[CONTRACT_VERIFY] Current cumulative total (USD):  ${current_total_usd:,.2f}")
-    print(f"[CONTRACT_VERIFY] Baseline total (24h ago, USD):   ${baseline_total_usd:,.2f}")
-    print(f"[CONTRACT_VERIFY] Delta (current - baseline):      ${verified_fee:,.2f}")
+    print(f"[CONTRACT_VERIFY] Baseline cumulative total (USD): ${baseline_total_usd:,.2f}")
+    print(f"[CONTRACT_VERIFY] Contract revenue (delta):        ${contract_revenue:,.2f}")
 
-    # Print top contributing tokens
     token_details.sort(key=lambda x: -x[1])
     if token_details:
-        print(f"[CONTRACT_VERIFY] Top tokens by fee contribution:")
+        print(f"[CONTRACT_VERIFY] Top tokens:")
     for tid, fusd, delta, price in token_details[:10]:
         short_id = tid if len(tid) <= 30 else tid[:27] + "..."
         print(f"[CONTRACT_VERIFY]   {short_id}: ${fusd:,.2f} (delta={delta}, price={price})")
 
-    # Normalize to exact 24h if baseline age drifts
-    if elapsed_hours > 0:
-        normalized_fee = verified_fee * (24.0 / elapsed_hours)
-        if abs(elapsed_hours - 24.0) > 0.5:
-            print(f"[CONTRACT_VERIFY] Raw fee for {elapsed_hours:.1f}h: ${verified_fee:,.2f}, "
-                  f"normalized to 24h: ${normalized_fee:,.2f}")
-        else:
-            normalized_fee = verified_fee
-    else:
-        normalized_fee = verified_fee
+    # ── Log method: query burrow_fee_log for the SAME time window ──
+    old_time_ns = baseline_ts * 1_000_000_000
+    burrow_fee_log_list = get_burrow_fee_log_24h_data(network_id, old_time_ns)
 
-    print(f"[CONTRACT_VERIFY] Verified 24h burrow_fee: ${normalized_fee:,.2f}")
-    return normalized_fee
+    config_url = "https://api.burrow.finance/get_assets_paged_detailed"
+    try:
+        token_config_ret = json.loads(requests.get(config_url).text)
+        token_config_data = {}
+        if token_config_ret.get("code") == "0":
+            for tc in token_config_ret["data"]:
+                token_config_data[tc["token_id"]] = tc["config"]["extra_decimals"]
+    except Exception as e:
+        print(f"[CONTRACT_VERIFY] Failed to fetch Burrow config: {e}")
+        token_config_data = {}
+
+    log_revenue = 0.0
+    log_fee = 0.0
+    log_count = 0
+    for log_entry in burrow_fee_log_list:
+        token_id = log_entry["token_id"]
+        if token_id not in token_price_data or token_id not in token_config_data:
+            continue
+        usd_decimal = token_price_data[token_id]["decimal"] + token_config_data[token_id]
+        divisor = int("1" + "0" * usd_decimal)
+        price = float(token_price_data[token_id]["price"])
+        log_revenue += ((int(log_entry["prot_fee"]) + int(log_entry["reserved"])) / divisor) * price
+        log_fee += (int(log_entry["interest"]) / divisor) * price
+        log_count += 1
+
+    print(f"[LOG_METHOD_SAME_WINDOW] Records in {elapsed_hours:.1f}h window: {len(burrow_fee_log_list)}, processed: {log_count}")
+    print(f"[LOG_METHOD_SAME_WINDOW] Log revenue (prot_fee+reserved):  ${log_revenue:,.2f}")
+    print(f"[LOG_METHOD_SAME_WINDOW] Log fee (interest):               ${log_fee:,.2f}")
+
+    # ── Side-by-side comparison ──
+    print("=" * 60)
+    print(f"[COMPARISON] Time window: {elapsed_hours:.1f}h ({baseline_time_str} → {now_time_str})")
+    print(f"[COMPARISON] Contract revenue (prot_fee+beneficiary): ${contract_revenue:,.2f}")
+    print(f"[COMPARISON] Log revenue (prot_fee+reserved):         ${log_revenue:,.2f}")
+    diff = contract_revenue - log_revenue
+    diff_pct = (diff / log_revenue * 100) if log_revenue > 0 else 0
+    print(f"[COMPARISON] Difference: ${diff:,.2f} ({diff_pct:+.1f}%)")
+    print("=" * 60)
+
+    return contract_revenue
 
 
 if __name__ == '__main__':
@@ -1022,21 +1041,7 @@ if __name__ == '__main__':
         if network_id in ["MAINNET", "TESTNET", "DEVNET"]:
             # handel_burrow_fee_log(network_id)
             handel_burrow_fee_log_24h(network_id)
-
-            # Contract-based verification (compare against revenue, same metric)
-            verified_fee = verify_burrow_fee_by_contract(network_id)
-            log_based_revenue = get_burrow_total_revenue()
-            log_based_revenue = float(log_based_revenue) if log_based_revenue else 0.0
-            print("=" * 60)
-            print(f"[COMPARISON] Log-based burrow_revenue (prot_fee+reserved): ${log_based_revenue:,.2f}")
-            if verified_fee is not None:
-                diff = verified_fee - log_based_revenue
-                diff_pct = (diff / log_based_revenue * 100) if log_based_revenue > 0 else 0
-                print(f"[COMPARISON] Contract-based (prot_fee+beneficiary):     ${verified_fee:,.2f}")
-                print(f"[COMPARISON] Difference: ${diff:,.2f} ({diff_pct:+.1f}%)")
-            else:
-                print("[COMPARISON] Contract-based verification not available yet (first run or error)")
-            print("=" * 60)
+            verify_burrow_fee_by_contract(network_id)
 
             handel_lst_fee(network_id)
             intents_api_key = Cfg.INTENTS_API_KEY
