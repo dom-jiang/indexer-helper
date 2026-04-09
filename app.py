@@ -10,14 +10,14 @@ from flask import jsonify
 import json
 import logging
 from indexer_provider import get_proposal_id_hash
-from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price, list_base_token_price
+from redis_provider import get_cross_chain_total_revenue_24h, get_burrow_total_revenue, get_lst_total_revenue_24h, list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price, list_base_token_price
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool, list_token_metadata_v2
 from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id, get_24h_pool_volume, get_account_pool_assets
-from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, get_token_price_ratio_report, get_history_token_price_report, get_market_token_price
+from redis_provider import get_cross_chain_total_fee_24h, get_burrow_total_fee, get_lst_total_fee_24h, get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, get_token_price_ratio_report, get_history_token_price_report, get_market_token_price
 from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, get_tx_id, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info
 from config import Cfg
-from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log
-from db_provider import query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
+from db_provider import get_pools_volume_24h, get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log
+from db_provider import get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range, query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
     query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
     query_dcl_user_tvl, query_dcl_user_change_log, query_burrow_log, get_history_token_price_by_token, add_orderly_trading_data, \
@@ -29,6 +29,7 @@ from analysis_v2_pool_data_s3 import analysis_v2_pool_data_to_s3, analysis_v2_po
 import datetime
 from auth.crypto_utl import decrypt
 import time
+import requests
 
 service_version = "20240625.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
@@ -1010,6 +1011,122 @@ def handel_log_liquidation_log():
         "data": ret_data
     }
     return ret
+
+
+@app.route('/get-total-fee', methods=['GET'])
+def handel_get_total_fee():
+    total_fee = 0
+    not_pool_id_list = ""
+    try:
+        pool_volume_data = get_pools_volume_24h(Cfg.NETWORK_ID)
+        pool_list = list_pools(Cfg.NETWORK_ID)
+        pool_data = {}
+        for pool in pool_list:
+            pool_data[pool["id"]] = pool["total_fee"] / 10000
+        for pool_volume in pool_volume_data:
+            if pool_volume["pool_id"] in pool_data:
+                pool_fee = float(pool_volume["volume_24h"]) * pool_data[pool_volume["pool_id"]]
+                total_fee += pool_fee
+            else:
+                not_pool_id_list = not_pool_id_list + "," + pool_volume["pool_id"]
+        if not_pool_id_list != "":
+            url = Cfg.REF_GO_API + "/pool/search?pool_id_list=" + not_pool_id_list
+            search_pool_json = requests.get(url).text
+            search_pool_data = json.loads(search_pool_json)
+            search_pool_list = search_pool_data["data"]["list"]
+            for search_pool in search_pool_list:
+                pool_fee = float(search_pool["fee_volume_24h"])
+                total_fee += pool_fee
+        ret = {
+            "total_fee": str(total_fee),
+        }
+        lst_total_fee = get_lst_total_fee_24h()
+        burrow_total_fee = get_burrow_total_fee()
+        cross_chain_total_fee = get_cross_chain_total_fee_24h()
+        fee_data = {
+            "lst_fee": lst_total_fee,
+            "burrow_fee": burrow_total_fee,
+            "cross_chain_fee": cross_chain_total_fee
+        }
+        ret_data = {
+            "code": 0,
+            "msg": "success",
+            "data": ret,
+            "fee_data": fee_data
+        }
+    except Exception as e:
+        logger.info("handel_get_total_fee error:{}", e.args)
+        ret_data = {
+            "code": -1,
+            "msg": "error",
+            "data": e.args
+        }
+    return jsonify(ret_data)
+
+
+@app.route('/get-total-revenue-by-time', methods=['GET'])
+def handel_get_total_revenue_by_time():
+    try:
+        start_ts = request.args.get("startTimestamp")
+        end_ts = request.args.get("endTimestamp")
+        if start_ts is None or end_ts is None or str(start_ts).strip() == "" or str(end_ts).strip() == "":
+            return jsonify({"code": -1, "msg": "error", "data": "startTimestamp and endTimestamp are required"})
+
+        total_revenue = get_burrow_total_revenue_by_time_range(Cfg.NETWORK_ID, int(start_ts), int(end_ts))
+        return jsonify({
+            "code": 0,
+            "msg": "success",
+            "data": {"total_revenue": str(total_revenue)}
+        })
+    except Exception as e:
+        logger.info("handel_get_burrow_total_revenue_by_time error:{}", e.args)
+        return jsonify({"code": -1, "msg": "error", "data": e.args})
+
+
+@app.route('/get-total-fee-by-time', methods=['GET'])
+def handel_get_total_fee_by_time():
+    try:
+        start_ts = request.args.get("startTimestamp")
+        end_ts = request.args.get("endTimestamp")
+        if start_ts is None or end_ts is None or str(start_ts).strip() == "" or str(end_ts).strip() == "":
+            return jsonify({"code": -1, "msg": "error", "data": "startTimestamp and endTimestamp are required"})
+
+        total_fee = get_burrow_total_fee_by_time_range(Cfg.NETWORK_ID, int(start_ts), int(end_ts))
+        return jsonify({
+            "code": 0,
+            "msg": "success",
+            "data": {"total_fee": str(total_fee)}
+        })
+    except Exception as e:
+        logger.info("handel_get_total_fee_by_time error:{}", e.args)
+        return jsonify({"code": -1, "msg": "error", "data": e.args})
+
+
+@app.route('/get-total-revenue', methods=['GET'])
+def handel_get_total_revenue():
+    ret = json.loads(handel_get_total_fee().data)
+    if ret["code"] != 0:
+        ret_data = {
+            "code": -1,
+            "msg": "error",
+            "data": ret["data"]
+        }
+    else:
+        lst_total_revenue = get_lst_total_revenue_24h()
+        burrow_total_revenue = get_burrow_total_revenue()
+        cross_chain_total_revenue = get_cross_chain_total_revenue_24h()
+        revenue_data = {
+            "lst_revenue": lst_total_revenue,
+            "burrow_revenue": burrow_total_revenue,
+            "cross_chain_revenue": cross_chain_total_revenue
+        }
+        ret_data = {
+            "code": 0,
+            "msg": "success",
+            "data": {"total_revenue": str(float(ret["data"]["total_fee"]) * 0.2)},
+            "revenue_data": revenue_data
+        }
+    return jsonify(ret_data)
 
 
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")

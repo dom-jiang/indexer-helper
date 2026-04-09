@@ -1,4 +1,5 @@
 import json
+import time
 
 from config import Cfg
 import redis
@@ -441,22 +442,41 @@ class RedisProvider(object):
     def add_burrow_total_revenue(self, value):
         self.r.set("BURROW_TOTAL_REVENUE", value)
 
-    def save_burrow_fee_baseline(self, snapshot_data):
-        """Save the 24h baseline snapshot. Only called when baseline is stale (>24h)."""
+    def save_burrow_contract_snapshot(self, snapshot_data):
+        """Save per-token cumulative fees from the latest contract query. Updated every run."""
         pipe = self.r.pipeline()
-        pipe.delete("BURROW_FEE_BASELINE")
+        pipe.delete("BURROW_CONTRACT_LAST_SNAPSHOT")
         for token_id, data in snapshot_data.items():
-            pipe.hset("BURROW_FEE_BASELINE", token_id, json.dumps(data))
+            pipe.hset("BURROW_CONTRACT_LAST_SNAPSHOT", token_id, json.dumps(data))
         pipe.execute()
 
-    def get_burrow_fee_baseline(self):
-        """Get the 24h baseline snapshot."""
-        raw = self.r.hgetall("BURROW_FEE_BASELINE")
+    def get_burrow_contract_snapshot(self):
+        """Get per-token cumulative fees from the previous run."""
+        raw = self.r.hgetall("BURROW_CONTRACT_LAST_SNAPSHOT")
         result = {}
         for token_id, val in raw.items():
             key = token_id.decode() if isinstance(token_id, bytes) else token_id
             result[key] = json.loads(val)
         return result
+
+    def add_burrow_revenue_10min(self, timestamp, revenue):
+        """Append a 10-min revenue entry to the ZSET."""
+        member = f"{timestamp}:{revenue}"
+        self.r.zadd("BURROW_REVENUE_10MIN", {member: timestamp})
+
+    def sum_burrow_revenue_24h(self):
+        """Sum all 10-min revenue entries within the last 24 hours."""
+        cutoff = int(time.time()) - 24 * 3600
+        entries = self.r.zrangebyscore("BURROW_REVENUE_10MIN", cutoff, "+inf")
+        total = 0.0
+        for entry in entries:
+            entry_str = entry.decode() if isinstance(entry, bytes) else entry
+            total += float(entry_str.split(":")[1])
+        return total
+
+    def cleanup_burrow_revenue_10min(self, before_ts):
+        """Remove ZSET entries older than before_ts."""
+        self.r.zremrangebyscore("BURROW_REVENUE_10MIN", 0, before_ts)
 
     def add_lst_total_fee(self, value):
         self.r.set("LST_TOTAL_FEE", value)
