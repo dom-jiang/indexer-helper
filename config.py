@@ -122,6 +122,11 @@ try:
 except ImportError:
     ONECLICK_JWT_TOKEN = ""
 
+try:
+    from db_info import BOSS_EMAIL_VERIFY
+except ImportError:
+    BOSS_EMAIL_VERIFY = True
+
 
 class Cfg:
     NETWORK_ID = "MAINNET"
@@ -163,6 +168,7 @@ class Cfg:
     SMTP_FROM = SMTP_FROM
     ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     ONECLICK_BASE_URL = "https://1click.chaindefuser.com/v0"
+    BOSS_EMAIL_VERIFY = BOSS_EMAIL_VERIFY
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,

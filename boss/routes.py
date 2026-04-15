@@ -82,10 +82,24 @@ def _conn():
     return _get_db_conn()
 
 
-# ── Public: Email verification / Register / Login ────────
+# ── Public: Config / Email verification / Register / Login ─
+
+@boss_bp.route("/config", methods=["GET"])
+def boss_config():
+    """Public endpoint: return frontend-relevant config flags."""
+    return jsonify({
+        "code": 0,
+        "data": {
+            "emailVerify": bool(Cfg.BOSS_EMAIL_VERIFY),
+        },
+    })
+
 
 @boss_bp.route("/send-code", methods=["POST"])
 def send_code():
+    if not Cfg.BOSS_EMAIL_VERIFY:
+        return jsonify({"code": -1, "msg": "Email verification is disabled"})
+
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
 
@@ -114,20 +128,21 @@ def register():
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
-    code = (body.get("code") or "").strip()
 
     if not email or "@" not in email:
         return jsonify({"code": -1, "msg": "Valid email required"})
     if len(password) < 6:
         return jsonify({"code": -1, "msg": "Password must be at least 6 characters"})
-    if not code:
-        return jsonify({"code": -1, "msg": "Verification code required"})
 
-    r = _boss_redis()
-    code_key = f"boss:email_code:{email}"
-    stored_code = r.get(code_key)
-    if not stored_code or stored_code != code:
-        return jsonify({"code": -1, "msg": "Invalid or expired verification code"})
+    if Cfg.BOSS_EMAIL_VERIFY:
+        code = (body.get("code") or "").strip()
+        if not code:
+            return jsonify({"code": -1, "msg": "Verification code required"})
+        r = _boss_redis()
+        code_key = f"boss:email_code:{email}"
+        stored_code = r.get(code_key)
+        if not stored_code or stored_code != code:
+            return jsonify({"code": -1, "msg": "Invalid or expired verification code"})
 
     conn = _conn()
     try:
@@ -138,7 +153,10 @@ def register():
     if not user:
         return jsonify({"code": -1, "msg": "Email already registered"})
 
-    r.delete(code_key)
+    if Cfg.BOSS_EMAIL_VERIFY:
+        r = _boss_redis()
+        r.delete(f"boss:email_code:{email}")
+
     token = generate_boss_session_token(user["id"], user["role"], BOSS_SESSION_SECRET)
     return jsonify({"code": 0, "msg": "success", "data": {"user": user, "token": token}})
 

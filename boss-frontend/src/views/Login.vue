@@ -11,7 +11,7 @@
         <el-form-item>
           <el-input v-model="form.password" placeholder="Password" type="password" size="large" prefix-icon="Lock" show-password />
         </el-form-item>
-        <el-form-item v-if="isRegister">
+        <el-form-item v-if="isRegister && emailVerify">
           <div class="code-row">
             <el-input v-model="form.code" placeholder="Verification Code" size="large" maxlength="6" />
             <el-button
@@ -41,7 +41,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../store'
@@ -54,9 +54,19 @@ const isRegister = ref(false)
 const loading = ref(false)
 const sendingCode = ref(false)
 const countdown = ref(0)
+const emailVerify = ref(true)
 const form = ref({ email: '', password: '', code: '' })
 
 let countdownTimer = null
+
+onMounted(async () => {
+  try {
+    const res = await api.get('/config')
+    if (res.code === 0) {
+      emailVerify.value = res.data.emailVerify
+    }
+  } catch (_) {}
+})
 
 watch(isRegister, () => {
   form.value.code = ''
@@ -99,7 +109,7 @@ async function handleSubmit() {
     ElMessage.warning('Please fill in all fields')
     return
   }
-  if (isRegister.value && !form.value.code) {
+  if (isRegister.value && emailVerify.value && !form.value.code) {
     ElMessage.warning('Please enter the verification code')
     return
   }
@@ -107,7 +117,7 @@ async function handleSubmit() {
   try {
     const endpoint = isRegister.value ? '/register' : '/login'
     const payload = isRegister.value
-      ? { email: form.value.email, password: form.value.password, code: form.value.code }
+      ? { email: form.value.email, password: form.value.password, ...(emailVerify.value ? { code: form.value.code } : {}) }
       : { email: form.value.email, password: form.value.password }
     const res = await api.post(endpoint, payload)
     if (res.code === 0) {
