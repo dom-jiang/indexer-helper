@@ -108,6 +108,20 @@ except ImportError:
     BSC_WALLET_PRIVATE_KEY = ""     # BSC wallet private key for sending LSD
     BSC_RPC_URL = "https://bsc-dataseed.binance.org"
 
+try:
+    from db_info import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+except ImportError:
+    SMTP_HOST = "smtp.example.com"
+    SMTP_PORT = 465
+    SMTP_USER = ""
+    SMTP_PASS = ""
+    SMTP_FROM = ""
+
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
 
 class Cfg:
     NETWORK_ID = "MAINNET"
@@ -142,6 +156,13 @@ class Cfg:
     BSC_LSD_TOKEN_ADDRESS = BSC_LSD_TOKEN_ADDRESS
     BSC_WALLET_PRIVATE_KEY = BSC_WALLET_PRIVATE_KEY
     BSC_RPC_URL = BSC_RPC_URL
+    SMTP_HOST = SMTP_HOST
+    SMTP_PORT = SMTP_PORT
+    SMTP_USER = SMTP_USER
+    SMTP_PASS = SMTP_PASS
+    SMTP_FROM = SMTP_FROM
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
+    ONECLICK_BASE_URL = "https://1click.chaindefuser.com/v0"
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,

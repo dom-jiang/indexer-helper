@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS `boss_api_token` (
   `app_id` VARCHAR(64) NOT NULL,
   `app_key` VARCHAR(128) NOT NULL,
   `app_secret` VARCHAR(128) NOT NULL COMMENT 'HS256 signing secret for JWT',
+  `refund_address` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Refund wallet address for swap transactions',
+  `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (1.00 ~ 10.00)',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '1=active 0=disabled',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -60,14 +62,27 @@ CREATE TABLE IF NOT EXISTS `boss_rate_limit_config` (
 """
 
 
+_MIGRATE_SQL = [
+    "ALTER TABLE `boss_api_token` ADD COLUMN `refund_address` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Refund wallet address for swap transactions' AFTER `app_secret`",
+    "ALTER TABLE `boss_api_token` ADD COLUMN `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (1.00 ~ 10.00)' AFTER `refund_address`",
+]
+
+
 def init_boss_tables(conn):
-    """Run DDL to create boss tables if they don't exist."""
+    """Run DDL to create boss tables if they don't exist, then apply migrations."""
     cursor = conn.cursor()
     for statement in INIT_SQL.strip().split(";"):
         statement = statement.strip()
         if statement:
             cursor.execute(statement)
     conn.commit()
+
+    for sql in _MIGRATE_SQL:
+        try:
+            cursor.execute(sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
     cursor.close()
 
 
@@ -162,19 +177,19 @@ def update_user(conn, user_id: int, **kwargs) -> bool:
 
 # ── api token CRUD ───────────────────────────────────────
 
-def create_api_token(conn, user_id: int, app_name: str = "") -> dict:
+def create_api_token(conn, user_id: int, app_name: str = "", refund_address: str = "", app_fee: float = 0.0) -> dict:
     app_id = _gen_app_id()
     app_key = _gen_app_key()
     app_secret = _gen_app_secret()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
     cursor.execute(
-        "INSERT INTO boss_api_token (user_id, app_name, app_id, app_key, app_secret) VALUES (%s, %s, %s, %s, %s)",
-        (user_id, app_name, app_id, app_key, app_secret),
+        "INSERT INTO boss_api_token (user_id, app_name, app_id, app_key, app_secret, refund_address, app_fee) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (user_id, app_name, app_id, app_key, app_secret, refund_address, app_fee),
     )
     conn.commit()
     token_id = cursor.lastrowid
 
-    # Create default rate limits
     cursor.execute(
         "INSERT INTO boss_rate_limit_config (app_id, endpoint_group, per_minute, per_month) VALUES (%s, 'quote', 60, 300000)",
         (app_id,),
@@ -185,13 +200,17 @@ def create_api_token(conn, user_id: int, app_name: str = "") -> dict:
     )
     conn.commit()
     cursor.close()
-    return {"id": token_id, "user_id": user_id, "app_name": app_name, "app_id": app_id, "app_key": app_key, "app_secret": app_secret}
+    return {
+        "id": token_id, "user_id": user_id, "app_name": app_name, "app_id": app_id,
+        "app_secret": app_secret, "refund_address": refund_address, "app_fee": float(app_fee),
+    }
 
 
 def list_api_tokens_by_user(conn, user_id: int) -> list:
     cursor = conn.cursor(pymysql.cursors.DictCursor)
     cursor.execute(
-        "SELECT id, user_id, app_name, app_id, app_key, status, created_at, updated_at FROM boss_api_token WHERE user_id = %s ORDER BY id DESC",
+        "SELECT id, user_id, app_name, app_id, refund_address, app_fee, status, created_at, updated_at "
+        "FROM boss_api_token WHERE user_id = %s ORDER BY id DESC",
         (user_id,),
     )
     tokens = cursor.fetchall()
@@ -235,7 +254,7 @@ def get_api_token_detail(conn, token_id: int, user_id: int = None) -> dict | Non
 
 
 def update_api_token(conn, token_id: int, **kwargs) -> bool:
-    allowed = {"app_name", "status"}
+    allowed = {"app_name", "status", "refund_address", "app_fee"}
     fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not fields:
         return False

@@ -7,6 +7,10 @@
           <el-icon><HomeFilled /></el-icon>
           <span>Dashboard</span>
         </el-menu-item>
+        <el-menu-item index="/guide">
+          <el-icon><Document /></el-icon>
+          <span>API Guide</span>
+        </el-menu-item>
         <template v-if="auth.isAdmin">
           <el-menu-item-group title="Admin">
             <el-menu-item index="/admin/users">
@@ -37,7 +41,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { HomeFilled, User, Key } from '@element-plus/icons-vue'
+import { HomeFilled, User, Key, Document } from '@element-plus/icons-vue'
 import { useAuthStore } from '../store'
 
 const route = useRoute()

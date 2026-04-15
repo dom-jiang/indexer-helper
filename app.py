@@ -51,6 +51,7 @@ from bitget_utils import proxy_bitget_request, proxy_okx_request
 from proxy_api_utils import proxy_api_request
 from swap_utils import aggregate_quote, build_swap_tx, build_approve_tx, get_supported_routers, \
     multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx, multi_chain_supported_routers, detect_chain_type
+from unified_swap import unified_quote, unified_swap
 from boss.routes import init_boss_routes
 from boss.auth import validate_swap_jwt
 from boss.rate_limiter import check_rate_limit
@@ -76,9 +77,9 @@ init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
 
 
 def _get_swap_endpoint_group(path: str) -> str | None:
-    if "/api/swap/quote" in path or "/api/swap/supported-routers" in path:
+    if "/api/swap/quote" in path or "/api/swap/order-status" in path:
         return "quote"
-    if "/api/swap/build-tx" in path or "/api/swap/approve-tx" in path:
+    if "/api/swap/swap" in path:
         return "build"
     return None
 
@@ -2555,26 +2556,28 @@ def handle_get_supported_chains():
 
 
 # ============================================================
-# EVM DEX Aggregation API (Quote + Build-TX for frontend wallet signing)
+# Unified Swap API (same-chain + cross-chain)
 # ============================================================
 
 @app.route('/api/swap/quote', methods=['POST'])
 def api_swap_quote():
     """
-    Multi-chain aggregated DEX quote.
-    Supports EVM, Solana, and Aptos chains.
+    Unified swap quote — supports both same-chain and cross-chain.
 
     Request body:
     {
-        "chainId": 1,                 // EVM chain ID (int) or "solana-mainnet" / "aptos-mainnet"
-        "chainType": "evm",           // optional: "evm" / "solana" / "aptos" (auto-detected from chainId)
-        "tokenIn": {"address": "0x...", "symbol": "USDT", "decimals": 6},
-        "tokenOut": {"address": "0x...", "symbol": "USDC", "decimals": 6},
+        "fromChain": "1",
+        "toChain": "42161",
+        "tokenIn": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "tokenOut": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
-        "recipient": "0x..."          // optional, defaults to sender
+        "recipient": "0x..."
     }
+
+    Same-chain (fromChain == toChain): routes to multi-aggregator (Bitget/OKX/Jupiter/Panora).
+    Cross-chain (fromChain != toChain): parallel OmniBridge + NearIntents 1Click, returns best price.
     """
     try:
         if not request.is_json:
@@ -2584,136 +2587,44 @@ def api_swap_quote():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
-        chain_id = body.get("chainId")
-        chain_type = body.get("chainType")
-        token_in = body.get("tokenIn")
-        token_out = body.get("tokenOut")
-        amount_in = body.get("amountIn")
-        slippage = body.get("slippage", 0.5)
-        sender = body.get("sender")
-        recipient = body.get("recipient")
-
-        if not chain_id:
-            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
-        if not token_in or not isinstance(token_in, dict):
-            return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
-        if not token_out or not isinstance(token_out, dict):
-            return jsonify({"code": -1, "msg": "tokenOut is required and must be a JSON object", "data": None})
-        if not amount_in:
-            return jsonify({"code": -1, "msg": "amountIn is required", "data": None})
-        if not sender:
-            return jsonify({"code": -1, "msg": "sender address is required", "data": None})
-
-        result = multi_chain_quote(
-            chain_id=chain_id,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=str(amount_in),
-            slippage=float(slippage),
-            sender=sender,
-            recipient=recipient,
-            chain_type=chain_type,
+        result = unified_quote(
+            from_chain=body.get("fromChain", body.get("chainId", "")),
+            to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
+            token_in_address=body.get("tokenIn", ""),
+            token_out_address=body.get("tokenOut", ""),
+            amount_in=str(body.get("amountIn", "")),
+            slippage=float(body.get("slippage", 0.5)),
+            sender=body.get("sender", ""),
+            recipient=body.get("recipient", ""),
         )
 
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Quote failed"), "data": result})
+        return jsonify(result)
     except Exception as e:
         logger.error(f"api_swap_quote error: {e}")
         return jsonify({"code": -1, "msg": str(e), "data": None})
 
 
-@app.route('/api/swap/build-tx', methods=['POST'])
-def api_swap_build_tx():
+@app.route('/api/swap/swap', methods=['POST'])
+def api_swap_build():
     """
-    Multi-chain build swap transaction for wallet signing.
+    Unified swap (build transaction) — supports both same-chain and cross-chain.
 
     Request body:
     {
-        "chainId": 1,
-        "chainType": "evm",           // optional
-        "router": "bitget",           // "bitget" / "okx" / "jupiter" / "panora"
-        "tokenIn": {...},
-        "tokenOut": {...},
+        "fromChain": "1",
+        "toChain": "42161",
+        "tokenIn": "0x...",
+        "tokenOut": "0x...",
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
         "recipient": "0x...",
-        "market": "..."               // required for Bitget (from quote response)
-    }
-    """
-    try:
-        if not request.is_json:
-            return jsonify({"code": -1, "msg": "Request must be JSON format", "data": None})
-
-        body = request.get_json()
-        if not body or not isinstance(body, dict):
-            return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
-
-        chain_id = body.get("chainId")
-        chain_type = body.get("chainType")
-        router = body.get("router")
-        token_in = body.get("tokenIn")
-        token_out = body.get("tokenOut")
-        amount_in = body.get("amountIn")
-        slippage = body.get("slippage", 0.5)
-        sender = body.get("sender")
-        recipient = body.get("recipient")
-        market = body.get("market")
-
-        if not chain_id:
-            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
-        if not router:
-            return jsonify({"code": -1, "msg": "router is required", "data": None})
-        if not token_in or not isinstance(token_in, dict):
-            return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
-        if not token_out or not isinstance(token_out, dict):
-            return jsonify({"code": -1, "msg": "tokenOut is required and must be a JSON object", "data": None})
-        if not amount_in:
-            return jsonify({"code": -1, "msg": "amountIn is required", "data": None})
-        if not sender:
-            return jsonify({"code": -1, "msg": "sender address is required", "data": None})
-        if not recipient:
-            recipient = sender
-
-        result = multi_chain_build_tx(
-            chain_id=chain_id,
-            router=router,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=str(amount_in),
-            slippage=float(slippage),
-            sender=sender,
-            recipient=recipient,
-            market=market,
-            chain_type=chain_type,
-        )
-
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Build transaction failed"), "data": result})
-    except Exception as e:
-        logger.error(f"api_swap_build_tx error: {e}")
-        return jsonify({"code": -1, "msg": str(e), "data": None})
-
-
-@app.route('/api/swap/approve-tx', methods=['POST'])
-def api_swap_approve_tx():
-    """
-    Build ERC20 approve transaction for wallet signing.
-    Not needed for Solana/Aptos (returns success with message).
-
-    Request body:
-    {
-        "chainId": 1,
-        "chainType": "evm",           // optional
         "router": "okx",
-        "tokenAddress": "0x...",
-        "approveAmount": "1000000",    // or "max" for unlimited
-        "spender": "0x..."             // required for Bitget (from build-tx 'approveSpender')
+        "market": "..."
     }
+
+    Same-chain: builds swap tx + includes approve tx data if needed.
+    Cross-chain: builds via specified router (omnibridge / nearintents).
     """
     try:
         if not request.is_json:
@@ -2723,163 +2634,55 @@ def api_swap_approve_tx():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
-        chain_id = body.get("chainId")
-        chain_type = body.get("chainType")
-        router = body.get("router", "")
-        token_address = body.get("tokenAddress")
-        approve_amount = body.get("approveAmount", "max")
-        spender = body.get("spender")
-
-        if not chain_id:
-            return jsonify({"code": -1, "msg": "chainId is required", "data": None})
-
-        if approve_amount in ("max", "unlimited"):
-            if router == "okx":
-                approve_amount = str(2 ** 255)
-        else:
-            approve_amount = str(approve_amount)
-
-        result = multi_chain_approve_tx(
-            chain_id=chain_id,
-            router=router,
-            token_address=token_address or "",
-            approve_amount=approve_amount,
-            spender=spender,
-            chain_type=chain_type,
-        )
-
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Build approve transaction failed"), "data": result})
-    except Exception as e:
-        logger.error(f"api_swap_approve_tx error: {e}")
-        return jsonify({"code": -1, "msg": str(e), "data": None})
-
-
-@app.route('/api/swap/supported-routers', methods=['GET'])
-def api_swap_supported_routers():
-    """
-    Get supported DEX routers and chain information.
-    Supports EVM, Solana, and Aptos.
-
-    Query params:
-        chainId (optional): specific chain ID to query
-        chainType (optional): "evm" / "solana" / "aptos"
-    """
-    try:
-        chain_id_str = request.args.get("chainId")
-        chain_type = request.args.get("chainType")
-
-        chain_id = None
-        if chain_id_str:
-            try:
-                chain_id = int(chain_id_str)
-            except ValueError:
-                chain_id = chain_id_str
-
-        result = multi_chain_supported_routers(chain_id=chain_id, chain_type=chain_type)
-
-        return jsonify({"code": 0, "msg": "success", "data": result})
-    except Exception as e:
-        logger.error(f"api_swap_supported_routers error: {e}")
-        return jsonify({"code": -1, "msg": str(e), "data": None})
-
-
-# ============================================================
-# Cross-Chain Swap API (OmniBridge)
-# ============================================================
-
-@app.route('/api/swap/cross-chain/quote', methods=['POST'])
-def api_cross_chain_quote():
-    """
-    Get cross-chain swap quote via OmniBridge.
-
-    Request body:
-    {
-        "fromChain": "ethereum",
-        "toChain": "bsc",
-        "tokenIn": {"address": "...", "symbol": "ETH", "decimals": 18},
-        "tokenOut": {"address": "...", "symbol": "BNB", "decimals": 18},
-        "amountIn": "1000000000000000000",
-        "sender": "0x...",
-        "recipient": "0x..."
-    }
-    """
-    try:
-        from omnibridge_utils import cross_chain_quote
-
-        body = request.get_json()
-        if not body:
-            return jsonify({"code": -1, "msg": "Request body required"})
-
-        result = cross_chain_quote(
-            from_chain=body.get("fromChain", ""),
-            to_chain=body.get("toChain", ""),
-            token_in=body.get("tokenIn", {}),
-            token_out=body.get("tokenOut", {}),
-            amount_in=str(body.get("amountIn", "0")),
-            sender=body.get("sender", ""),
-            recipient=body.get("recipient"),
-        )
-
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Cross-chain quote failed"), "data": result})
-    except Exception as e:
-        logger.error(f"api_cross_chain_quote error: {e}")
-        return jsonify({"code": -1, "msg": str(e)})
-
-
-@app.route('/api/swap/cross-chain/build-tx', methods=['POST'])
-def api_cross_chain_build_tx():
-    """
-    Create a cross-chain swap order via OmniBridge.
-    Returns deposit address and amount.
-    """
-    try:
-        from omnibridge_utils import cross_chain_build_tx
-
-        body = request.get_json()
-        if not body:
-            return jsonify({"code": -1, "msg": "Request body required"})
-
-        result = cross_chain_build_tx(
-            from_chain=body.get("fromChain", ""),
-            to_chain=body.get("toChain", ""),
-            token_in=body.get("tokenIn", {}),
-            token_out=body.get("tokenOut", {}),
-            amount_in=str(body.get("amountIn", "0")),
-            sender=body.get("sender", ""),
-            recipient=body.get("recipient", body.get("sender", "")),
+        result = unified_swap(
+            from_chain=body.get("fromChain", body.get("chainId", "")),
+            to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
+            token_in_address=body.get("tokenIn", ""),
+            token_out_address=body.get("tokenOut", ""),
+            amount_in=str(body.get("amountIn", "")),
             slippage=float(body.get("slippage", 0.5)),
+            sender=body.get("sender", ""),
+            recipient=body.get("recipient", ""),
+            router=body.get("router", ""),
+            market=body.get("market", ""),
         )
 
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Cross-chain order failed"), "data": result})
+        return jsonify(result)
     except Exception as e:
-        logger.error(f"api_cross_chain_build_tx error: {e}")
-        return jsonify({"code": -1, "msg": str(e)})
+        logger.error(f"api_swap_build error: {e}")
+        return jsonify({"code": -1, "msg": str(e), "data": None})
 
 
-@app.route('/api/swap/cross-chain/order-status', methods=['GET'])
-def api_cross_chain_order_status():
-    """Query OmniBridge cross-chain order status."""
+@app.route('/api/swap/order-status', methods=['GET'])
+def api_swap_order_status():
+    """
+    Unified cross-chain order status query.
+    Params: orderId, router (omnibridge / nearintents)
+    """
     try:
-        from omnibridge_utils import omni_get_order_status
-        order_id = request.args.get("orderId")
+        order_id = request.args.get("orderId", "")
+        router = request.args.get("router", "")
+
         if not order_id:
-            return jsonify({"code": -1, "msg": "orderId required"})
-        result = omni_get_order_status(order_id)
+            return jsonify({"code": -1, "msg": "orderId is required"})
+        if not router:
+            return jsonify({"code": -1, "msg": "router is required (omnibridge or nearintents)"})
+
+        if router == "omnibridge":
+            from omnibridge_utils import omni_get_order_status
+            result = omni_get_order_status(order_id)
+        elif router == "nearintents":
+            from nearintents_utils import nearintents_order_status
+            result = nearintents_order_status(order_id)
+        else:
+            return jsonify({"code": -1, "msg": f"Unknown router: {router}. Supported: omnibridge, nearintents"})
+
         if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result["data"]})
+            return jsonify({"code": 0, "msg": "success", "data": result.get("data", {})})
         else:
             return jsonify({"code": -1, "msg": result.get("error", "Query failed")})
     except Exception as e:
-        logger.error(f"api_cross_chain_order_status error: {e}")
+        logger.error(f"api_swap_order_status error: {e}")
         return jsonify({"code": -1, "msg": str(e)})
 
 

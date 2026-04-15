@@ -2,6 +2,7 @@
 Boss system Flask routes.
 
 User-facing:
+  POST /boss/send-code             (email verification code)
   POST /boss/register
   POST /boss/login
   GET  /boss/me
@@ -22,10 +23,12 @@ Admin:
 """
 
 import hashlib
+import random
 import secrets
 from flask import Blueprint, request, jsonify, g
 from loguru import logger
 
+import redis as redis_lib
 from boss.models import (
     create_user, authenticate_user, get_user_by_id,
     list_users, update_user,
@@ -38,6 +41,7 @@ from boss.auth import (
     generate_jwt, generate_boss_session_token, boss_login_required, boss_admin_required,
 )
 from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
+from boss.email_utils import send_verification_code
 from config import Cfg
 
 _aes_key = getattr(Cfg, "CRYPTO_AES_KEY", "") or ""
@@ -46,6 +50,17 @@ BOSS_SESSION_SECRET = hashlib.sha256(f"boss_session_{_aes_key}".encode()).hexdig
 boss_bp = Blueprint("boss", __name__, url_prefix="/boss")
 
 _get_db_conn = None
+
+_boss_redis_pool = redis_lib.ConnectionPool(
+    host=Cfg.REDIS["REDIS_HOST"],
+    port=int(Cfg.REDIS["REDIS_PORT"]),
+    decode_responses=True,
+    db=3,
+)
+
+
+def _boss_redis():
+    return redis_lib.StrictRedis(connection_pool=_boss_redis_pool)
 
 
 def init_boss_routes(app, get_db_conn_func):
@@ -67,18 +82,52 @@ def _conn():
     return _get_db_conn()
 
 
-# ── Public: Register / Login ─────────────────────────────
+# ── Public: Email verification / Register / Login ────────
+
+@boss_bp.route("/send-code", methods=["POST"])
+def send_code():
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+
+    if not email or "@" not in email:
+        return jsonify({"code": -1, "msg": "Valid email required"})
+
+    r = _boss_redis()
+    lock_key = f"boss:email_code_lock:{email}"
+    if r.get(lock_key):
+        return jsonify({"code": -1, "msg": "Please wait 60 seconds before requesting a new code"})
+
+    code = f"{random.randint(0, 999999):06d}"
+    ok = send_verification_code(email, code)
+    if not ok:
+        return jsonify({"code": -1, "msg": "Failed to send verification email, please try again later"})
+
+    code_key = f"boss:email_code:{email}"
+    r.set(code_key, code, ex=300)
+    r.set(lock_key, "1", ex=60)
+
+    return jsonify({"code": 0, "msg": "Verification code sent"})
+
 
 @boss_bp.route("/register", methods=["POST"])
 def register():
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
+    code = (body.get("code") or "").strip()
 
     if not email or "@" not in email:
         return jsonify({"code": -1, "msg": "Valid email required"})
     if len(password) < 6:
         return jsonify({"code": -1, "msg": "Password must be at least 6 characters"})
+    if not code:
+        return jsonify({"code": -1, "msg": "Verification code required"})
+
+    r = _boss_redis()
+    code_key = f"boss:email_code:{email}"
+    stored_code = r.get(code_key)
+    if not stored_code or stored_code != code:
+        return jsonify({"code": -1, "msg": "Invalid or expired verification code"})
 
     conn = _conn()
     try:
@@ -89,6 +138,7 @@ def register():
     if not user:
         return jsonify({"code": -1, "msg": "Email already registered"})
 
+    r.delete(code_key)
     token = generate_boss_session_token(user["id"], user["role"], BOSS_SESSION_SECRET)
     return jsonify({"code": 0, "msg": "success", "data": {"user": user, "token": token}})
 
@@ -132,13 +182,29 @@ def me():
 def create_token():
     body = request.get_json(silent=True) or {}
     app_name = body.get("appName", "")
+    refund_address = (body.get("refundAddress") or "").strip()
+    app_fee_raw = body.get("appFee")
+
+    app_fee = 0.0
+    if app_fee_raw is not None and app_fee_raw != "":
+        try:
+            app_fee = float(app_fee_raw)
+        except (ValueError, TypeError):
+            return jsonify({"code": -1, "msg": "appFee must be a number"})
+        if app_fee < 1 or app_fee > 10:
+            return jsonify({"code": -1, "msg": "appFee must be between 1 and 10 (percent)"})
 
     conn = _conn()
     try:
-        token = create_api_token(conn, g.boss_user_id, app_name)
+        token = create_api_token(conn, g.boss_user_id, app_name, refund_address, app_fee)
     finally:
         conn.close()
 
+    expires_in = 86400 * 30
+    jwt_token = generate_jwt(token["app_id"], token["app_secret"], expires_in=expires_in)
+    token.pop("app_secret", None)
+    token["jwt"] = jwt_token
+    token["jwt_expires_in"] = expires_in
     return jsonify({"code": 0, "msg": "success", "data": token})
 
 
@@ -167,7 +233,37 @@ def get_token_detail(token_id):
         return jsonify({"code": -1, "msg": "Token not found"})
 
     token.pop("app_secret", None)
+    token.pop("app_key", None)
     return jsonify({"code": 0, "msg": "success", "data": token})
+
+
+@boss_bp.route("/api-tokens/<int:token_id>", methods=["PUT"])
+@boss_login_required(BOSS_SESSION_SECRET)
+def update_my_token(token_id):
+    body = request.get_json(silent=True) or {}
+    conn = _conn()
+    try:
+        token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
+        if not token:
+            return jsonify({"code": -1, "msg": "Token not found"})
+
+        updates = {}
+        if "refundAddress" in body:
+            updates["refund_address"] = (body["refundAddress"] or "").strip()
+        if "appFee" in body:
+            try:
+                fee = float(body["appFee"])
+            except (ValueError, TypeError):
+                return jsonify({"code": -1, "msg": "appFee must be a number"})
+            if fee != 0 and (fee < 1 or fee > 10):
+                return jsonify({"code": -1, "msg": "appFee must be between 1 and 10 (percent), or 0 to disable"})
+            updates["app_fee"] = fee
+
+        if updates:
+            update_api_token(conn, token_id, **updates)
+    finally:
+        conn.close()
+    return jsonify({"code": 0, "msg": "success"})
 
 
 @boss_bp.route("/api-tokens/<int:token_id>/reset-key", methods=["POST"])
@@ -178,10 +274,10 @@ def reset_token_key(token_id):
         token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
         if not token:
             return jsonify({"code": -1, "msg": "Token not found"})
-        result = reset_api_key(conn, token_id)
+        reset_api_key(conn, token_id)
     finally:
         conn.close()
-    return jsonify({"code": 0, "msg": "success", "data": result})
+    return jsonify({"code": 0, "msg": "success"})
 
 
 @boss_bp.route("/api-tokens/<int:token_id>/generate-jwt", methods=["POST"])

@@ -20,6 +20,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+localhost_scripts/
+dcl/
 eggs/
 .eggs/
 lib/

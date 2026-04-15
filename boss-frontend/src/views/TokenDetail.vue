@@ -7,10 +7,13 @@
         <el-card>
           <template #header><strong>Key Information</strong></template>
           <el-descriptions :column="1" border>
+            <el-descriptions-item label="App Name">{{ token.app_name || '—' }}</el-descriptions-item>
             <el-descriptions-item label="App ID"><span class="mono">{{ token.app_id }}</span></el-descriptions-item>
-            <el-descriptions-item label="App Key">
-              <span class="mono">{{ token.app_key }}</span>
-              <el-button text size="small" @click="copyText(token.app_key)" style="margin-left: 8px">Copy</el-button>
+            <el-descriptions-item label="Refund Address">
+              <span class="mono">{{ token.refund_address || '—' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="App Fee">
+              {{ token.app_fee ? `${token.app_fee}%` : 'Not set' }}
             </el-descriptions-item>
             <el-descriptions-item label="Status">
               <el-tag :type="token.status === 1 ? 'success' : 'danger'" size="small">{{ token.status === 1 ? 'Active' : 'Disabled' }}</el-tag>
@@ -18,12 +21,13 @@
             <el-descriptions-item label="Created">{{ token.created_at }}</el-descriptions-item>
           </el-descriptions>
           <div style="margin-top: 16px; display: flex; gap: 8px">
-            <el-popconfirm title="Reset will invalidate existing JWTs. Continue?" @confirm="resetKey">
+            <el-button type="primary" @click="generateJwt">Generate JWT Token</el-button>
+            <el-button @click="openEditDialog">Edit Settings</el-button>
+            <el-popconfirm title="This will invalidate all existing JWT tokens for this key. Continue?" @confirm="resetSecret">
               <template #reference>
-                <el-button type="warning" size="small">Reset Key</el-button>
+                <el-button type="warning">Reset Secret</el-button>
               </template>
             </el-popconfirm>
-            <el-button type="primary" size="small" @click="generateJwt">Generate JWT</el-button>
           </div>
         </el-card>
       </el-col>
@@ -47,11 +51,36 @@
       </el-col>
     </el-row>
 
-    <el-dialog v-model="showJwt" title="Generated JWT Token" width="600px">
+    <el-dialog v-model="showEdit" title="Edit Settings" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="Refund Address">
+          <el-input v-model="editForm.refundAddress" placeholder="0x... (wallet address for refunds)" />
+        </el-form-item>
+        <el-form-item label="App Fee (%)">
+          <el-input-number
+            v-model="editForm.appFee"
+            :min="0" :max="10" :step="0.5" :precision="2"
+            controls-position="right"
+            style="width: 100%"
+          />
+          <div style="font-size: 12px; color: #909399; margin-top: 4px;">Set between 1% ~ 10%. Leave 0 to disable.</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEdit = false">Cancel</el-button>
+        <el-button type="primary" :loading="saving" @click="saveSettings">Save</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showJwt" title="Generated JWT Token" width="620px">
       <el-alert type="warning" :closable="false" style="margin-bottom: 12px">
-        This JWT is valid for 30 days. Store it securely.
+        This JWT is valid for 30 days. Store it securely — it will not be shown again.
       </el-alert>
       <el-input type="textarea" :model-value="jwtToken" :rows="6" readonly />
+      <div style="margin-top: 12px; color: #909399; font-size: 13px;">
+        Use this token in your API requests:<br/>
+        <code style="background: #f5f7fa; padding: 2px 6px; border-radius: 3px;">Authorization: Bearer &lt;your_jwt_token&gt;</code>
+      </div>
       <template #footer>
         <el-button @click="copyText(jwtToken); showJwt = false" type="primary">Copy & Close</el-button>
       </template>
@@ -74,6 +103,9 @@ const usage = ref(null)
 const loading = ref(false)
 const showJwt = ref(false)
 const jwtToken = ref('')
+const showEdit = ref(false)
+const saving = ref(false)
+const editForm = ref({ refundAddress: '', appFee: 0 })
 
 const rateLimitList = computed(() => token.value?.rate_limits || [])
 
@@ -91,11 +123,45 @@ async function fetchDetail() {
   }
 }
 
-async function resetKey() {
+function openEditDialog() {
+  editForm.value = {
+    refundAddress: token.value?.refund_address || '',
+    appFee: parseFloat(token.value?.app_fee) || 0,
+  }
+  showEdit.value = true
+}
+
+async function saveSettings() {
+  const fee = editForm.value.appFee
+  if (fee !== 0 && (fee < 1 || fee > 10)) {
+    ElMessage.warning('App Fee must be between 1% and 10%, or 0 to disable')
+    return
+  }
+  saving.value = true
+  try {
+    const res = await api.put(`/api-tokens/${tokenId.value}`, {
+      refundAddress: editForm.value.refundAddress,
+      appFee: editForm.value.appFee,
+    })
+    if (res.code === 0) {
+      ElMessage.success('Settings saved')
+      showEdit.value = false
+      fetchDetail()
+    } else {
+      ElMessage.error(res.msg || 'Save failed')
+    }
+  } catch {
+    ElMessage.error('Save failed')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function resetSecret() {
   try {
     const res = await api.post(`/api-tokens/${tokenId.value}/reset-key`)
     if (res.code === 0) {
-      ElMessage.success('Key reset successfully')
+      ElMessage.success('Secret reset successfully. All existing JWT tokens have been invalidated.')
       fetchDetail()
     }
   } catch {
