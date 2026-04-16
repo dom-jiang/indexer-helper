@@ -12,5 +12,5 @@ else
         kill -s 9 ${pid}
         echo "Warning: clean backend process of last round." >> backend_oneclick_status_checker.log
 fi
-/usr/local/bin/python token_price.py MAINNET >> backend_token_price.log
+/usr/local/bin/python oneclick_status_checker.py MAINNET >> backend_oneclick_status_checker.log
 echo 'OK'
