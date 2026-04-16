@@ -1957,6 +1957,43 @@ def get_burrow_total_fee_by_time_range(network_id, startTimestamp, endTimestamp)
 
     return burrow_total_fee
 
+def get_pending_oneclick_orders(network_id):
+    """Get orders that are not in a terminal state and were created within the last hour."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT id, deposit_address, status FROM oneclick_orders
+             WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED')
+               AND deposit_address IS NOT NULL
+               AND created_at >= NOW() - INTERVAL 70 MINUTE
+             ORDER BY created_at ASC"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall()
+    except Exception as e:
+        print("get_pending_oneclick_orders error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_oneclick_order_status(network_id, order_id, status, status_response):
+    db_conn = get_db_connect(network_id)
+    sql = """UPDATE oneclick_orders
+             SET status = %s, status_response = %s, updated_at = NOW()
+             WHERE id = %s"""
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (status, status_response, order_id))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_oneclick_order_status error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
 
 if __name__ == '__main__':
     print("#########MAINNET###########")
