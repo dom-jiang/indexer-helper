@@ -209,6 +209,122 @@ print(swap_resp.json())</pre>
     </el-card>
 
     <el-card class="guide-section">
+      <template #header><strong>5.1 Response Shape of /api/swap/swap</strong></template>
+      <div class="guide-content">
+        <p>The <code>data</code> field of <code>/api/swap/swap</code> uses the <strong>same outer shape</strong> for both same-chain and cross-chain, and the <code>data.tx</code> field is <strong>consistent per source chain type</strong>:</p>
+        <div class="code-block">
+          <pre>{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "isCrossChain": false | true,
+    "chainType": "evm" | "solana" | "aptos",      // source chain type
+    "router": "okx | bitget | jupiter | panora | omnibridge | nearintents",
+    "fromChain": "56",
+    "toChain":   "42161",
+    "tokenIn":  { "address", "symbol", "decimals" },
+    "tokenOut": { "address", "symbol", "decimals" },
+    "amountIn": "1000000",
+    "estimatedOut":  "999898",
+    "minAmountOut":  "994898",
+    "tx":      <source-chain-specific, see below>,
+    "approve": null | { "tx": {...}, "spender": "0x..." },    // EVM same-chain only
+    "deposit": null | {                                        // only for cross-chain
+      "depositAddress": "0x...",
+      "depositMemo":    "",
+      "depositChain":   "56",
+      "orderId":        "...",
+      "estimatedOut":   "...",
+      "minAmountOut":   "...",
+      "timeEstimate":   35
+    }
+  }
+}</pre>
+        </div>
+
+        <h4 style="margin-top: 16px;">EVM — <code>data.tx</code> shape (same for same-chain & cross-chain)</h4>
+        <div class="code-block">
+          <pre>{
+  "to":       "0x...",            // DEX router (same-chain) or token / deposit address (cross-chain)
+  "data":     "0x...",            // calldata (empty "0x" for native transfer)
+  "value":    "0x0" | "0x<hex>",  // native amount in hex
+  "gasLimit": "0x...",
+  "chainId":  56
+}</pre>
+        </div>
+
+        <h4 style="margin-top: 16px;">Aptos — <code>data.tx</code> shape (Move entry function)</h4>
+        <div class="code-block">
+          <pre>{
+  "function":       "0x1::aptos_account::transfer_coins",   // or Panora's swap function
+  "type_arguments": ["<CoinType>"],
+  "arguments":      ["<recipient>", "<amount>"]
+}</pre>
+        </div>
+
+        <h4 style="margin-top: 16px;">Solana — <code>data.tx</code> shape</h4>
+        <p>Both same-chain and cross-chain return the same top-level keys. Dispatch on <code>tx.format</code>:</p>
+        <div class="code-block">
+          <pre>// Same-chain (Jupiter / OKX) — pre-built base64 transaction
+{ "transaction": "&lt;base64&gt;", "format": "base64" }
+
+// Cross-chain — descriptor, frontend builds SPL/SOL transfer with @solana/web3.js
+// SOL (native):
+{ "transaction": "", "format": "sol_transfer",
+  "depositAddress": "...", "amount": "...", "decimals": 9, "depositMemo": "" }
+// SPL token:
+{ "transaction": "", "format": "spl_transfer",
+  "depositAddress": "...", "mint": "...",
+  "amount": "...", "decimals": 6, "depositMemo": "" }</pre>
+        </div>
+      </div>
+    </el-card>
+
+    <el-card class="guide-section">
+      <template #header><strong>5.2 Report Signed Tx & Query History</strong></template>
+      <div class="guide-content">
+        <p>After the user signs and broadcasts a swap, report the source-chain tx hash to the backend so it can be stored and (for cross-chain) polled for settlement status.</p>
+
+        <h4>POST /api/swap/report</h4>
+        <div class="code-block">
+          <pre>curl -X POST {{ baseUrl }}/api/swap/report \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{
+    "sender":          "0xYourAddress",
+    "from_hash":       "0xsourceChainTxHash",
+    "from_token":      "0x...",
+    "to_token":        "0x...",
+    "deposit_address": "0x...",            // "" for same-chain
+    "from_chain":      "56",
+    "to_chain":        "42161",
+    "amount_in":       "1000000",
+    "estimated_out":   "999898",
+    "router":          "nearintents",
+    "multi_addr":      "optional",
+    "swap_id":         "optional",
+    "extra":           { "any": "frontend context" }
+  }'</pre>
+        </div>
+        <p><strong>Required:</strong> <code>sender</code>, <code>from_hash</code>, <code>from_token</code>, <code>to_token</code>.
+        The call is <strong>idempotent on <code>from_hash</code></strong>: re-reporting the same hash returns the existing record id.
+        <code>deposit_address</code> is required for cross-chain (drives backend polling).</p>
+
+        <h4 style="margin-top: 16px;">GET /api/swap/history</h4>
+        <div class="code-block">
+          <pre>curl -G {{ baseUrl }}/api/swap/history \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  --data-urlencode "sender=0xYourAddress" \
+  --data-urlencode "pageNumber=1" \
+  --data-urlencode "pageSize=20"</pre>
+        </div>
+        <p>Returns newest-first paginated records for the given <code>sender</code>. For cross-chain rows, a background job
+        updates <code>status</code>, <code>to_hash</code>, and <code>actual_out</code> over time until a terminal state
+        (<code>SUCCESS</code> / <code>FAILED</code> / <code>REFUNDED</code> / <code>EXPIRED</code>) is reached.</p>
+      </div>
+    </el-card>
+
+    <el-card class="guide-section">
       <template #header><strong>6. Typical Workflow</strong></template>
       <div class="guide-content">
         <div class="workflow-steps">
@@ -244,8 +360,15 @@ print(swap_resp.json())</pre>
           <div class="step">
             <div class="step-number">5</div>
             <div class="step-body">
-              <strong>Check Status (cross-chain only)</strong>
-              <p>For cross-chain swaps, poll <code>GET /api/swap/order-status?orderId=xxx&router=nearintents</code> to track the order progress.</p>
+              <strong>Report the Signed Tx</strong>
+              <p>After your source-chain tx is broadcast, call <code>POST /api/swap/report</code> with <code>sender</code>, <code>from_hash</code>, <code>from_token</code>, <code>to_token</code>, and (for cross-chain) <code>deposit_address</code>. The backend persists the record and, if cross-chain, starts polling for settlement status.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-number">6</div>
+            <div class="step-body">
+              <strong>Track History / Status</strong>
+              <p>Use <code>GET /api/swap/history?sender=&lt;addr&gt;</code> to list the user's swaps (newest first). Cross-chain status fields — <code>status</code>, <code>to_hash</code>, <code>actual_out</code> — are refreshed by the backend until a terminal state is reached. You can still call <code>GET /api/swap/order-status</code> for an ad-hoc check against the provider.</p>
             </div>
           </div>
         </div>
@@ -276,8 +399,10 @@ const baseUrl = computed(() => window.location.origin)
 
 const endpoints = [
   { method: 'POST', path: '/api/swap/quote', group: 'Quote', description: 'Unified quote — same-chain & cross-chain, returns best price from multiple providers' },
-  { method: 'POST', path: '/api/swap/swap', group: 'Build', description: 'Unified swap — build transaction data (includes approve info for EVM if needed)' },
+  { method: 'POST', path: '/api/swap/swap', group: 'Build', description: 'Unified swap — build transaction data (per-source-chain unified shape, includes approve for EVM same-chain)' },
   { method: 'GET', path: '/api/swap/order-status', group: 'Quote', description: 'Cross-chain order status — query by orderId and router' },
+  { method: 'POST', path: '/api/swap/report', group: 'Build', description: 'Report a user-signed swap tx so backend persists history and polls cross-chain status' },
+  { method: 'GET', path: '/api/swap/history', group: 'Quote', description: "Query a sender's swap history (paginated, newest first)" },
 ]
 
 const rateLimits = [

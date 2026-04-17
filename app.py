@@ -64,7 +64,9 @@ from trxx_utils import (
 from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_by_serial, \
     update_trxx_order_status as db_update_trxx_order_status, get_pending_trxx_orders, \
     trxx_webhook_event_exists, create_trxx_webhook_event, \
-    insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id
+    insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
+    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions, \
+    get_swap_transaction_by_hash
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
 service_version = "20260318.01"
@@ -77,9 +79,9 @@ init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
 
 
 def _get_swap_endpoint_group(path: str) -> str | None:
-    if "/api/swap/quote" in path or "/api/swap/order-status" in path:
+    if "/api/swap/quote" in path or "/api/swap/order-status" in path or "/api/swap/history" in path:
         return "quote"
-    if "/api/swap/swap" in path:
+    if "/api/swap/swap" in path or "/api/swap/report" in path:
         return "build"
     return None
 
@@ -2683,6 +2685,159 @@ def api_swap_order_status():
             return jsonify({"code": -1, "msg": result.get("error", "Query failed")})
     except Exception as e:
         logger.error(f"api_swap_order_status error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+# ============================================================
+# Swap Transaction Report & History
+# ============================================================
+
+try:
+    ensure_swap_transactions_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure swap_transactions table: {_e}")
+
+
+@app.route('/api/swap/report', methods=['POST'])
+def api_swap_report():
+    """
+    Report a user-signed swap transaction so the backend can persist history
+    and poll cross-chain status.
+
+    Required body fields:
+      - sender         (string): user's source-chain wallet address
+      - from_hash      (string): source-chain tx hash the user just signed
+      - from_token     (string): source-chain input token address
+      - to_token       (string): destination-chain output token address
+      - deposit_address(string): cross-chain deposit address (same-chain can pass "")
+
+    Optional:
+      - multi_addr, swap_id (aka swapId)
+      - from_chain, to_chain, amount_in, estimated_out, router, tx_type
+      - is_cross_chain (bool), extra (object)
+    """
+    try:
+        if not request.is_json:
+            return jsonify({"code": -1, "msg": "Request must be JSON format", "data": None})
+        body = request.get_json() or {}
+        if not isinstance(body, dict):
+            return jsonify({"code": -1, "msg": "Request body must be a JSON object"})
+
+        sender = (body.get("sender") or "").strip()
+        from_hash = (body.get("from_hash") or body.get("fromHash") or "").strip()
+        from_token = body.get("from_token") or body.get("fromToken") or ""
+        to_token = body.get("to_token") or body.get("toToken") or ""
+        deposit_address = body.get("deposit_address") or body.get("depositAddress") or ""
+
+        if not sender:
+            return jsonify({"code": -1, "msg": "sender is required"})
+        if not from_hash:
+            return jsonify({"code": -1, "msg": "from_hash is required"})
+        if not from_token or not to_token:
+            return jsonify({"code": -1, "msg": "from_token and to_token are required"})
+
+        swap_id_val = body.get("swap_id")
+        if swap_id_val is None:
+            swap_id_val = body.get("swapId")
+
+        from_chain = body.get("from_chain") or body.get("fromChain") or ""
+        to_chain = body.get("to_chain") or body.get("toChain") or ""
+
+        is_cross_chain = body.get("is_cross_chain")
+        if is_cross_chain is None:
+            is_cross_chain = body.get("isCrossChain")
+        if is_cross_chain is None:
+            if from_chain and to_chain:
+                is_cross_chain = str(from_chain) != str(to_chain)
+            elif deposit_address:
+                is_cross_chain = True
+            else:
+                is_cross_chain = False
+
+        record_id = insert_swap_transaction(
+            Cfg.NETWORK_ID,
+            sender=sender,
+            from_hash=from_hash,
+            deposit_address=deposit_address or None,
+            from_token=from_token,
+            to_token=to_token,
+            from_chain=str(from_chain) if from_chain else None,
+            to_chain=str(to_chain) if to_chain else None,
+            amount_in=body.get("amount_in") or body.get("amountIn"),
+            estimated_out=body.get("estimated_out") or body.get("estimatedOut"),
+            router=body.get("router"),
+            tx_type=body.get("tx_type") or body.get("txType"),
+            is_cross_chain=bool(is_cross_chain),
+            multi_addr=body.get("multi_addr") or body.get("multiAddr"),
+            swap_id=str(swap_id_val) if swap_id_val is not None else None,
+            extra=body.get("extra"),
+        )
+
+        return jsonify({"code": 0, "msg": "success", "data": {"id": record_id, "from_hash": from_hash}})
+    except Exception as e:
+        logger.error(f"api_swap_report error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+@app.route('/api/swap/history', methods=['GET'])
+def api_swap_history():
+    """
+    Query a sender's swap history, newest first.
+
+    Query params:
+      - sender     (required): wallet address
+      - pageNumber (default 1)
+      - pageSize   (default 20, max 100)
+    """
+    try:
+        sender = (request.args.get("sender") or "").strip()
+        if not sender:
+            return jsonify({"code": -1, "msg": "sender is required"})
+
+        try:
+            page_number = int(request.args.get("pageNumber", 1))
+        except (TypeError, ValueError):
+            page_number = 1
+        try:
+            page_size = int(request.args.get("pageSize", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_number = max(1, page_number)
+        page_size = max(1, min(100, page_size))
+
+        rows, total = query_swap_transactions(
+            Cfg.NETWORK_ID, sender, page_number=page_number, page_size=page_size
+        )
+
+        for row in rows:
+            created_at = row.get("created_at")
+            updated_at = row.get("updated_at")
+            if isinstance(created_at, datetime.datetime):
+                row["created_at"] = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(updated_at, datetime.datetime):
+                row["updated_at"] = updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            for json_field in ("extra", "status_response"):
+                if row.get(json_field):
+                    try:
+                        row[json_field] = json.loads(row[json_field])
+                    except Exception:
+                        pass
+
+        total_page = (total + page_size - 1) // page_size if total else 0
+
+        return jsonify({
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "record_list": rows,
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_page": total_page,
+                "total_size": total,
+            },
+        })
+    except Exception as e:
+        logger.error(f"api_swap_history error: {e}")
         return jsonify({"code": -1, "msg": str(e)})
 
 

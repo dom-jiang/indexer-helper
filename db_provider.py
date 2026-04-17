@@ -2901,3 +2901,240 @@ def get_burrow_total_fee_by_time_range(network_id, startTimestamp, endTimestamp)
         except Exception:
             continue
     return burrow_total_fee
+
+
+# ============================================================
+# Swap Transactions (user-reported signed swap history)
+# ============================================================
+
+SWAP_TRANSACTIONS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS swap_transactions (
+    id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+    sender            VARCHAR(128) NOT NULL,
+    from_hash         VARCHAR(128) NOT NULL,
+    deposit_address   VARCHAR(128) DEFAULT NULL,
+    from_token        VARCHAR(128) DEFAULT NULL,
+    to_token          VARCHAR(128) DEFAULT NULL,
+    from_chain        VARCHAR(32)  DEFAULT NULL,
+    to_chain          VARCHAR(32)  DEFAULT NULL,
+    amount_in         VARCHAR(64)  DEFAULT NULL,
+    estimated_out     VARCHAR(64)  DEFAULT NULL,
+    actual_out        VARCHAR(64)  DEFAULT NULL,
+    router            VARCHAR(32)  DEFAULT NULL,
+    tx_type           VARCHAR(16)  DEFAULT 'same-chain',
+    is_cross_chain    TINYINT(1)   DEFAULT 0,
+    status            VARCHAR(32)  DEFAULT 'PENDING',
+    to_hash           VARCHAR(128) DEFAULT NULL,
+    multi_addr        VARCHAR(256) DEFAULT NULL,
+    swap_id           VARCHAR(128) DEFAULT NULL,
+    extra             TEXT,
+    status_response   TEXT,
+    created_at        DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_from_hash (from_hash),
+    INDEX idx_sender_created (sender, created_at),
+    INDEX idx_deposit_address (deposit_address),
+    INDEX idx_status_cross (status, is_cross_chain, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_swap_transactions_table(network_id):
+    """Create the swap_transactions table if it does not exist."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(SWAP_TRANSACTIONS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        logger.warning(f"ensure_swap_transactions_table error: {e}")
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_swap_transaction(network_id, **fields):
+    """
+    Insert a swap transaction record reported by frontend after a user signed tx.
+
+    Required: sender, from_hash
+    Optional: deposit_address, from_token, to_token, from_chain, to_chain,
+              amount_in, estimated_out, router, tx_type, is_cross_chain,
+              multi_addr, swap_id, extra (dict/list will be json-encoded),
+              status (default PENDING).
+
+    If from_hash already exists, returns the existing record id (idempotent).
+    """
+    sender = fields.get("sender")
+    from_hash = fields.get("from_hash")
+    if not sender or not from_hash:
+        raise ValueError("sender and from_hash are required")
+
+    extra = fields.get("extra")
+    if isinstance(extra, (dict, list)):
+        extra = json.dumps(extra, ensure_ascii=False)
+
+    is_cross_chain = 1 if fields.get("is_cross_chain") else 0
+
+    columns = [
+        "sender", "from_hash", "deposit_address", "from_token", "to_token",
+        "from_chain", "to_chain", "amount_in", "estimated_out", "router",
+        "tx_type", "is_cross_chain", "status", "multi_addr", "swap_id", "extra",
+    ]
+    values = [
+        sender,
+        from_hash,
+        fields.get("deposit_address"),
+        fields.get("from_token"),
+        fields.get("to_token"),
+        fields.get("from_chain"),
+        fields.get("to_chain"),
+        fields.get("amount_in"),
+        fields.get("estimated_out"),
+        fields.get("router"),
+        fields.get("tx_type") or ("cross-chain" if is_cross_chain else "same-chain"),
+        is_cross_chain,
+        fields.get("status") or "PENDING",
+        fields.get("multi_addr"),
+        fields.get("swap_id"),
+        extra,
+    ]
+
+    placeholders = ", ".join(["%s"] * len(columns))
+    col_sql = ", ".join(f"`{c}`" for c in columns)
+    sql = f"INSERT INTO swap_transactions ({col_sql}) VALUES ({placeholders})"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.lastrowid
+    except pymysql.err.IntegrityError:
+        db_conn.rollback()
+        existing = get_swap_transaction_by_hash(network_id, from_hash)
+        if existing:
+            return existing.get("id")
+        raise
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_swap_transaction error: {e}")
+        raise
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_swap_transaction_by_hash(network_id, from_hash):
+    """Fetch a swap record by its source-chain transaction hash."""
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM swap_transactions WHERE from_hash = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (from_hash,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"get_swap_transaction_by_hash error: {e}")
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_swap_transactions(network_id, sender, page_number=1, page_size=20):
+    """Paginated query of a user's reported swap transactions, newest first."""
+    try:
+        page_number = max(1, int(page_number))
+        page_size = max(1, min(100, int(page_size)))
+    except (TypeError, ValueError):
+        page_number = 1
+        page_size = 20
+
+    offset = (page_number - 1) * page_size
+    db_conn = get_db_connect(network_id)
+    count_sql = "SELECT COUNT(*) AS total FROM swap_transactions WHERE sender = %s"
+    query_sql = (
+        "SELECT * FROM swap_transactions WHERE sender = %s "
+        "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s"
+    )
+
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(count_sql, (sender,))
+        total = cursor.fetchone().get("total", 0)
+        cursor.execute(query_sql, (sender, page_size, offset))
+        rows = cursor.fetchall() or []
+        return rows, total
+    except Exception as e:
+        logger.error(f"query_swap_transactions error: {e}")
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_pending_cross_chain_swaps(network_id, interval_minutes=70):
+    """
+    Fetch cross-chain swap records whose status is still non-terminal
+    and were created within the last `interval_minutes` minutes.
+    Used by the background status checker.
+    """
+    interval_minutes = int(interval_minutes) if interval_minutes else 70
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "SELECT * FROM swap_transactions "
+        "WHERE is_cross_chain = 1 "
+        "AND deposit_address IS NOT NULL AND deposit_address <> '' "
+        "AND status NOT IN ('SUCCESS', 'FAILED', 'REFUNDED', 'EXPIRED') "
+        f"AND created_at >= NOW() - INTERVAL {interval_minutes} MINUTE "
+        "ORDER BY created_at ASC"
+    )
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"get_pending_cross_chain_swaps error: {e}")
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_swap_transaction(network_id, record_id, **kwargs):
+    """Update allowed fields on a swap_transactions record."""
+    allowed = {
+        "status", "to_hash", "actual_out", "status_response",
+        "estimated_out", "router", "deposit_address",
+    }
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed or value is None:
+            continue
+        if key == "status_response" and isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields.append(f"`{key}` = %s")
+        params.append(value)
+
+    if not fields:
+        return 0
+
+    fields.append("updated_at = NOW()")
+    params.append(record_id)
+    sql = f"UPDATE swap_transactions SET {', '.join(fields)} WHERE id = %s"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_swap_transaction error: {e}")
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()

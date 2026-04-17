@@ -17,11 +17,15 @@ from swap_utils import (
     multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx,
     detect_chain_type, shrink_token, convert_slippage_to_decimal,
     SOLANA_CHAIN_IDS, APTOS_CHAIN_IDS,
+    CHAIN_TYPE_EVM, CHAIN_TYPE_SOLANA, CHAIN_TYPE_APTOS,
 )
 from omnibridge_utils import cross_chain_quote as omni_quote, cross_chain_build_tx as omni_build_tx
 from nearintents_utils import (
     nearintents_quote, nearintents_build_tx,
     resolve_omni_chain, CHAIN_TO_1CLICK,
+)
+from cross_chain_tx_builder import (
+    build_evm_deposit_tx, build_aptos_deposit_tx, build_solana_deposit_tx,
 )
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -331,6 +335,32 @@ def unified_swap(
         return _cross_chain_swap(from_chain, to_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient, router)
 
 
+def _build_common_response_data(
+    is_cross_chain: bool,
+    source_chain_type: str,
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict,
+    token_out: Dict,
+    amount_in: str,
+    router: str,
+) -> Dict:
+    """Common top-level response fields shared by same-chain / cross-chain."""
+    return {
+        "isCrossChain": is_cross_chain,
+        "chainType": source_chain_type,
+        "router": router,
+        "fromChain": str(from_chain),
+        "toChain": str(to_chain),
+        "tokenIn": token_in,
+        "tokenOut": token_out,
+        "amountIn": str(amount_in),
+        "tx": None,
+        "approve": None,
+        "deposit": None,
+    }
+
+
 def _same_chain_swap(
     chain_id: str,
     token_in: Dict,
@@ -368,15 +398,23 @@ def _same_chain_swap(
         if not build_result.get("success"):
             return {"code": -1, "msg": build_result.get("error", "Build tx failed"), "data": build_result}
 
-        response_data = {
-            "isCrossChain": False,
-            "chainType": build_result.get("chainType", "evm"),
-            "router": router,
-            "tx": build_result.get("tx", {}),
-        }
+        source_chain_type = build_result.get("chainType") or detect_chain_type(chain_id_val)
 
-        chain_type = detect_chain_type(chain_id_val)
-        if chain_type == "evm":
+        response_data = _build_common_response_data(
+            is_cross_chain=False,
+            source_chain_type=source_chain_type,
+            from_chain=chain_id,
+            to_chain=chain_id,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            router=router,
+        )
+        response_data["tx"] = build_result.get("tx", {})
+        response_data["estimatedOut"] = build_result.get("estimatedOut", "")
+        response_data["minAmountOut"] = build_result.get("minAmountOut", "")
+
+        if source_chain_type == CHAIN_TYPE_EVM:
             approve_spender = build_result.get("approveSpender") or build_result.get("tx", {}).get("to", "")
             approve_result = multi_chain_approve_tx(
                 chain_id=chain_id_val,
@@ -392,13 +430,8 @@ def _same_chain_swap(
                         "tx": approve_tx,
                         "spender": approve_result.get("dexContractAddress", approve_spender),
                     }
-                else:
-                    response_data["approve"] = None
             else:
-                response_data["approve"] = None
                 response_data["approveError"] = approve_result.get("error", approve_result.get("msg", ""))
-        else:
-            response_data["approve"] = None
 
         return {"code": 0, "msg": "success", "data": response_data}
     except Exception as e:
@@ -417,7 +450,17 @@ def _cross_chain_swap(
     recipient: str,
     router: str,
 ) -> Dict:
-    """Build cross-chain swap via specified router."""
+    """
+    Build cross-chain swap via specified router.
+
+    Returns the SAME top-level shape as same-chain swap, but `tx` contains a
+    source-chain deposit transaction (ERC20/native transfer for EVM, Move
+    entry function for Aptos, SPL transfer descriptor for Solana) that the
+    user signs to send tokens to the `depositAddress`.
+
+    Additional `deposit` field exposes cross-chain metadata
+    (depositAddress, orderId, estimatedOut, minAmountOut, etc.) for UI.
+    """
     if not router:
         return {"code": -1, "msg": "router is required for cross-chain swap (from quote response, e.g. 'omnibridge' or 'nearintents')"}
 
@@ -452,20 +495,79 @@ def _cross_chain_swap(
         else:
             return {"code": -1, "msg": f"Unknown cross-chain router: {router}. Supported: omnibridge, nearintents"}
 
-        if result.get("success"):
-            return {
-                "code": 0,
-                "msg": "success",
-                "data": {
-                    "isCrossChain": True,
-                    "chainType": "cross-chain",
-                    "router": router,
-                    "tx": result.get("tx", {}),
-                    "approve": None,
-                },
-            }
-        else:
+        if not result.get("success"):
             return {"code": -1, "msg": result.get("error", "Cross-chain swap failed"), "data": result}
+
+        cross_tx = result.get("tx", {}) or {}
+        deposit_address = cross_tx.get("depositAddress", "")
+        deposit_memo = cross_tx.get("depositMemo", "")
+        order_id = cross_tx.get("orderId", deposit_address)
+        estimated_out = cross_tx.get("estimatedOut", "")
+        min_amount_out = cross_tx.get("minAmountOut", "")
+
+        if not deposit_address:
+            return {"code": -1, "msg": "Cross-chain provider did not return depositAddress"}
+
+        source_chain_type = detect_chain_type(from_chain)
+
+        response_data = _build_common_response_data(
+            is_cross_chain=True,
+            source_chain_type=source_chain_type,
+            from_chain=from_chain,
+            to_chain=to_chain,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            router=router,
+        )
+
+        if source_chain_type == CHAIN_TYPE_EVM:
+            chain_id_val = from_chain
+            try:
+                chain_id_val = int(from_chain)
+            except (ValueError, TypeError):
+                pass
+            response_data["tx"] = build_evm_deposit_tx(
+                chain_id=chain_id_val,
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+            )
+            response_data["approve"] = None
+        elif source_chain_type == CHAIN_TYPE_APTOS:
+            response_data["tx"] = build_aptos_deposit_tx(
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+            )
+        elif source_chain_type == CHAIN_TYPE_SOLANA:
+            response_data["tx"] = build_solana_deposit_tx(
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+                decimals=int(token_in.get("decimals", 6)),
+                deposit_memo=deposit_memo,
+            )
+        else:
+            response_data["tx"] = {
+                "depositAddress": deposit_address,
+                "depositAmount": cross_tx.get("depositAmount", amount_in),
+                "depositMemo": deposit_memo,
+            }
+
+        response_data["deposit"] = {
+            "depositAddress": deposit_address,
+            "depositMemo": deposit_memo,
+            "depositChain": cross_tx.get("depositChain", str(from_chain)),
+            "orderId": order_id,
+            "estimatedOut": estimated_out,
+            "minAmountOut": min_amount_out,
+            "timeEstimate": cross_tx.get("timeEstimate", ""),
+        }
+        response_data["estimatedOut"] = estimated_out
+        response_data["minAmountOut"] = min_amount_out
+
+        return {"code": 0, "msg": "success", "data": response_data}
     except Exception as e:
         logger.error(f"_cross_chain_swap error: {e}")
         return {"code": -1, "msg": str(e)}
