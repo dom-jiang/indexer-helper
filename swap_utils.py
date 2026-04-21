@@ -354,13 +354,17 @@ def okx_quote(
     amount_in: str,
     slippage: float,
     user_address: str,
+    swap_mode: str = "exactIn",
 ) -> Dict:
     """
     Call OKX quote API.
 
     Args:
-        amount_in: smallest unit
+        amount_in: smallest unit. Interpreted as:
+            - exactIn  (default): amount of token_in to sell.
+            - exactOut: amount of token_out to receive exactly.
         slippage: decimal (e.g., 0.005 for 0.5%)
+        swap_mode: "exactIn" | "exactOut"
     """
     try:
         normalized_in = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_in.get("address", "")) \
@@ -373,7 +377,7 @@ def okx_quote(
             "fromTokenAddress": normalized_in,
             "toTokenAddress": normalized_out,
             "amount": str(amount_in),
-            "swapMode": "exactIn",
+            "swapMode": swap_mode,
             "slippage": str(slippage),
         }
         if user_address:
@@ -398,8 +402,14 @@ def okx_swap(
     slippage: float,
     from_address: str,
     to_address: str,
+    swap_mode: str = "exactIn",
 ) -> Dict:
-    """Call OKX swap API to get calldata."""
+    """Call OKX swap API to get calldata.
+
+    swap_mode:
+        - exactIn  (default): amount = tokenIn to sell, tokenOut receive estimated (subject to slippage).
+        - exactOut: amount = tokenOut to buy exactly, tokenIn is the max the user agrees to pay.
+    """
     try:
         normalized_in = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_in.get("address", "")) \
             else normalize_evm_address(token_in["address"])
@@ -411,7 +421,7 @@ def okx_swap(
             "fromTokenAddress": normalized_in,
             "toTokenAddress": normalized_out,
             "amount": str(amount_in),
-            "swapMode": "exactIn",
+            "swapMode": swap_mode,
             "slippagePercent": str(slippage),
             "userWalletAddress": from_address,
         }
@@ -458,24 +468,34 @@ def okx_approve_transaction(
 # Parse Quote Responses
 # ============================================================
 
-def _parse_bitget_quote(data: Dict, token_out: Dict) -> Optional[Dict]:
+def _parse_bitget_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
     """Parse Bitget quote response into unified format."""
     if not _is_bitget_response_success(data) or not data.get("data"):
         return None
 
     bd = data["data"]
     raw_out = bd.get("outAmount") or bd.get("toAmount") or "0"
-    raw_min_out = bd.get("minOutAmount") or bd.get("toMinAmount") or raw_out
     token_out_decimals = token_out.get("decimals", 18)
 
     try:
         amount_out = Decimal(raw_out) * Decimal(10 ** token_out_decimals)
-        min_amount_out = Decimal(raw_min_out) * Decimal(10 ** token_out_decimals)
     except (InvalidOperation, ValueError):
         return None
 
     if amount_out <= 0:
         return None
+
+    # Bitget quote may not provide an explicit minOut. If missing, compute it using slippage,
+    # to keep semantics consistent with OKX (and to avoid minAmountOut == amountOut, which
+    # makes deviation checks overly strict).
+    raw_min_out = bd.get("minOutAmount") or bd.get("toMinAmount")
+    if raw_min_out is not None and str(raw_min_out).strip() != "":
+        try:
+            min_amount_out = Decimal(str(raw_min_out)) * Decimal(10 ** token_out_decimals)
+        except (InvalidOperation, ValueError):
+            min_amount_out = amount_out * (Decimal("1") - Decimal(str(slippage_decimal)))
+    else:
+        min_amount_out = amount_out * (Decimal("1") - Decimal(str(slippage_decimal)))
 
     return {
         "router": "bitget",
@@ -610,7 +630,7 @@ def aggregate_quote(
         parsed = None
 
         if router == "bitget":
-            parsed = _parse_bitget_quote(data, token_out)
+            parsed = _parse_bitget_quote(data, token_out, slippage_decimal)
         elif router == "okx":
             parsed = _parse_okx_quote(data, token_out, slippage_decimal)
 
@@ -753,6 +773,49 @@ def _build_bitget_swap_tx(chain_id, token_in, token_out, amount_in, slippage, se
             "rawResponse": data,
         }
 
+    # Try to extract estimated output/min output if present (varies by Bitget backend).
+    # These values are used for server-side deviation checks against /quote results.
+    estimated_out = (
+        swap_data.get("toTokenAmount")
+        or swap_data.get("toAmount")
+        or swap_data.get("outAmount")
+        or swap_data.get("amountOut")
+        or ""
+    )
+    min_amount_out = (
+        swap_data.get("minReceiveAmount")
+        or swap_data.get("minOutAmount")
+        or swap_data.get("toMinAmount")
+        or swap_data.get("minAmountOut")
+        or ""
+    )
+
+    # Bitget may return human-readable decimal strings (e.g. "0.00043" WETH) in toAmount.
+    # Normalize to smallest-unit integers using tokenOut decimals so our deviation checks work.
+    def _normalize_decimal_to_int_str(v, decimals: int) -> str:
+        try:
+            if v is None:
+                return ""
+            s = str(v).strip()
+            if not s:
+                return ""
+            if "." not in s:
+                # already smallest-unit integer string (or int)
+                int(s)  # validate
+                return s
+            from decimal import Decimal, InvalidOperation
+            d = Decimal(s)
+            if d <= 0:
+                return "0"
+            scaled = d * (Decimal(10) ** Decimal(decimals))
+            return str(int(scaled))
+        except Exception:
+            return ""
+
+    token_out_decimals = int(token_out.get("decimals", 18) or 18)
+    estimated_out = _normalize_decimal_to_int_str(estimated_out, token_out_decimals)
+    min_amount_out = _normalize_decimal_to_int_str(min_amount_out, token_out_decimals)
+
     return {
         "success": True,
         "tx": {
@@ -765,6 +828,8 @@ def _build_bitget_swap_tx(chain_id, token_in, token_out, amount_in, slippage, se
         "router": "bitget",
         # The 'to' address is the spender for ERC20 approval
         "approveSpender": to,
+        "estimatedOut": str(estimated_out) if estimated_out is not None else "",
+        "minAmountOut": str(min_amount_out) if min_amount_out is not None else "",
     }
 
 
@@ -796,11 +861,14 @@ def _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage, sende
     # Parse OKX response (supports multiple response formats)
     response_data = data["data"]
     tx_data = None
+    route_data = None
 
     if isinstance(response_data, list) and len(response_data) > 0:
-        tx_data = response_data[0].get("tx") or response_data[0]
+        route_data = response_data[0]
+        tx_data = route_data.get("tx") or route_data
     elif isinstance(response_data, dict):
-        tx_data = response_data.get("tx") or response_data.get("transaction") or response_data
+        route_data = response_data
+        tx_data = route_data.get("tx") or route_data.get("transaction") or route_data
 
     if not tx_data:
         return {
@@ -837,6 +905,20 @@ def _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage, sende
             "rawResponse": data,
         }
 
+    # Extract estimated/min receive from OKX swap response if available.
+    # OKX doc: data[0].routerResult.toTokenAmount + tx.minReceiveAmount
+    estimated_out = ""
+    min_amount_out = ""
+    if isinstance(route_data, dict):
+        router_result = route_data.get("routerResult") or {}
+        if isinstance(router_result, dict):
+            estimated_out = router_result.get("toTokenAmount") or router_result.get("toAmount") or ""
+            min_amount_out = router_result.get("minReceiveAmount") or ""
+        if not estimated_out:
+            estimated_out = route_data.get("toTokenAmount") or route_data.get("toAmount") or ""
+        if not min_amount_out:
+            min_amount_out = tx_data.get("minReceiveAmount") or ""
+
     return {
         "success": True,
         "tx": {
@@ -847,6 +929,176 @@ def _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage, sende
             "chainId": chain_id,
         },
         "router": "okx",
+        "estimatedOut": str(estimated_out) if estimated_out is not None else "",
+        "minAmountOut": str(min_amount_out) if min_amount_out is not None else "",
+    }
+
+
+# ============================================================
+# OKX exactOut quote / swap helpers (used by the two-stage
+# pre-swap + NearIntents cross-chain route)
+# ============================================================
+
+def okx_quote_exact_out(
+    chain_id: int,
+    token_in: Dict,
+    token_out: Dict,
+    amount_out: str,
+    slippage: float,
+    user_address: str = "",
+) -> Dict:
+    """Quote in exactOut mode: `amount_out` is the exact amount of token_out we want to receive.
+
+    Returns a parsed dict with `maxAmountIn` (smallest units of token_in to pay, with slippage).
+    """
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    raw = okx_quote(
+        chain_id=chain_id,
+        token_in=token_in,
+        token_out=token_out,
+        amount_in=amount_out,
+        slippage=slippage_decimal,
+        user_address=user_address,
+        swap_mode="exactOut",
+    )
+    if not raw.get("success"):
+        return {"success": False, "error": raw.get("error", "OKX exactOut quote failed")}
+
+    data = raw.get("data") or {}
+    if str(data.get("code")) != "0" or not data.get("data"):
+        return {
+            "success": False,
+            "error": data.get("msg", "OKX exactOut quote returned error"),
+            "raw": data,
+        }
+
+    od = data["data"][0] if isinstance(data["data"], list) else data["data"]
+    # In exactOut mode, OKX's `fromTokenAmount` = amount of token_in required at mid price.
+    from_amount = od.get("fromTokenAmount") or od.get("fromAmount") or "0"
+    to_amount = od.get("toTokenAmount") or od.get("toAmount") or amount_out
+    try:
+        from_amount_dec = Decimal(str(from_amount))
+    except (InvalidOperation, ValueError):
+        from_amount_dec = Decimal("0")
+    if from_amount_dec <= 0:
+        return {"success": False, "error": "OKX exactOut quote: fromTokenAmount invalid", "raw": data}
+
+    # Caller still owes slippage headroom for the approve/max-in amount.
+    max_amount_in = int(from_amount_dec * (Decimal("1") + Decimal(str(slippage_decimal))))
+
+    return {
+        "success": True,
+        "router": "okx",
+        "swapMode": "exactOut",
+        "amountIn": str(int(from_amount_dec)),
+        "maxAmountIn": str(max_amount_in),
+        "amountOut": str(to_amount),
+        "raw": od,
+    }
+
+
+def build_okx_exact_out_swap_tx(
+    chain_id: int,
+    token_in: Dict,
+    token_out: Dict,
+    amount_out: str,
+    slippage: float,
+    sender: str,
+    receiver: str,
+) -> Dict:
+    """Build an OKX swap tx in exactOut mode that delivers exactly `amount_out` to `receiver`.
+
+    Used by the pre-swap stage of the two-stage cross-chain route: the receiver is the
+    NearIntents 1Click depositAddress, so the bridge picks up exactly the promised
+    intermediate amount without requiring a second user signature.
+    """
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    raw = okx_swap(
+        chain_id=chain_id,
+        token_in=token_in,
+        token_out=token_out,
+        amount_in=amount_out,
+        slippage=slippage_decimal,
+        from_address=sender,
+        to_address=receiver,
+        swap_mode="exactOut",
+    )
+    if not raw.get("success"):
+        return {"success": False, "error": raw.get("error", "OKX exactOut swap failed")}
+
+    data = raw["data"]
+    if str(data.get("code")) != "0" or not data.get("data"):
+        return {
+            "success": False,
+            "error": data.get("msg", "OKX exactOut swap API returned error"),
+            "rawResponse": data,
+        }
+
+    response_data = data["data"]
+    tx_data = None
+    route_data = None
+    if isinstance(response_data, list) and len(response_data) > 0:
+        route_data = response_data[0]
+        tx_data = route_data.get("tx") or route_data
+    elif isinstance(response_data, dict):
+        route_data = response_data
+        tx_data = route_data.get("tx") or route_data.get("transaction") or route_data
+
+    if not tx_data:
+        return {
+            "success": False,
+            "error": "OKX exactOut swap: no transaction data found in response",
+            "rawResponse": data,
+        }
+    if tx_data.get("estimateRevert") is True:
+        return {"success": False, "error": "Pre-swap would revert (price impact or insufficient liquidity)"}
+
+    calldata = tx_data.get("data") or ""
+    to = tx_data.get("to") or ""
+    value = tx_data.get("value") or "0"
+    gas = tx_data.get("gas") or tx_data.get("gasLimit") or ""
+    if calldata and not calldata.startswith("0x"):
+        calldata = "0x" + calldata
+
+    # For native token input, OKX returns `value`; keep as-is (native exactOut is rare for pre-swap
+    # but we preserve provider behavior).
+    if not to or not calldata:
+        return {
+            "success": False,
+            "error": "OKX exactOut swap: missing transaction data or contract address",
+            "rawResponse": data,
+        }
+
+    # Extract in/out amounts from the route.
+    from_amount = ""
+    max_in = ""
+    to_amount = ""
+    if isinstance(route_data, dict):
+        router_result = route_data.get("routerResult") or {}
+        if isinstance(router_result, dict):
+            from_amount = router_result.get("fromTokenAmount") or router_result.get("fromAmount") or ""
+            to_amount = router_result.get("toTokenAmount") or router_result.get("toAmount") or ""
+        if not from_amount:
+            from_amount = route_data.get("fromTokenAmount") or route_data.get("fromAmount") or ""
+        if not to_amount:
+            to_amount = route_data.get("toTokenAmount") or route_data.get("toAmount") or ""
+        max_in = tx_data.get("maxSpend") or tx_data.get("maxSendAmount") or ""
+
+    return {
+        "success": True,
+        "tx": {
+            "to": to,
+            "data": calldata,
+            "value": value,
+            "gasLimit": gas,
+            "chainId": chain_id,
+        },
+        "router": "okx",
+        "swapMode": "exactOut",
+        "amountIn": str(from_amount) if from_amount else "",
+        "maxAmountIn": str(max_in) if max_in else "",
+        "amountOut": str(to_amount) if to_amount else str(amount_out),
+        "receiver": receiver,
     }
 
 

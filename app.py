@@ -2647,6 +2647,10 @@ def api_swap_build():
             recipient=body.get("recipient", ""),
             router=body.get("router", ""),
             market=body.get("market", ""),
+            quote_expected_out=str(body.get("expectedOut", body.get("quoteExpectedOut", ""))),
+            quote_min_amount_out=str(body.get("minAmountOut", body.get("quoteMinAmountOut", ""))),
+            pre_swap=body.get("preSwap") if isinstance(body.get("preSwap"), dict) else None,
+            bridge=body.get("bridge") if isinstance(body.get("bridge"), dict) else None,
         )
 
         return jsonify(result)
