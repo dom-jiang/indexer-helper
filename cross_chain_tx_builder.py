@@ -80,21 +80,70 @@ def build_aptos_deposit_tx(
     """
     Build an Aptos Move entry function payload for cross-chain deposit.
 
-    - Native APT:  0x1::aptos_account::transfer(recipient, amount)
-    - Other coin:  0x1::aptos_account::transfer_coins<CoinType>(recipient, amount)
+    Aptos has two mutually-exclusive asset standards. Long-form transaction
+    shapes below are snake_case to match the rest of our API; the wallet
+    adapter SDK on the frontend converts them to camelCase when calling
+    `signAndSubmitTransaction`.
+
+    1) Native APT (empty / `0xa` / `0x1::aptos_coin::AptosCoin`):
+           function: 0x1::aptos_account::transfer
+           type_arguments: []
+           arguments: [depositAddress, amount]
+
+    2) Fungible Asset (FA) token (plain object address, e.g. USDT/USDC FA):
+           function: 0x1::primary_fungible_store::transfer
+           type_arguments: ["0x1::fungible_asset::Metadata"]
+           arguments: [tokenAddress, depositAddress, amount]
+
+    3) Legacy Coin-only tokens (type path `<addr>::<module>::<Type>`):
+           function: 0x1::aptos_account::transfer_coins
+           type_arguments: [tokenAddress]
+           arguments: [depositAddress, amount]
+
+    All new Aptos tokens and tokens that NEAR-Intents 1Click lists for
+    cross-chain deposits are FA, so branch (2) is the common path. Branch
+    (3) is kept as a fallback in case a Coin-only token ever hits us.
+
+    Convenience top-level fields (`tokenAddress`, `depositAddress`,
+    `amount`, `standard`) are included so the frontend can dispatch
+    without re-parsing `arguments`.
     """
-    addr_lower = (token_address or "").lower().strip()
+    addr_raw = (token_address or "").strip()
+    addr_lower = addr_raw.lower()
+    amount_str = str(amount_smallest)
+
     if addr_lower in APTOS_NATIVE_ALIASES:
         return {
             "function": "0x1::aptos_account::transfer",
             "type_arguments": [],
-            "arguments": [deposit_address, str(amount_smallest)],
+            "arguments": [deposit_address, amount_str],
+            "standard": "native",
+            "tokenAddress": "",
+            "depositAddress": deposit_address,
+            "amount": amount_str,
         }
 
+    # Legacy Coin type path (contains `::`) — token is identified by generic type argument.
+    if "::" in addr_raw:
+        return {
+            "function": "0x1::aptos_account::transfer_coins",
+            "type_arguments": [addr_raw],
+            "arguments": [deposit_address, amount_str],
+            "standard": "coin",
+            "tokenAddress": addr_raw,
+            "depositAddress": deposit_address,
+            "amount": amount_str,
+        }
+
+    # Default: Fungible Asset standard — token is the Metadata object address.
     return {
-        "function": "0x1::aptos_account::transfer_coins",
-        "type_arguments": [token_address],
-        "arguments": [deposit_address, str(amount_smallest)],
+        "function": "0x1::primary_fungible_store::transfer",
+        "type_arguments": ["0x1::fungible_asset::Metadata"],
+        "arguments": [addr_raw, deposit_address, amount_str],
+        "standard": "fa",
+        "tokenAddress": addr_raw,
+        "depositAddress": deposit_address,
+        "amount": amount_str,
     }
 
 

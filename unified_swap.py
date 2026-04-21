@@ -23,6 +23,63 @@ from swap_utils import (
     build_swap_tx as build_same_chain_swap_tx,
     build_approve_tx as build_same_chain_approve_tx,
 )
+
+
+# Native (gas) token metadata per chain. Redis token-price cache is keyed by ERC20
+# contract address and therefore does NOT contain the native gas token, so when the
+# frontend passes `0x000...0` / empty string / `0xEeeeE...` we have to resolve metadata
+# from this static table instead of via a Redis lookup. Keys use the same aliases as
+# `_candidate_chain_keys`; the first match wins.
+_NATIVE_TOKEN_META = {
+    # EVM
+    "1":      {"symbol": "ETH",  "decimals": 18},
+    "10":     {"symbol": "ETH",  "decimals": 18},
+    "42161":  {"symbol": "ETH",  "decimals": 18},
+    "8453":   {"symbol": "ETH",  "decimals": 18},
+    "59144":  {"symbol": "ETH",  "decimals": 18},
+    "534352": {"symbol": "ETH",  "decimals": 18},
+    "324":    {"symbol": "ETH",  "decimals": 18},
+    "81457":  {"symbol": "ETH",  "decimals": 18},
+    "1101":   {"symbol": "ETH",  "decimals": 18},
+    "169":    {"symbol": "ETH",  "decimals": 18},
+    "130":    {"symbol": "ETH",  "decimals": 18},
+    "56":     {"symbol": "BNB",  "decimals": 18},
+    "137":    {"symbol": "POL",  "decimals": 18},
+    "43114":  {"symbol": "AVAX", "decimals": 18},
+    "100":    {"symbol": "xDAI", "decimals": 18},
+    "25":     {"symbol": "CRO",  "decimals": 18},
+    "250":    {"symbol": "FTM",  "decimals": 18},
+    "1088":   {"symbol": "METIS", "decimals": 18},
+    "1030":   {"symbol": "CFX",  "decimals": 18},
+    "5000":   {"symbol": "MNT",  "decimals": 18},
+    "7000":   {"symbol": "ZETA", "decimals": 18},
+    "146":    {"symbol": "S",    "decimals": 18},
+    "80094":  {"symbol": "BERA", "decimals": 18},
+    "196":    {"symbol": "OKB",  "decimals": 18},
+    "143":    {"symbol": "MON",  "decimals": 18},
+    "9745":   {"symbol": "XPL",  "decimals": 18},
+    "4200":   {"symbol": "BTC",  "decimals": 18},
+    "36900":  {"symbol": "BTC",  "decimals": 18},
+    # Non-EVM
+    "sol":    {"symbol": "SOL",  "decimals": 9},
+    "501":    {"symbol": "SOL",  "decimals": 9},
+    "aptos":  {"symbol": "APT",  "decimals": 8},
+    "637":    {"symbol": "APT",  "decimals": 8},
+    "sui":    {"symbol": "SUI",  "decimals": 9},
+    "784":    {"symbol": "SUI",  "decimals": 9},
+    "tron":   {"symbol": "TRX",  "decimals": 6},
+    "195":    {"symbol": "TRX",  "decimals": 6},
+    "near":   {"symbol": "NEAR", "decimals": 24},
+    "ton":    {"symbol": "TON",  "decimals": 9},
+    "btc":    {"symbol": "BTC",  "decimals": 8},
+    "doge":   {"symbol": "DOGE", "decimals": 8},
+    "ltc":    {"symbol": "LTC",  "decimals": 8},
+    "bch":    {"symbol": "BCH",  "decimals": 8},
+    "zec":    {"symbol": "ZEC",  "decimals": 8},
+    "xrp":    {"symbol": "XRP",  "decimals": 6},
+    "stellar": {"symbol": "XLM", "decimals": 7},
+    "cardano": {"symbol": "ADA", "decimals": 6},
+}
 from omnibridge_utils import cross_chain_quote as omni_quote, cross_chain_build_tx as omni_build_tx
 from nearintents_utils import (
     nearintents_quote, nearintents_build_tx,
@@ -112,12 +169,41 @@ def _candidate_chain_keys(chain) -> list:
     return [s]
 
 
+def _resolve_native_token_meta(chain) -> Dict:
+    """Return {symbol, decimals} for the native gas token of the given chain.
+
+    Falls back to EVM-style ETH/18 decimals for unlisted chains so at least the
+    transaction building (which only needs `decimals`) still works.
+    """
+    for candidate in _candidate_chain_keys(chain):
+        meta = _NATIVE_TOKEN_META.get(candidate)
+        if meta:
+            return meta
+    return {"symbol": "ETH", "decimals": 18}
+
+
 def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
     """
     Look up token metadata (symbol, decimals) from Redis multichain token data.
     Tries chain-key aliases in order and returns dict with address/symbol/decimals, or None.
+
+    Native gas tokens (passed as empty string, `0x000...0`, or the OKX sentinel
+    `0xEeee...`) are short-circuited to a static mapping because Redis token
+    cache is keyed by ERC20 contract address and does not store them.
     """
-    addr_lower = address.lower()
+    addr_raw = address or ""
+    if is_native_token(addr_raw):
+        meta = _resolve_native_token_meta(chain)
+        # Preserve the original address string the frontend passed so downstream
+        # code (OKX / Bitget / Jupiter / Panora adapters) can re-detect native via
+        # their own `is_native_token` checks.
+        return {
+            "address": addr_raw,
+            "symbol": meta["symbol"],
+            "decimals": int(meta["decimals"]),
+        }
+
+    addr_lower = addr_raw.lower()
     for candidate in _candidate_chain_keys(chain):
         tokens = get_chain_tokens_with_prices(candidate)
         if not tokens:
