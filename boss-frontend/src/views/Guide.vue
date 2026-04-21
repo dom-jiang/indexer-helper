@@ -265,17 +265,19 @@ print(swap_resp.json())</pre>
         <h4 style="margin-top: 16px;">Solana — <code>data.tx</code> shape</h4>
         <p>Both same-chain and cross-chain return the same top-level keys. Dispatch on <code>tx.format</code>:</p>
         <div class="code-block">
-          <pre>// Same-chain (Jupiter / OKX) — pre-built base64 transaction
-{ "transaction": "&lt;base64&gt;", "format": "base64" }
+          <pre>// Uniform outer shape — always {transaction, format}. Frontend decodes
+// `transaction` as base64 first, then dispatches on `format`.
 
-// Cross-chain — descriptor, frontend builds SPL/SOL transfer with @solana/web3.js
-// SOL (native):
-{ "transaction": "", "format": "sol_transfer",
-  "depositAddress": "...", "amount": "...", "decimals": 9, "depositMemo": "" }
-// SPL token:
-{ "transaction": "", "format": "spl_transfer",
-  "depositAddress": "...", "mint": "...",
-  "amount": "...", "decimals": 6, "depositMemo": "" }</pre>
+// Same-chain (Jupiter / OKX) — decoded bytes are a VersionedTransaction
+{ "transaction": "&lt;base64 VersionedTransaction&gt;", "format": "base64" }
+
+// Cross-chain native SOL — decoded bytes are UTF-8 JSON
+{ "transaction": "&lt;base64 of JSON&gt;", "format": "sol_transfer" }
+//   JSON: { "depositAddress": "...", "amount": "...", "decimals": 9, "depositMemo": "" }
+
+// Cross-chain SPL Token — decoded bytes are UTF-8 JSON
+{ "transaction": "&lt;base64 of JSON&gt;", "format": "spl_transfer" }
+//   JSON: { "depositAddress": "...", "mint": "...", "amount": "...", "decimals": 6, "depositMemo": "" }</pre>
         </div>
       </div>
     </el-card>

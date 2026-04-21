@@ -9,11 +9,19 @@ so frontend can use one code path per chain.
 Shapes:
   EVM   -> {to, data, value, gasLimit, chainId}
   Aptos -> {function, type_arguments, arguments}  (Move entry function)
-  Solana-> {transaction, format, depositAddress, mint?, amount, decimals}
-           format is "sol_transfer" or "spl_transfer" for cross-chain,
-           or "base64" for same-chain (Jupiter pre-built tx).
+  Solana-> {transaction, format}
+           * format="base64"        (same-chain Jupiter/OKX): transaction is a
+                                     pre-built VersionedTransaction bytes, base64.
+           * format="sol_transfer"  (cross-chain native SOL): transaction is
+                                     base64(JSON({depositAddress, amount, decimals, depositMemo})).
+           * format="spl_transfer"  (cross-chain SPL token):  transaction is
+                                     base64(JSON({depositAddress, mint, amount, decimals, depositMemo})).
+           Uniform outer shape lets the frontend run one base64-decode first,
+           then dispatch on `format` for the follow-up handling.
 """
 
+import base64
+import json
 from typing import Dict, Optional
 from swap_utils import is_native_token, normalize_evm_address
 
@@ -147,6 +155,15 @@ def build_aptos_deposit_tx(
     }
 
 
+def _encode_solana_payload(payload: Dict) -> str:
+    """Pack the cross-chain Solana deposit descriptor into base64(JSON).
+
+    Kept outside the builder so tests / frontends can share the encoding.
+    """
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(encoded).decode("ascii")
+
+
 def build_solana_deposit_tx(
     token_address: str,
     deposit_address: str,
@@ -158,34 +175,39 @@ def build_solana_deposit_tx(
     Build a Solana cross-chain deposit descriptor.
 
     Because Solana transactions require a recent blockhash (2-min lifespan)
-    fetched from an RPC, we return a descriptor with format "sol_transfer"
-    or "spl_transfer" instead of a prebuilt base64 tx. Frontend uses
-    @solana/web3.js + @solana/spl-token to construct and sign.
+    fetched from an RPC, we do NOT assemble a signable base64 VersionedTransaction
+    on the backend. Instead we emit a descriptor in the SAME outer shape as the
+    same-chain path (`{transaction, format}`) and stash the descriptor fields
+    inside `transaction` as base64(JSON). This keeps the response schema uniform
+    for frontend type-definitions / parsers; the frontend decodes once, then
+    dispatches on `format`:
 
-    Outer shape matches same-chain Solana tx (both have "transaction" and
-    "format" keys), so frontend dispatches on `format`:
-      - "base64"        -> sign pre-built tx (same-chain Jupiter/OKX)
-      - "sol_transfer"  -> System.transfer
-      - "spl_transfer"  -> SPL Token.transfer
+      - "base64"        -> VersionedTransaction.deserialize(bytes)
+      - "sol_transfer"  -> JSON.parse(text) -> build System.transfer + memo
+      - "spl_transfer"  -> JSON.parse(text) -> build SPL transferChecked + ATA + memo
     """
     addr_lower = (token_address or "").lower().strip()
 
     if addr_lower in SOLANA_NATIVE_MINTS:
-        return {
-            "transaction": "",
-            "format": "sol_transfer",
+        payload = {
             "depositAddress": deposit_address,
             "amount": str(amount_smallest),
             "decimals": int(decimals) if decimals else 9,
             "depositMemo": deposit_memo or "",
         }
+        return {
+            "transaction": _encode_solana_payload(payload),
+            "format": "sol_transfer",
+        }
 
-    return {
-        "transaction": "",
-        "format": "spl_transfer",
+    payload = {
         "depositAddress": deposit_address,
         "mint": token_address,
         "amount": str(amount_smallest),
         "decimals": int(decimals) if decimals else 6,
         "depositMemo": deposit_memo or "",
+    }
+    return {
+        "transaction": _encode_solana_payload(payload),
+        "format": "spl_transfer",
     }
