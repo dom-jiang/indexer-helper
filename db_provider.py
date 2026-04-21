@@ -3053,17 +3053,17 @@ def query_swap_transactions(network_id, sender, page_number=1, page_size=20):
 
     offset = (page_number - 1) * page_size
     db_conn = get_db_connect(network_id)
-    count_sql = "SELECT COUNT(*) AS total FROM swap_transactions WHERE sender = %s"
+    count_sql = "SELECT COUNT(*) AS total FROM swap_transactions WHERE sender = %s or multi_addr = %s"
     query_sql = (
-        "SELECT * FROM swap_transactions WHERE sender = %s "
+        "SELECT * FROM swap_transactions WHERE sender = %s or multi_addr = %s"
         "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s"
     )
 
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
-        cursor.execute(count_sql, (sender,))
+        cursor.execute(count_sql, (sender, sender))
         total = cursor.fetchone().get("total", 0)
-        cursor.execute(query_sql, (sender, page_size, offset))
+        cursor.execute(query_sql, (sender, sender, page_size, offset))
         rows = cursor.fetchall() or []
         return rows, total
     except Exception as e:
