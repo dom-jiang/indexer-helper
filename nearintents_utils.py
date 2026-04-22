@@ -16,6 +16,26 @@ from typing import Dict, Optional, Tuple
 from loguru import logger
 from config import Cfg
 from redis_provider import get_1click_tokens_cache, set_1click_tokens_cache
+from swap_utils import is_native_token
+
+# Sentinel used in our (chain, addr) lookup table to mark the native gas token
+# of a chain. 1Click's `/v0/tokens` returns `contractAddress=null` for native
+# tokens (e.g. ETH on op / base / arb), so we cannot index them by on-chain
+# address. Callers pass the native token as empty string / `0x000...0` /
+# the OKX sentinel `0xEeee...`; all of those collapse to this key via
+# `is_native_token`.
+_NATIVE_LOOKUP_KEY = "__native__"
+
+# Chain-specific "wrapped native" marker addresses that aggregators (Jupiter on
+# Solana, etc.) use as a stand-in for the chain's gas token. 1Click stores the
+# gas token with `contractAddress=null`, so we collapse these marker addresses
+# onto `_NATIVE_LOOKUP_KEY` at resolve time. Keys are 1Click blockchain short
+# names (the values of `CHAIN_TO_1CLICK`); address values are lowercased.
+_CHAIN_WRAPPED_NATIVE_MARKERS = {
+    # Solana: Jupiter / OKX treat wSOL mint as native SOL. 1Click lists native
+    # SOL with contractAddress=null under assetId `nep141:sol.omft.near`.
+    "sol": {"so11111111111111111111111111111111111111112"},
+}
 
 _session = requests.Session()
 
@@ -123,26 +143,62 @@ def _build_token_lookup() -> Dict[str, str]:
         if blockchain and asset_id:
             if contract:
                 lookup[(blockchain, contract)] = asset_id
+            else:
+                # Native gas token on this blockchain (1Click leaves
+                # contractAddress null). Index it under a sentinel key so
+                # callers passing `0x000...0` / empty / OKX's `0xEeee...`
+                # still resolve to the correct assetId.
+                lookup.setdefault((blockchain, _NATIVE_LOOKUP_KEY), asset_id)
             lookup[(blockchain, asset_id)] = asset_id
 
     _token_lookup_cache = lookup
     return lookup
 
 
+def _is_chain_native_address(oneclick_chain: str, addr_lower: str) -> bool:
+    """Return True if `addr_lower` is a chain-specific wrapped-native marker
+    (e.g. wSOL mint on Solana) that should be treated as the native gas token.
+    """
+    if not addr_lower:
+        return False
+    markers = _CHAIN_WRAPPED_NATIVE_MARKERS.get(oneclick_chain)
+    return bool(markers and addr_lower in markers)
+
+
 def resolve_1click_asset_id(chain: str, address: str) -> Optional[str]:
     """
     Map (chainId, tokenAddress) to 1Click assetId.
     Returns None if no mapping found.
+
+    Native gas tokens are looked up via the `_NATIVE_LOOKUP_KEY` sentinel
+    because 1Click's token list records them with `contractAddress=null`,
+    not a zero address. We treat the following as "native":
+      * EVM conventions handled by `is_native_token`: empty string,
+        `0x000...0`, and the OKX sentinel `0xEeee...`.
+      * Chain-specific wrapped-native markers declared in
+        `_CHAIN_WRAPPED_NATIVE_MARKERS` (e.g. wSOL mint on Solana), so the
+        frontend can use the same address across same-chain (Jupiter/OKX)
+        and cross-chain (1Click) flows without branching.
     """
     chain_str = str(chain)
     oneclick_chain = CHAIN_TO_1CLICK.get(chain_str, chain_str).lower()
     lookup = _build_token_lookup()
-    addr_lower = address.lower()
+    addr_lower = (address or "").lower()
+
+    if is_native_token(address or "") or _is_chain_native_address(oneclick_chain, addr_lower):
+        native_id = lookup.get((oneclick_chain, _NATIVE_LOOKUP_KEY))
+        if native_id:
+            return native_id
+        logger.warning(
+            f"1click assetId lookup miss (native): chain={chain_str} mapped_to={oneclick_chain} address={address}"
+        )
+        return None
+
     asset_id = lookup.get((oneclick_chain, addr_lower))
     if asset_id:
         return asset_id
     for key, val in lookup.items():
-        if key[0] == oneclick_chain and addr_lower in key[1]:
+        if key[0] == oneclick_chain and addr_lower and addr_lower in key[1]:
             return val
     # Debug aid: record what we actually tried so operators can compare against the 1Click token list.
     logger.warning(

@@ -2716,6 +2716,8 @@ def api_swap_report():
       - deposit_address(string): cross-chain deposit address (same-chain can pass "")
 
     Optional:
+      - recipient (aka receiver): destination-chain wallet that will receive the output.
+                                  Same-chain: usually same as sender. Cross-chain: may differ.
       - multi_addr, swap_id (aka swapId)
       - from_chain, to_chain, amount_in, estimated_out, router, tx_type
       - is_cross_chain (bool), extra (object)
@@ -2728,6 +2730,7 @@ def api_swap_report():
             return jsonify({"code": -1, "msg": "Request body must be a JSON object"})
 
         sender = (body.get("sender") or "").strip()
+        recipient = (body.get("recipient") or body.get("receiver") or "").strip()
         from_hash = (body.get("from_hash") or body.get("fromHash") or "").strip()
         from_token = body.get("from_token") or body.get("fromToken") or ""
         to_token = body.get("to_token") or body.get("toToken") or ""
@@ -2761,6 +2764,7 @@ def api_swap_report():
         record_id = insert_swap_transaction(
             Cfg.NETWORK_ID,
             sender=sender,
+            recipient=recipient or None,
             from_hash=from_hash,
             deposit_address=deposit_address or None,
             from_token=from_token,

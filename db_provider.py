@@ -2911,6 +2911,7 @@ SWAP_TRANSACTIONS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS swap_transactions (
     id                BIGINT AUTO_INCREMENT PRIMARY KEY,
     sender            VARCHAR(128) NOT NULL,
+    recipient         VARCHAR(128) DEFAULT NULL,
     from_hash         VARCHAR(128) NOT NULL,
     deposit_address   VARCHAR(128) DEFAULT NULL,
     from_token        VARCHAR(128) DEFAULT NULL,
@@ -2933,18 +2934,55 @@ CREATE TABLE IF NOT EXISTS swap_transactions (
     updated_at        DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_from_hash (from_hash),
     INDEX idx_sender_created (sender, created_at),
+    INDEX idx_recipient (recipient),
     INDEX idx_deposit_address (deposit_address),
     INDEX idx_status_cross (status, is_cross_chain, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
 
+def _ensure_swap_transactions_columns(cursor):
+    """Idempotently add missing columns / indexes on an existing table.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on pre-existing tables, so when we
+    introduce new columns (e.g. `recipient`) we need to ALTER them in. Each
+    check reads information_schema to stay MySQL 5.7 compatible (which lacks
+    `ADD COLUMN IF NOT EXISTS`).
+    """
+    def _column_exists(name):
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'swap_transactions' "
+            "AND COLUMN_NAME = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+        return bool(row and (row[0] if isinstance(row, (tuple, list)) else row.get("COUNT(*)", 0)))
+
+    def _index_exists(name):
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'swap_transactions' "
+            "AND INDEX_NAME = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+        return bool(row and (row[0] if isinstance(row, (tuple, list)) else row.get("COUNT(*)", 0)))
+
+    if not _column_exists("recipient"):
+        cursor.execute("ALTER TABLE swap_transactions ADD COLUMN recipient VARCHAR(128) DEFAULT NULL AFTER sender")
+    if not _index_exists("idx_recipient"):
+        cursor.execute("ALTER TABLE swap_transactions ADD INDEX idx_recipient (recipient)")
+
+
 def ensure_swap_transactions_table(network_id):
-    """Create the swap_transactions table if it does not exist."""
+    """Create the swap_transactions table if it does not exist, then run any
+    column / index migrations that are safe to apply idempotently."""
     db_conn = get_db_connect(network_id)
     cursor = db_conn.cursor()
     try:
         cursor.execute(SWAP_TRANSACTIONS_CREATE_SQL)
+        _ensure_swap_transactions_columns(cursor)
         db_conn.commit()
     except Exception as e:
         db_conn.rollback()
@@ -2959,7 +2997,7 @@ def insert_swap_transaction(network_id, **fields):
     Insert a swap transaction record reported by frontend after a user signed tx.
 
     Required: sender, from_hash
-    Optional: deposit_address, from_token, to_token, from_chain, to_chain,
+    Optional: recipient, deposit_address, from_token, to_token, from_chain, to_chain,
               amount_in, estimated_out, router, tx_type, is_cross_chain,
               multi_addr, swap_id, extra (dict/list will be json-encoded),
               status (default PENDING).
@@ -2978,12 +3016,13 @@ def insert_swap_transaction(network_id, **fields):
     is_cross_chain = 1 if fields.get("is_cross_chain") else 0
 
     columns = [
-        "sender", "from_hash", "deposit_address", "from_token", "to_token",
+        "sender", "recipient", "from_hash", "deposit_address", "from_token", "to_token",
         "from_chain", "to_chain", "amount_in", "estimated_out", "router",
         "tx_type", "is_cross_chain", "status", "multi_addr", "swap_id", "extra",
     ]
     values = [
         sender,
+        fields.get("recipient"),
         from_hash,
         fields.get("deposit_address"),
         fields.get("from_token"),
@@ -3053,17 +3092,23 @@ def query_swap_transactions(network_id, sender, page_number=1, page_size=20):
 
     offset = (page_number - 1) * page_size
     db_conn = get_db_connect(network_id)
-    count_sql = "SELECT COUNT(*) AS total FROM swap_transactions WHERE sender = %s or multi_addr = %s"
+    # Match by sender (initiator), recipient (destination wallet on to_chain for cross-chain),
+    # or multi_addr (legacy secondary-address search key).
+    count_sql = (
+        "SELECT COUNT(*) AS total FROM swap_transactions "
+        "WHERE sender = %s OR recipient = %s OR multi_addr = %s"
+    )
     query_sql = (
-        "SELECT * FROM swap_transactions WHERE sender = %s or multi_addr = %s"
+        "SELECT * FROM swap_transactions "
+        "WHERE sender = %s OR recipient = %s OR multi_addr = %s "
         "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s"
     )
 
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
-        cursor.execute(count_sql, (sender, sender))
+        cursor.execute(count_sql, (sender, sender, sender))
         total = cursor.fetchone().get("total", 0)
-        cursor.execute(query_sql, (sender, sender, page_size, offset))
+        cursor.execute(query_sql, (sender, sender, sender, page_size, offset))
         rows = cursor.fetchall() or []
         return rows, total
     except Exception as e:

@@ -343,20 +343,28 @@ def _preswap_intermediate_candidates(
     to_chain: str,
     token_in: Dict,
     token_out: Dict,
-) -> list:
-    """Return ordered list of intermediate-token candidates on `from_chain` that
-    1Click supports as source and can reach `token_out` on `to_chain`.
+) -> Tuple[list, Optional[str]]:
+    """Return `(candidates, reason)` where `candidates` is an ordered list of
+    intermediate-token candidates on `from_chain` that 1Click supports as source
+    and can reach `token_out` on `to_chain`. When the list is empty, `reason`
+    carries a human-readable explanation so the caller can surface it verbatim
+    instead of reporting a generic "no intermediate" message.
     """
     chain_int = _chain_id_int(from_chain)
     if chain_int is None:
-        return []
+        return [], f"pre-swap route requires EVM fromChain (got {from_chain})"
 
     # Destination must be supported by 1Click, otherwise the bridge stage cannot succeed.
     dest_asset = resolve_1click_asset_id(to_chain, token_out.get("address", ""))
     if not dest_asset:
-        return []
+        return [], (
+            f"destination token {token_out.get('address', '')} on chain {to_chain} "
+            f"not supported by 1Click"
+        )
 
     bluechip_cfg = BLUECHIP_TOKENS.get(chain_int) or {}
+    if not bluechip_cfg:
+        return [], f"no bluechip intermediate configured for chain {from_chain}"
     token_in_addr = token_in.get("address", "")
 
     candidates = []
@@ -379,7 +387,9 @@ def _preswap_intermediate_candidates(
             "decimals": int(cfg.get("decimals", 18)),
             "oneClickAssetId": asset_id,
         })
-    return candidates
+    if not candidates:
+        return [], f"no 1Click-supported intermediate (USDC/USDT/WETH) on chain {from_chain}"
+    return candidates, None
 
 
 def _preswap_cross_chain_quote(
@@ -400,9 +410,9 @@ def _preswap_cross_chain_quote(
     if chain_int is None:
         return {"success": False, "error": "pre-swap route requires EVM fromChain"}
 
-    candidates = _preswap_intermediate_candidates(from_chain, to_chain, token_in, token_out)
+    candidates, reason = _preswap_intermediate_candidates(from_chain, to_chain, token_in, token_out)
     if not candidates:
-        return {"success": False, "error": "no 1Click-supported intermediate on fromChain"}
+        return {"success": False, "error": reason or "no 1Click-supported intermediate on fromChain"}
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
     # The intermediate-amount buffer protects stage A: we target a slightly lower amount than
