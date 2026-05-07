@@ -2677,11 +2677,14 @@ def api_swap_order_status():
         if router == "omnibridge":
             from omnibridge_utils import omni_get_order_status
             result = omni_get_order_status(order_id)
-        elif router == "nearintents":
+        elif router in ("nearintents", "preswap-nearintents"):
+            # preswap-nearintents is a two-stage route whose cross-chain phase is
+            # handled entirely by 1Click. The orderId we expose for it is the
+            # 1Click depositAddress, so status query goes through the same path.
             from nearintents_utils import nearintents_order_status
             result = nearintents_order_status(order_id)
         else:
-            return jsonify({"code": -1, "msg": f"Unknown router: {router}. Supported: omnibridge, nearintents"})
+            return jsonify({"code": -1, "msg": f"Unknown router: {router}. Supported: omnibridge, nearintents, preswap-nearintents"})
 
         if result.get("success"):
             return jsonify({"code": 0, "msg": "success", "data": result.get("data", {})})

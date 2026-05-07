@@ -168,6 +168,13 @@ class Cfg:
     SMTP_FROM = SMTP_FROM
     ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     ONECLICK_BASE_URL = "https://1click.chaindefuser.com/v0"
+    # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
+    # cross-chain Solana deposit transactions on the backend. Set to a
+    # paid/private RPC (Helius / QuickNode / Triton ...) in production; the
+    # public mainnet-beta endpoint is rate-limited and not suitable for swap
+    # traffic. If the URL is empty or the RPC call fails, the backend falls
+    # back to the legacy descriptor format (`sol_transfer` / `spl_transfer`).
+    SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
     BOSS_EMAIL_VERIFY = BOSS_EMAIL_VERIFY
     NETWORK = {
         "DEVNET": {

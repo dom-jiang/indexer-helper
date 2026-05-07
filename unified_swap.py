@@ -1276,6 +1276,7 @@ def _cross_chain_swap(
                 amount_smallest=amount_in,
                 decimals=int(token_in.get("decimals", 6)),
                 deposit_memo=deposit_memo,
+                sender=sender,
             )
         else:
             response_data["tx"] = {

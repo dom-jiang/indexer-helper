@@ -25,12 +25,18 @@ from omnibridge_utils import omni_get_order_status
 
 TERMINAL_STATUSES = {"SUCCESS", "FAILED", "REFUNDED", "EXPIRED"}
 
+# Routers whose cross-chain phase is operated by 1Click and therefore share the
+# nearintents status payload shape. `preswap-nearintents` is the two-stage
+# (OKX preswap + 1Click bridge) route — the cross-chain leg is still 1Click,
+# so its status payload looks identical to a direct nearintents order.
+_NEARINTENTS_LIKE_ROUTERS = {"nearintents", "preswap-nearintents"}
+
 
 def _extract_to_hash(router: str, status_data: dict) -> str:
     """Pull the best-effort destination chain tx hash from a status payload."""
     if not isinstance(status_data, dict):
         return ""
-    if router == "nearintents":
+    if router in _NEARINTENTS_LIKE_ROUTERS:
         swap = status_data.get("swapDetails") or {}
         hashes = swap.get("destinationChainTxHashes") or []
         if hashes and isinstance(hashes, list):
@@ -47,7 +53,7 @@ def _extract_to_hash(router: str, status_data: dict) -> str:
 def _extract_actual_out(router: str, status_data: dict) -> str:
     if not isinstance(status_data, dict):
         return ""
-    if router == "nearintents":
+    if router in _NEARINTENTS_LIKE_ROUTERS:
         swap = status_data.get("swapDetails") or {}
         return swap.get("amountOut") or ""
     if router == "omnibridge":
@@ -56,7 +62,8 @@ def _extract_actual_out(router: str, status_data: dict) -> str:
 
 
 def _query_status(router: str, deposit_address: str) -> dict:
-    if router == "nearintents":
+    # preswap-nearintents shares 1Click status semantics (see _NEARINTENTS_LIKE_ROUTERS).
+    if router in _NEARINTENTS_LIKE_ROUTERS:
         return nearintents_order_status(deposit_address)
     if router == "omnibridge":
         return omni_get_order_status(deposit_address)
