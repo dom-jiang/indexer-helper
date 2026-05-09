@@ -3103,6 +3103,185 @@ def update_oneclick_order_status(network_id, order_id, status, status_response):
 
 
 # ============================================================
+# Near Intents Orders (1Click /v0/quote wrapper with business tags)
+#
+# Mirrors `oneclick_orders` but exposes three caller-provided business
+# columns -- source / action / account -- so different products can share
+# the same backend endpoint and later filter their own data slice.
+# ============================================================
+
+NEAR_INTENTS_ORDERS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS near_intents_orders (
+    id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source             VARCHAR(128) NOT NULL,
+    action             VARCHAR(128) NOT NULL,
+    account            VARCHAR(128) NOT NULL,
+    deposit_address    VARCHAR(128) DEFAULT NULL,
+    status             VARCHAR(32)  DEFAULT 'PENDING',
+    origin_asset       VARCHAR(256) NOT NULL,
+    destination_asset  VARCHAR(256) NOT NULL,
+    amount             VARCHAR(64)  NOT NULL,
+    refund_to          VARCHAR(256) NOT NULL,
+    recipient          VARCHAR(256) NOT NULL,
+    swap_type          VARCHAR(32)  DEFAULT 'EXACT_INPUT',
+    slippage_tolerance INT          DEFAULT 100,
+    deposit_type       VARCHAR(32)  DEFAULT 'ORIGIN_CHAIN',
+    recipient_type     VARCHAR(32)  DEFAULT 'DESTINATION_CHAIN',
+    refund_type        VARCHAR(32)  DEFAULT 'ORIGIN_CHAIN',
+    deadline           VARCHAR(64)  DEFAULT NULL,
+    referral           VARCHAR(128) DEFAULT NULL,
+    quote_response     TEXT,
+    status_response    TEXT,
+    created_at         DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_source_account (source, account),
+    INDEX idx_account (account),
+    INDEX idx_source (source),
+    INDEX idx_action (action),
+    INDEX idx_deposit_address (deposit_address),
+    INDEX idx_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_near_intents_orders_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(NEAR_INTENTS_ORDERS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        print("ensure_near_intents_orders_table error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_near_intents_order(network_id, source, action, account,
+                              origin_asset, destination_asset, amount,
+                              refund_to, recipient, swap_type, slippage_tolerance,
+                              deposit_type, recipient_type, refund_type, deadline,
+                              referral, deposit_address, quote_response):
+    db_conn = get_db_connect(network_id)
+    sql = """INSERT INTO near_intents_orders
+             (source, action, account,
+              origin_asset, destination_asset, amount, refund_to, recipient,
+              swap_type, slippage_tolerance, deposit_type, recipient_type, refund_type,
+              deadline, referral, deposit_address, status, quote_response,
+              created_at, updated_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,NOW(),NOW())"""
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (
+            source, action, account,
+            origin_asset, destination_asset, amount, refund_to, recipient,
+            swap_type, slippage_tolerance, deposit_type, recipient_type, refund_type,
+            deadline, referral, deposit_address, quote_response
+        ))
+        db_conn.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        db_conn.rollback()
+        print("insert_near_intents_order error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_near_intents_orders(network_id, source, account, action, page_number, page_size):
+    """
+    Paginated query. `source` and `account` are required (caller-enforced);
+    `action` is optional -- pass None / "" to skip that filter.
+    Results are sorted by id DESC (newest first).
+    """
+    start_number = handel_page_number(page_number, page_size)
+    db_conn = get_db_connect(network_id)
+
+    where_clauses = ["source = %s", "account = %s"]
+    params = [source, account]
+    if action:
+        where_clauses.append("action = %s")
+        params.append(action)
+    where_sql = " AND ".join(where_clauses)
+
+    query_sql = (
+        "SELECT * FROM near_intents_orders WHERE " + where_sql +
+        " ORDER BY id DESC LIMIT %s, %s"
+    )
+    count_sql = (
+        "SELECT count(*) as total_number FROM near_intents_orders WHERE " + where_sql
+    )
+
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, tuple(params + [start_number, page_size]))
+        data_list = cursor.fetchall()
+        cursor.execute(count_sql, tuple(params))
+        total_number_data = cursor.fetchone()
+        return data_list, total_number_data["total_number"]
+    except Exception as e:
+        print("query_near_intents_orders error:", e)
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_near_intents_order_by_deposit_address(network_id, deposit_address):
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM near_intents_orders WHERE deposit_address = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (deposit_address,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_near_intents_order_by_deposit_address error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_pending_near_intents_orders(network_id):
+    """Return non-terminal orders created within the last hour."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT id, deposit_address, status FROM near_intents_orders
+             WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED')
+               AND deposit_address IS NOT NULL
+               AND created_at >= NOW() - INTERVAL 1 HOUR
+             ORDER BY created_at ASC"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall()
+    except Exception as e:
+        print("get_pending_near_intents_orders error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_near_intents_order_status(network_id, order_id, status, status_response):
+    db_conn = get_db_connect(network_id)
+    sql = """UPDATE near_intents_orders
+             SET status = %s, status_response = %s, updated_at = NOW()
+             WHERE id = %s"""
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (status, status_response, order_id))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_near_intents_order_status error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+# ============================================================
 # User access logs (frontend beacon tracking)
 # ============================================================
 

@@ -61,6 +61,8 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
+    ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
+    get_near_intents_order_by_deposit_address, \
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
@@ -3537,6 +3539,224 @@ def handle_1click_orders():
 
     except Exception as e:
         logger.error(f"handle_1click_orders error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# Near Intents API
+#
+# Mirrors /api/1click/* but writes into a separate `near_intents_orders`
+# table that carries three caller-provided business tags (source / action
+# / account) so different products can share this backend and later
+# filter their own data slice without colliding.
+# ============================================================
+
+NEAR_INTENTS_TAG_MAX_LEN = 128
+
+
+def _validate_near_intents_tag(value, field_name):
+    """Return (cleaned_value, error_response_or_none)."""
+    if value is None:
+        return None, (jsonify({"error": f"Missing required field: {field_name}"}), 400)
+    if not isinstance(value, str):
+        return None, (jsonify({"error": f"Field {field_name} must be a string"}), 400)
+    cleaned = value.strip()
+    if not cleaned:
+        return None, (jsonify({"error": f"Missing required field: {field_name}"}), 400)
+    if len(cleaned) > NEAR_INTENTS_TAG_MAX_LEN:
+        return None, (jsonify({
+            "error": f"Field {field_name} exceeds max length {NEAR_INTENTS_TAG_MAX_LEN}"
+        }), 400)
+    return cleaned, None
+
+
+def _format_near_intents_row(row):
+    """Stringify datetime columns and parse JSON text columns for the response."""
+    if not row:
+        return None
+    item = dict(row)
+    for dt_key in ("created_at", "updated_at"):
+        if item.get(dt_key) is not None:
+            item[dt_key] = str(item[dt_key])
+    for json_key in ("quote_response", "status_response"):
+        if item.get(json_key):
+            try:
+                item[json_key] = json.loads(item[json_key])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return item
+
+
+try:
+    ensure_near_intents_orders_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure near_intents_orders table: {_e}")
+
+
+@app.route('/api/near_intents/quote', methods=['POST'])
+def handle_near_intents_quote():
+    """
+    Proxy 1Click /v0/quote and persist the resulting order into
+    near_intents_orders. Caller MUST pass three non-empty business tags
+    (source / action / account) along with the standard 1Click fields.
+    """
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "Request body is required"}), 400
+
+        for tag in ("source", "action", "account"):
+            cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
+            if err is not None:
+                return err
+            body[tag] = cleaned
+
+        required_fields = ["originAsset", "destinationAsset", "amount", "refundTo", "recipient"]
+        for field in required_fields:
+            if not body.get(field):
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+
+        if body.get("dry") is True:
+            return jsonify({"error": "dry=true is not supported"}), 400
+
+        oneclick_payload = {
+            "dry": False,
+            "swapType": body.get("swapType", "EXACT_INPUT"),
+            "slippageTolerance": body.get("slippageTolerance", 100),
+            "originAsset": body["originAsset"],
+            "depositType": body.get("depositType", "ORIGIN_CHAIN"),
+            "destinationAsset": body["destinationAsset"],
+            "amount": body["amount"],
+            "recipient": body["recipient"],
+            "recipientType": body.get("recipientType", "DESTINATION_CHAIN"),
+            "refundTo": body["refundTo"],
+            "refundType": body.get("refundType", "ORIGIN_CHAIN"),
+        }
+        if body.get("deadline"):
+            oneclick_payload["deadline"] = body["deadline"]
+        if body.get("referral"):
+            oneclick_payload["referral"] = body["referral"]
+        for extra_key in ("customRecipientMsg", "appFees", "depositMode",
+                          "virtualChainRecipient", "virtualChainRefundRecipient",
+                          "quoteWaitingTimeMs"):
+            if body.get(extra_key) is not None:
+                oneclick_payload[extra_key] = body[extra_key]
+
+        headers = {"Content-Type": "application/json"}
+        if Cfg.ONECLICK_JWT_TOKEN:
+            headers["Authorization"] = Cfg.ONECLICK_JWT_TOKEN
+
+        resp = requests.post(
+            f"{Cfg.ONECLICK_BASE_URL}/v0/quote",
+            json=oneclick_payload,
+            headers=headers,
+            timeout=30
+        )
+
+        if resp.status_code >= 300:
+            return jsonify({
+                "error": "1Click API error",
+                "status_code": resp.status_code,
+                "detail": resp.text
+            }), resp.status_code
+
+        quote_data = resp.json()
+        quote_obj = quote_data.get("quote") or {}
+        deposit_address = quote_obj.get("depositAddress")
+
+        insert_near_intents_order(
+            network_id=Cfg.NETWORK_ID,
+            source=body["source"],
+            action=body["action"],
+            account=body["account"],
+            origin_asset=body["originAsset"],
+            destination_asset=body["destinationAsset"],
+            amount=body["amount"],
+            refund_to=body["refundTo"],
+            recipient=body["recipient"],
+            swap_type=oneclick_payload["swapType"],
+            slippage_tolerance=oneclick_payload["slippageTolerance"],
+            deposit_type=oneclick_payload["depositType"],
+            recipient_type=oneclick_payload["recipientType"],
+            refund_type=oneclick_payload["refundType"],
+            deadline=oneclick_payload.get("deadline"),
+            referral=oneclick_payload.get("referral"),
+            deposit_address=deposit_address,
+            quote_response=json.dumps(quote_data)
+        )
+
+        return jsonify(quote_data)
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_quote error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/near_intents/orders', methods=['GET'])
+def handle_near_intents_orders():
+    """Paginated list. `source` and `account` are required; `action` is optional."""
+    try:
+        source, err = _validate_near_intents_tag(request.args.get("source"), "source")
+        if err is not None:
+            return err
+        account, err = _validate_near_intents_tag(request.args.get("account"), "account")
+        if err is not None:
+            return err
+
+        action_raw = (request.args.get("action") or "").strip()
+        if action_raw:
+            if len(action_raw) > NEAR_INTENTS_TAG_MAX_LEN:
+                return jsonify({
+                    "error": f"Field action exceeds max length {NEAR_INTENTS_TAG_MAX_LEN}"
+                }), 400
+            action_filter = action_raw
+        else:
+            action_filter = None
+
+        page_number = int(request.args.get("page_number", 1))
+        page_size = int(request.args.get("page_size", 10))
+        if page_number < 1:
+            page_number = 1
+        if page_size < 1 or page_size > 100:
+            page_size = 10
+
+        data_list, total_number = query_near_intents_orders(
+            Cfg.NETWORK_ID, source, account, action_filter, page_number, page_size
+        )
+
+        record_list = [_format_near_intents_row(row) for row in (data_list or [])]
+        total_page = math.ceil(total_number / page_size) if total_number > 0 else 0
+
+        return jsonify({
+            "record_list": record_list,
+            "page_number": page_number,
+            "page_size": page_size,
+            "total_page": total_page,
+            "total_size": total_number
+        })
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_orders error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/near_intents/order', methods=['GET'])
+def handle_near_intents_order_detail():
+    """Fetch one order by deposit_address. Reads local DB only -- the
+    cron job (`near_intents_status_checker.py`) keeps the row fresh."""
+    try:
+        deposit_address = (request.args.get("deposit_address") or "").strip()
+        if not deposit_address:
+            return jsonify({"error": "Missing required parameter: deposit_address"}), 400
+
+        row = get_near_intents_order_by_deposit_address(Cfg.NETWORK_ID, deposit_address)
+        if not row:
+            return jsonify({"error": "Order not found"}), 404
+
+        return jsonify(_format_near_intents_row(row))
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_order_detail error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
