@@ -35,6 +35,13 @@ _CHAIN_WRAPPED_NATIVE_MARKERS = {
     # Solana: Jupiter / OKX treat wSOL mint as native SOL. 1Click lists native
     # SOL with contractAddress=null under assetId `nep141:sol.omft.near`.
     "sol": {"so11111111111111111111111111111111111111112"},
+    # Aptos: native APT is conventionally addressed as `0xa` (Panora bluechip),
+    # the legacy Move type path `0x1::aptos_coin::AptosCoin`, or the alias
+    # "apt". 1Click lists native APT with contractAddress=null under assetId
+    # `nep141:aptos.omft.near`, so we collapse all of these onto the native
+    # lookup sentinel — keeping a single tokenIn/tokenOut value usable across
+    # same-chain (Panora) and cross-chain (1Click) flows.
+    "aptos": {"0xa", "0x1::aptos_coin::aptoscoin", "apt"},
 }
 
 _session = requests.Session()

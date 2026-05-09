@@ -38,6 +38,8 @@ def jupiter_order(
     slippage_bps: int,
     taker: str,
     swap_mode: str = "ExactIn",
+    destination_token_account: Optional[str] = None,
+    native_destination_account: Optional[str] = None,
 ) -> Dict:
     """
     Get quote + pre-built transaction from Jupiter.
@@ -49,6 +51,12 @@ def jupiter_order(
         slippage_bps: Slippage in basis points (e.g. 50 = 0.5%)
         taker:       User wallet public key
         swap_mode:   ExactIn or ExactOut
+        destination_token_account: SPL token account that receives the output.
+            If None, the taker's ATA is used. Jupiter assumes the account is
+            already initialized (it does NOT add createATAIdempotent for you).
+        native_destination_account: Wallet pubkey that receives native SOL output.
+            Use this when output is wrapped SOL and you want it unwrapped to a
+            different wallet (e.g. an aggregator/bridge deposit address).
     Returns:
         {"success": True/False, "data": {...}, "error": "..."}
     """
@@ -61,6 +69,10 @@ def jupiter_order(
             "taker": taker,
             "swapMode": swap_mode,
         }
+        if destination_token_account:
+            params["destinationTokenAccount"] = destination_token_account
+        if native_destination_account:
+            params["nativeDestinationAccount"] = native_destination_account
         resp = _session.get(
             f"{JUPITER_BASE_URL}/swap/v2/order",
             params=params,
@@ -81,11 +93,20 @@ def jupiter_build(
     amount: str,
     slippage_bps: int,
     taker: str,
+    swap_mode: str = "ExactIn",
+    destination_token_account: Optional[str] = None,
+    native_destination_account: Optional[str] = None,
 ) -> Dict:
     """
     Get raw swap instructions from Jupiter (Metis router only, no platform fees).
 
-    Returns instructions the client assembles into a transaction.
+    The `/build` endpoint hands back individual instructions plus the address
+    lookup tables and a recent blockhash, so the caller can assemble a
+    `VersionedTransaction` themselves and inject extra instructions
+    (createATAIdempotent for cross-chain bridge deposits, etc.) before signing.
+
+    Args:
+        See `jupiter_order`. The same destination overrides apply here.
     """
     try:
         params = {
@@ -94,7 +115,12 @@ def jupiter_build(
             "amount": str(amount),
             "slippageBps": str(slippage_bps),
             "taker": taker,
+            "swapMode": swap_mode,
         }
+        if destination_token_account:
+            params["destinationTokenAccount"] = destination_token_account
+        if native_destination_account:
+            params["nativeDestinationAccount"] = native_destination_account
         resp = _session.get(
             f"{JUPITER_BASE_URL}/swap/v2/build",
             params=params,
