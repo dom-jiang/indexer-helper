@@ -1995,6 +1995,184 @@ def update_oneclick_order_status(network_id, order_id, status, status_response):
         db_conn.close()
 
 
+# =============================================================================
+# burrow_force_close_alert helpers
+# Schema: see migrations/2026_05_11_burrow_force_close_alert.sql
+# =============================================================================
+
+def get_max_force_close_alert_source_id(network_id):
+    """Watermark for incremental scan of burrow_event_log.
+
+    Derived from the alert table itself (no separate cursor table). The first
+    deploy must seed one row with source_id = MAX(burrow_event_log.id) and
+    status=1 so that pre-existing force_close events are not re-alerted.
+    """
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT COALESCE(MAX(source_id), 0) AS max_id FROM burrow_force_close_alert")
+        row = cursor.fetchone()
+        return int(row["max_id"]) if row and row["max_id"] is not None else 0
+    except Exception as e:
+        print("get_max_force_close_alert_source_id error:", e)
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_new_force_close_events(network_id, after_id, limit=500):
+    """Return new force_close rows from burrow_event_log with id > after_id."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    sql = ("SELECT id, liquidation_account_id, collateral_sum, repaid_sum, args "
+           "FROM burrow_event_log "
+           "WHERE id > %s AND event = 'force_close' "
+           "ORDER BY id ASC LIMIT %s")
+    try:
+        cursor.execute(sql, (after_id, int(limit)))
+        return cursor.fetchall() or []
+    except Exception as e:
+        print("get_new_force_close_events error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_force_close_alerts(network_id, rows):
+    """Insert pending alert rows. Idempotent via UNIQUE(source_id)."""
+    if not rows:
+        return 0
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    sql = ("INSERT IGNORE INTO burrow_force_close_alert "
+           "(source_id, account_id, liquidation_account_id, collateral_sum, repaid_sum, "
+           "status, alert_count, ack_token) "
+           "VALUES (%s, %s, %s, %s, %s, 0, 0, %s)")
+    data = [
+        (
+            r["source_id"],
+            r.get("account_id"),
+            r.get("liquidation_account_id"),
+            r.get("collateral_sum"),
+            r.get("repaid_sum"),
+            r["ack_token"],
+        )
+        for r in rows
+    ]
+    try:
+        cursor.executemany(sql, data)
+        db_conn.commit()
+        return cursor.rowcount or 0
+    except Exception as e:
+        db_conn.rollback()
+        print("insert_force_close_alerts error:", e)
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_pending_force_close_alerts(network_id):
+    """Return all alerts that still require notification."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    sql = ("SELECT id, source_id, account_id, liquidation_account_id, collateral_sum, "
+           "repaid_sum, alert_count, ack_token "
+           "FROM burrow_force_close_alert WHERE status = 0 ORDER BY id ASC")
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall() or []
+    except Exception as e:
+        print("get_pending_force_close_alerts error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def bump_force_close_alert_count(network_id, alert_id):
+    """Called after a successful send_message to record one delivery."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    sql = ("UPDATE burrow_force_close_alert "
+           "SET alert_count = alert_count + 1, last_alert_time = NOW() "
+           "WHERE id = %s")
+    try:
+        cursor.execute(sql, (alert_id,))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("bump_force_close_alert_count error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def list_force_close_alerts(network_id, status=None, limit=200, offset=0):
+    """Used by the read-only HTTP list endpoint."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    base_sql = ("SELECT id, source_id, account_id, liquidation_account_id, collateral_sum, "
+                "repaid_sum, status, alert_count, last_alert_time, acknowledged_at, "
+                "create_time, update_time "
+                "FROM burrow_force_close_alert")
+    params = []
+    if status is not None:
+        base_sql += " WHERE status = %s"
+        params.append(int(status))
+    base_sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
+    params.extend([int(limit), int(offset)])
+    try:
+        cursor.execute(base_sql, tuple(params))
+        return cursor.fetchall() or []
+    except Exception as e:
+        print("list_force_close_alerts error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def ack_force_close_alert_by_token(network_id, token):
+    """Mark a pending alert acknowledged by its ack_token.
+
+    Returns the alert id that was updated (or None if token unknown / already
+    acknowledged). The UPDATE ... WHERE status = 0 guard makes this idempotent:
+    a second click is a harmless no-op.
+    """
+    if not token:
+        return None
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT id, status FROM burrow_force_close_alert WHERE ack_token = %s",
+            (token,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        alert_id = row["id"]
+        if row["status"] == 1:
+            return alert_id
+        cursor.execute(
+            "UPDATE burrow_force_close_alert SET status = 1, acknowledged_at = NOW() "
+            "WHERE id = %s AND status = 0",
+            (alert_id,),
+        )
+        db_conn.commit()
+        return alert_id
+    except Exception as e:
+        db_conn.rollback()
+        print("ack_force_close_alert_by_token error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()

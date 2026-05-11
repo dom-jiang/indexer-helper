@@ -91,6 +91,8 @@ class Cfg:
         "REDIS_HOST": REDIS_HOST,
         "REDIS_PORT": REDIS_PORT,
     }
+    MESSAGE_SERVICE_URL = "http://139.162.85.48:8400/api/message/send"
+    INDEXER_HELPER_PUBLIC_URL = "https://api.rhea.finance/"
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,

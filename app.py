@@ -21,7 +21,9 @@ from db_provider import get_burrow_total_revenue_by_time_range, get_burrow_total
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
     query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
     query_dcl_user_tvl, query_dcl_user_change_log, query_burrow_log, get_history_token_price_by_token, add_orderly_trading_data, \
-    add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info, get_liquidation_log
+    add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info, get_liquidation_log, \
+    list_force_close_alerts, ack_force_close_alert_by_token
+from flask import Response
 import re
 # from flask_limiter import Limiter
 from loguru import logger
@@ -1127,6 +1129,113 @@ def handel_get_total_revenue():
             "revenue_data": revenue_data
         }
     return jsonify(ret_data)
+
+
+# =============================================================================
+# Burrow force_close alert endpoints
+#
+# Layout:
+#   GET  /burrow-force-close-alerts            -- read-only list (for ops)
+#   GET  /burrow-force-close-alerts/ack        -- HTML page rendered for humans;
+#                                                 contains JS that POSTs ack-confirm.
+#                                                 Bots (Telegram/Slack link preview)
+#                                                 do not execute JS, so they cannot
+#                                                 accidentally acknowledge the alert.
+#   POST /burrow-force-close-alerts/ack-confirm-- actually flips status=1 in DB.
+# =============================================================================
+
+
+@app.route('/burrow-force-close-alerts', methods=['GET'])
+def handle_list_burrow_force_close_alerts():
+    status_arg = request.args.get("status")
+    limit = request.args.get("limit", default=200, type=int)
+    offset = request.args.get("offset", default=0, type=int)
+
+    status_filter = None
+    if status_arg == "pending":
+        status_filter = 0
+    elif status_arg == "acknowledged":
+        status_filter = 1
+
+    rows = list_force_close_alerts(Cfg.NETWORK_ID, status=status_filter, limit=limit, offset=offset)
+    payload = json.dumps({"code": 0, "msg": "success", "data": rows}, default=str)
+    return Response(payload, mimetype="application/json")
+
+
+_ACK_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="robots" content="noindex,nofollow" />
+<title>Burrow force_close alert</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+       background:#0d1117;color:#c9d1d9;display:flex;justify-content:center;
+       align-items:center;height:100vh;margin:0;}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;
+        padding:32px 40px;text-align:center;max-width:480px;}
+  .ok{color:#3fb950;} .err{color:#f85149;} .muted{color:#8b949e;font-size:13px;}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2 id="title">Acknowledging alert...</h2>
+  <p id="msg" class="muted">Please wait.</p>
+</div>
+<script>
+(function(){
+  var token = __TOKEN__;
+  fetch('/burrow-force-close-alerts/ack-confirm?token=' + encodeURIComponent(token),
+        {method:'POST', headers:{'Content-Type':'application/json'}})
+    .then(function(r){ return r.json().then(function(j){return {s:r.status, j:j};}); })
+    .then(function(res){
+      var t = document.getElementById('title');
+      var m = document.getElementById('msg');
+      if (res.s === 200 && res.j && res.j.code === 0) {
+        t.className = 'ok';
+        t.textContent = 'Alert acknowledged';
+        m.textContent = 'You can close this page. Alert ID: ' + (res.j.data && res.j.data.alert_id);
+      } else {
+        t.className = 'err';
+        t.textContent = 'Acknowledge failed';
+        m.textContent = (res.j && res.j.msg) || ('HTTP ' + res.s);
+      }
+    })
+    .catch(function(e){
+      var t = document.getElementById('title');
+      var m = document.getElementById('msg');
+      t.className = 'err'; t.textContent = 'Network error';
+      m.textContent = String(e);
+    });
+})();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route('/burrow-force-close-alerts/ack', methods=['GET'])
+def handle_burrow_force_close_alert_ack_page():
+    token = request.args.get("token", "")
+    safe_token = json.dumps(token)
+    html = _ACK_HTML_TEMPLATE.replace("__TOKEN__", safe_token)
+    resp = Response(html, mimetype="text/html; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Robots-Tag"] = "noindex,nofollow"
+    return resp
+
+
+@app.route('/burrow-force-close-alerts/ack-confirm', methods=['POST'])
+def handle_burrow_force_close_alert_ack_confirm():
+    token = request.args.get("token")
+    if not token and request.is_json:
+        token = (request.get_json(silent=True) or {}).get("token")
+    if not token:
+        return jsonify({"code": -1, "msg": "token required", "data": None}), 400
+    alert_id = ack_force_close_alert_by_token(Cfg.NETWORK_ID, token)
+    if alert_id is None:
+        return jsonify({"code": -1, "msg": "invalid token", "data": None}), 404
+    return jsonify({"code": 0, "msg": "success", "data": {"alert_id": alert_id}})
 
 
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
