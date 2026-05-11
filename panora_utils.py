@@ -16,14 +16,17 @@ PANORA_BASE_URL = "https://api.panora.exchange"
 
 _session = requests.Session()
 
-try:
-    from db_info import PANORA_API_KEY
-except ImportError:
-    PANORA_API_KEY = ""
-
 
 def _get_api_key() -> str:
-    return PANORA_API_KEY or getattr(Cfg, "PANORA_API_KEY", "")
+    """Return the Panora `x-api-key` header value.
+
+    Source of truth: `Cfg.PANORA_API_KEY` (config.py wires it through from
+    `db_info.PANORA_API_KEY` for production). Empty string when unset — the
+    caller will then omit the header, which makes Panora `/swap` 401. Keep
+    this function so callers don't poke at `Cfg` directly and we have a
+    single place to add fallback / dev-key logic in the future.
+    """
+    return (getattr(Cfg, "PANORA_API_KEY", "") or "").strip()
 
 
 def panora_swap(

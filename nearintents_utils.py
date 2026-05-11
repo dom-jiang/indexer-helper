@@ -10,6 +10,7 @@ Docs: https://docs.near-intents.org/api-reference/oneclick/request-a-swap-quote
 """
 
 import json
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
@@ -92,8 +93,22 @@ CHAIN_TO_OMNI = {
     "near": "near",
 }
 
+# In-memory caches for the 1Click `/v0/tokens` payload.
+# `_token_list_cache` is the last successfully-fetched raw list — used as a
+# last-resort fallback when both Redis and the upstream API are unavailable.
+# `_token_lookup_cache` is the derived (blockchain, addr) -> assetId dict.
+#
+# IMPORTANT: previously `_token_lookup_cache` was only built once per process
+# and never invalidated, which meant a long-running backend would never pick
+# up tokens that 1Click added after startup (the 600s Redis TTL was useless
+# because `_build_token_lookup` short-circuited before touching Redis).
+# `_TOKEN_LOOKUP_TTL_SECONDS` bounds the in-memory cache age so refreshes do
+# happen, while still amortising the (potentially thousands of entries)
+# rebuild cost across many quote requests.
 _token_list_cache = None
 _token_lookup_cache = None
+_token_lookup_built_at = 0.0
+_TOKEN_LOOKUP_TTL_SECONDS = 300
 
 
 def _get_headers() -> Dict:
@@ -108,24 +123,49 @@ def _get_headers() -> Dict:
     return headers
 
 
+def _oneclick_url(path: str) -> str:
+    """Build a fully-qualified 1Click API URL from `Cfg.ONECLICK_BASE_URL`
+    and a leading path segment (e.g. "tokens", "quote", "status").
+
+    Defensive against common deploy-time misconfigurations of the base URL:
+      * trailing slashes are stripped.
+      * a trailing `/v0` or `/v0/` is stripped so the version segment is not
+        duplicated. This lets operators write either of
+            ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
+            ONECLICK_BASE_URL = "https://1click.chaindefuser.com/v0"
+        without the call sites silently 404-ing.
+
+    Always returns `<host>/v0/<path>`. If `Cfg.ONECLICK_BASE_URL` is empty,
+    falls back to the production host so the backend keeps working in
+    smoke-test environments where `db_info.py` was never set up.
+    """
+    base = (Cfg.ONECLICK_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        base = "https://1click.chaindefuser.com"
+    elif base.lower().endswith("/v0"):
+        base = base[: -len("/v0")]
+    return f"{base}/v0/{path.lstrip('/')}"
+
+
 def _fetch_token_list() -> list:
     """Fetch full token list from 1Click /v0/tokens, with Redis caching."""
-    global _token_list_cache, _token_lookup_cache
+    global _token_list_cache
 
     cached = get_1click_tokens_cache()
     if cached:
-        tokens = json.loads(cached)
-        _token_list_cache = tokens
-        _token_lookup_cache = None
-        return tokens
+        try:
+            tokens = json.loads(cached)
+            _token_list_cache = tokens
+            return tokens
+        except Exception as e:
+            logger.warning(f"1Click tokens Redis cache decode failed, refetching: {e}")
 
     try:
-        resp = _session.get(f"{Cfg.ONECLICK_BASE_URL}/tokens", timeout=15)
+        resp = _session.get(_oneclick_url("tokens"), timeout=15)
         resp.raise_for_status()
         tokens = resp.json()
         set_1click_tokens_cache(json.dumps(tokens), ttl=600)
         _token_list_cache = tokens
-        _token_lookup_cache = None
         return tokens
     except Exception as e:
         logger.error(f"Failed to fetch 1Click token list: {e}")
@@ -135,14 +175,26 @@ def _fetch_token_list() -> list:
 
 
 def _build_token_lookup() -> Dict[str, str]:
-    """Build (blockchain_lower, contractAddress_lower) -> assetId lookup."""
-    global _token_lookup_cache
+    """Build (blockchain_lower, contractAddress_lower) -> assetId lookup.
 
-    if _token_lookup_cache is not None:
+    The derived lookup dict is cached in-process for `_TOKEN_LOOKUP_TTL_SECONDS`
+    to avoid re-parsing the (thousands-of-entries) token list on every quote.
+    Once the window elapses the next call refetches via `_fetch_token_list`
+    (Redis-warm in steady state, otherwise hitting 1Click directly) and
+    rebuilds the dict, so newly-listed tokens become resolvable without a
+    process restart.
+    """
+    global _token_lookup_cache, _token_lookup_built_at
+
+    now = time.monotonic()
+    if (
+        _token_lookup_cache is not None
+        and now - _token_lookup_built_at < _TOKEN_LOOKUP_TTL_SECONDS
+    ):
         return _token_lookup_cache
 
     tokens = _fetch_token_list()
-    lookup = {}
+    lookup: Dict = {}
     for t in tokens:
         blockchain = (t.get("blockchain") or "").lower()
         asset_id = t.get("assetId", "")
@@ -158,7 +210,15 @@ def _build_token_lookup() -> Dict[str, str]:
                 lookup.setdefault((blockchain, _NATIVE_LOOKUP_KEY), asset_id)
             lookup[(blockchain, asset_id)] = asset_id
 
+    if not lookup and _token_lookup_cache:
+        # Upstream returned empty (e.g. network blip): keep serving the
+        # previous lookup but expire it sooner so we retry quickly instead
+        # of pinning a broken empty map for the full TTL.
+        _token_lookup_built_at = now - _TOKEN_LOOKUP_TTL_SECONDS + 30
+        return _token_lookup_cache
+
     _token_lookup_cache = lookup
+    _token_lookup_built_at = now
     return lookup
 
 
@@ -170,6 +230,31 @@ def _is_chain_native_address(oneclick_chain: str, addr_lower: str) -> bool:
         return False
     markers = _CHAIN_WRAPPED_NATIVE_MARKERS.get(oneclick_chain)
     return bool(markers and addr_lower in markers)
+
+
+def is_chain_native_token(chain, address: str) -> bool:
+    """Return True iff `address` represents the native gas token of `chain`.
+
+    Considers both:
+      * Generic EVM conventions handled by `swap_utils.is_native_token`
+        (empty string, `0x000...0`, OKX sentinel `0xEeee...`).
+      * Chain-specific markers (e.g. wSOL mint on Solana, `0xa` /
+        `0x1::aptos_coin::AptosCoin` / `apt` on Aptos) declared in
+        `_CHAIN_WRAPPED_NATIVE_MARKERS`.
+
+    Accepts any chain identifier that `CHAIN_TO_1CLICK` knows about
+    (numeric ids, short names, aliases). Used by token-info resolvers so
+    the frontend can pass the same native-token marker across same-chain
+    (Panora / Jupiter / OKX) and cross-chain (1Click) flows.
+    """
+    addr_raw = address or ""
+    if is_native_token(addr_raw):
+        return True
+    if not addr_raw:
+        return False
+    chain_str = str(chain) if chain is not None else ""
+    oneclick_chain = CHAIN_TO_1CLICK.get(chain_str, chain_str).lower()
+    return _is_chain_native_address(oneclick_chain, addr_raw.lower())
 
 
 def resolve_1click_asset_id(chain: str, address: str) -> Optional[str]:
@@ -264,7 +349,7 @@ def nearintents_quote(
 
     try:
         resp = _session.post(
-            f"{Cfg.ONECLICK_BASE_URL}/quote",
+            _oneclick_url("quote"),
             json=body,
             headers=_get_headers(),
             timeout=20,
@@ -347,7 +432,7 @@ def nearintents_build_tx(
 
     try:
         resp = _session.post(
-            f"{Cfg.ONECLICK_BASE_URL}/quote",
+            _oneclick_url("quote"),
             json=body,
             headers=_get_headers(),
             timeout=20,
@@ -386,7 +471,7 @@ def nearintents_order_status(deposit_address: str) -> Dict:
     """Query NearIntents 1Click swap status by deposit address."""
     try:
         resp = _session.get(
-            f"{Cfg.ONECLICK_BASE_URL}/status",
+            _oneclick_url("status"),
             params={"depositAddress": deposit_address},
             headers=_get_headers(),
             timeout=10,

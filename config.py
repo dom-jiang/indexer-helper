@@ -123,6 +123,11 @@ except ImportError:
     ONECLICK_JWT_TOKEN = ""
 
 try:
+    from db_info import PANORA_API_KEY
+except ImportError:
+    PANORA_API_KEY = ""
+
+try:
     from db_info import BOSS_EMAIL_VERIFY
 except ImportError:
     BOSS_EMAIL_VERIFY = True
@@ -167,7 +172,15 @@ class Cfg:
     SMTP_PASS = SMTP_PASS
     SMTP_FROM = SMTP_FROM
     ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
-    ONECLICK_BASE_URL = "https://1click.chaindefuser.com/v0"
+    # 1Click API host only (NO version suffix). The `/v0` path is appended by
+    # callers via `nearintents_utils._oneclick_url`, which also defensively
+    # strips a trailing `/v0` / `/v0/` if someone leaves it in here. Production
+    # value: `https://1click.chaindefuser.com`.
+    ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
+    # Panora API key for Aptos same-chain swap (`x-api-key` header). Apply at
+    # https://app.panora.exchange/developer — the `/swap` endpoint is gated
+    # and returns 401 without a key. Override in `db_info.py` for production.
+    PANORA_API_KEY = PANORA_API_KEY
     # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
     # cross-chain Solana deposit transactions on the backend. Set to a
     # paid/private RPC (Helius / QuickNode / Triton ...) in production; the

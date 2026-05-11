@@ -85,6 +85,7 @@ from omnibridge_utils import cross_chain_quote as omni_quote, cross_chain_build_
 from nearintents_utils import (
     nearintents_quote, nearintents_build_tx,
     resolve_omni_chain, resolve_1click_asset_id, CHAIN_TO_1CLICK,
+    is_chain_native_token,
 )
 from cross_chain_tx_builder import (
     build_evm_deposit_tx, build_aptos_deposit_tx, build_solana_deposit_tx,
@@ -188,16 +189,21 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
     Look up token metadata (symbol, decimals) from Redis multichain token data.
     Tries chain-key aliases in order and returns dict with address/symbol/decimals, or None.
 
-    Native gas tokens (passed as empty string, `0x000...0`, or the OKX sentinel
-    `0xEeee...`) are short-circuited to a static mapping because Redis token
-    cache is keyed by ERC20 contract address and does not store them.
+    Native gas tokens are short-circuited to a static mapping because the
+    Redis token cache is keyed by contract address and does not store them.
+    "Native" here covers both:
+      * Generic EVM conventions: empty string, `0x000...0`, OKX sentinel
+        `0xEeee...`.
+      * Chain-specific markers used by same-chain aggregators: wSOL mint on
+        Solana, `0xa` / `0x1::aptos_coin::AptosCoin` / `apt` on Aptos, etc.
+        See `nearintents_utils.is_chain_native_token` for the full list.
     """
     addr_raw = address or ""
-    if is_native_token(addr_raw):
+    if is_chain_native_token(chain, addr_raw):
         meta = _resolve_native_token_meta(chain)
         # Preserve the original address string the frontend passed so downstream
         # code (OKX / Bitget / Jupiter / Panora adapters) can re-detect native via
-        # their own `is_native_token` checks.
+        # their own native-marker checks.
         return {
             "address": addr_raw,
             "symbol": meta["symbol"],
