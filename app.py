@@ -62,7 +62,7 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
     ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
-    get_near_intents_order_by_deposit_address, \
+    get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
@@ -3578,7 +3578,7 @@ def _format_near_intents_row(row):
     for dt_key in ("created_at", "updated_at"):
         if item.get(dt_key) is not None:
             item[dt_key] = str(item[dt_key])
-    for json_key in ("quote_response", "status_response"):
+    for json_key in ("request_payload", "quote_response", "status_response"):
         if item.get(json_key):
             try:
                 item[json_key] = json.loads(item[json_key])
@@ -3593,74 +3593,165 @@ except Exception as _e:
     logger.warning(f"Failed to ensure near_intents_orders table: {_e}")
 
 
+def _build_oneclick_payload_from_body(body):
+    """Translate caller body into the 1Click /v0/quote request shape.
+    Caller is responsible for having validated the 5 required fields."""
+    payload = {
+        "dry": False,
+        "swapType": body.get("swapType", "EXACT_INPUT"),
+        "slippageTolerance": body.get("slippageTolerance", 100),
+        "originAsset": body["originAsset"],
+        "depositType": body.get("depositType", "ORIGIN_CHAIN"),
+        "destinationAsset": body["destinationAsset"],
+        "amount": body["amount"],
+        "recipient": body["recipient"],
+        "recipientType": body.get("recipientType", "DESTINATION_CHAIN"),
+        "refundTo": body["refundTo"],
+        "refundType": body.get("refundType", "ORIGIN_CHAIN"),
+    }
+    if body.get("deadline"):
+        payload["deadline"] = body["deadline"]
+    if body.get("referral"):
+        payload["referral"] = body["referral"]
+    for extra_key in ("customRecipientMsg", "appFees", "depositMode",
+                      "virtualChainRecipient", "virtualChainRefundRecipient",
+                      "quoteWaitingTimeMs"):
+        if body.get(extra_key) is not None:
+            payload[extra_key] = body[extra_key]
+    return payload
+
+
+def _call_1click_quote(oneclick_payload):
+    """POST to 1Click /v0/quote. Returns (quote_data, error_response_or_none)."""
+    headers = {"Content-Type": "application/json"}
+    if Cfg.ONECLICK_JWT_TOKEN:
+        headers["Authorization"] = Cfg.ONECLICK_JWT_TOKEN
+
+    resp = requests.post(
+        f"{Cfg.ONECLICK_BASE_URL}/v0/quote",
+        json=oneclick_payload,
+        headers=headers,
+        timeout=30
+    )
+
+    if resp.status_code >= 300:
+        return None, (jsonify({
+            "error": "1Click API error",
+            "status_code": resp.status_code,
+            "detail": resp.text
+        }), resp.status_code)
+
+    return resp.json(), None
+
+
 @app.route('/api/near_intents/quote', methods=['POST'])
 def handle_near_intents_quote():
     """
-    Proxy 1Click /v0/quote and persist the resulting order into
-    near_intents_orders. Caller MUST pass three non-empty business tags
-    (source / action / account) along with the standard 1Click fields.
+    Three branches keyed by the request body:
+
+      1) noBridge == true
+         -> caller-provided record only, no 1Click call.
+            requires: source / action / account / hash
+            inserts row with status='NO_BRIDGE', no_bridge=1, request_payload=<body>
+            returns: the freshly inserted row (echo).
+
+      2) source missing/empty (trial / preview)
+         -> calls 1Click /v0/quote, does NOT persist anything.
+            requires: the five 1Click fields.
+            returns: 1Click's response verbatim.
+
+      3) Normal
+         -> requires source / action / account + the five 1Click fields.
+            calls 1Click /v0/quote, persists the order, returns 1Click's response.
     """
     try:
         body = request.get_json(force=True)
         if not body:
             return jsonify({"error": "Request body is required"}), 400
 
+        if body.get("dry") is True:
+            return jsonify({"error": "dry=true is not supported"}), 400
+
+        no_bridge_flag = body.get("noBridge") is True
+        source_raw = body.get("source")
+        source_present = isinstance(source_raw, str) and source_raw.strip() != ""
+
+        # -------- Branch 1: noBridge --------
+        if no_bridge_flag:
+            for tag in ("source", "action", "account"):
+                cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
+                if err is not None:
+                    return err
+                body[tag] = cleaned
+
+            hash_raw = body.get("hash")
+            if not isinstance(hash_raw, str) or not hash_raw.strip():
+                return jsonify({"error": "Missing required field: hash"}), 400
+            hash_value = hash_raw.strip()
+            if len(hash_value) > 128:
+                return jsonify({"error": "Field hash exceeds max length 128"}), 400
+
+            inserted_id = insert_near_intents_order(
+                network_id=Cfg.NETWORK_ID,
+                source=body["source"],
+                action=body["action"],
+                account=body["account"],
+                origin_asset=body.get("originAsset"),
+                destination_asset=body.get("destinationAsset"),
+                amount=body.get("amount"),
+                refund_to=body.get("refundTo"),
+                recipient=body.get("recipient"),
+                swap_type=body.get("swapType"),
+                slippage_tolerance=body.get("slippageTolerance"),
+                deposit_type=body.get("depositType"),
+                recipient_type=body.get("recipientType"),
+                refund_type=body.get("refundType"),
+                deadline=body.get("deadline"),
+                referral=body.get("referral"),
+                deposit_address=None,
+                quote_response=None,
+                status='NO_BRIDGE',
+                no_bridge=1,
+                hash_value=hash_value,
+                request_payload=json.dumps(body)
+            )
+
+            saved_row = get_near_intents_order_by_id(Cfg.NETWORK_ID, inserted_id) \
+                if inserted_id else None
+            return jsonify(_format_near_intents_row(saved_row) or {"id": inserted_id})
+
+        # -------- Branch 2: trial (no source) --------
+        if not source_present:
+            required_fields = ["originAsset", "destinationAsset", "amount",
+                               "refundTo", "recipient"]
+            for field in required_fields:
+                if not body.get(field):
+                    return jsonify({"error": f"Missing required field: {field}"}), 400
+
+            oneclick_payload = _build_oneclick_payload_from_body(body)
+            quote_data, err = _call_1click_quote(oneclick_payload)
+            if err is not None:
+                return err
+            return jsonify(quote_data)
+
+        # -------- Branch 3: normal --------
         for tag in ("source", "action", "account"):
             cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
             if err is not None:
                 return err
             body[tag] = cleaned
 
-        required_fields = ["originAsset", "destinationAsset", "amount", "refundTo", "recipient"]
+        required_fields = ["originAsset", "destinationAsset", "amount",
+                           "refundTo", "recipient"]
         for field in required_fields:
             if not body.get(field):
                 return jsonify({"error": f"Missing required field: {field}"}), 400
 
-        if body.get("dry") is True:
-            return jsonify({"error": "dry=true is not supported"}), 400
+        oneclick_payload = _build_oneclick_payload_from_body(body)
+        quote_data, err = _call_1click_quote(oneclick_payload)
+        if err is not None:
+            return err
 
-        oneclick_payload = {
-            "dry": False,
-            "swapType": body.get("swapType", "EXACT_INPUT"),
-            "slippageTolerance": body.get("slippageTolerance", 100),
-            "originAsset": body["originAsset"],
-            "depositType": body.get("depositType", "ORIGIN_CHAIN"),
-            "destinationAsset": body["destinationAsset"],
-            "amount": body["amount"],
-            "recipient": body["recipient"],
-            "recipientType": body.get("recipientType", "DESTINATION_CHAIN"),
-            "refundTo": body["refundTo"],
-            "refundType": body.get("refundType", "ORIGIN_CHAIN"),
-        }
-        if body.get("deadline"):
-            oneclick_payload["deadline"] = body["deadline"]
-        if body.get("referral"):
-            oneclick_payload["referral"] = body["referral"]
-        for extra_key in ("customRecipientMsg", "appFees", "depositMode",
-                          "virtualChainRecipient", "virtualChainRefundRecipient",
-                          "quoteWaitingTimeMs"):
-            if body.get(extra_key) is not None:
-                oneclick_payload[extra_key] = body[extra_key]
-
-        headers = {"Content-Type": "application/json"}
-        if Cfg.ONECLICK_JWT_TOKEN:
-            headers["Authorization"] = Cfg.ONECLICK_JWT_TOKEN
-
-        resp = requests.post(
-            f"{Cfg.ONECLICK_BASE_URL}/v0/quote",
-            json=oneclick_payload,
-            headers=headers,
-            timeout=30
-        )
-
-        if resp.status_code >= 300:
-            return jsonify({
-                "error": "1Click API error",
-                "status_code": resp.status_code,
-                "detail": resp.text
-            }), resp.status_code
-
-        quote_data = resp.json()
         quote_obj = quote_data.get("quote") or {}
         deposit_address = quote_obj.get("depositAddress")
 
@@ -3682,7 +3773,11 @@ def handle_near_intents_quote():
             deadline=oneclick_payload.get("deadline"),
             referral=oneclick_payload.get("referral"),
             deposit_address=deposit_address,
-            quote_response=json.dumps(quote_data)
+            quote_response=json.dumps(quote_data),
+            status='PENDING',
+            no_bridge=0,
+            hash_value=None,
+            request_payload=json.dumps(body)
         )
 
         return jsonify(quote_data)

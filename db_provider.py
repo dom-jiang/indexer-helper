@@ -3116,13 +3116,15 @@ CREATE TABLE IF NOT EXISTS near_intents_orders (
     source             VARCHAR(128) NOT NULL,
     action             VARCHAR(128) NOT NULL,
     account            VARCHAR(128) NOT NULL,
+    no_bridge          TINYINT(1)   DEFAULT 0,
+    hash               VARCHAR(128) DEFAULT NULL,
     deposit_address    VARCHAR(128) DEFAULT NULL,
     status             VARCHAR(32)  DEFAULT 'PENDING',
-    origin_asset       VARCHAR(256) NOT NULL,
-    destination_asset  VARCHAR(256) NOT NULL,
-    amount             VARCHAR(64)  NOT NULL,
-    refund_to          VARCHAR(256) NOT NULL,
-    recipient          VARCHAR(256) NOT NULL,
+    origin_asset       VARCHAR(256) DEFAULT NULL,
+    destination_asset  VARCHAR(256) DEFAULT NULL,
+    amount             VARCHAR(64)  DEFAULT NULL,
+    refund_to          VARCHAR(256) DEFAULT NULL,
+    recipient          VARCHAR(256) DEFAULT NULL,
     swap_type          VARCHAR(32)  DEFAULT 'EXACT_INPUT',
     slippage_tolerance INT          DEFAULT 100,
     deposit_type       VARCHAR(32)  DEFAULT 'ORIGIN_CHAIN',
@@ -3130,6 +3132,7 @@ CREATE TABLE IF NOT EXISTS near_intents_orders (
     refund_type        VARCHAR(32)  DEFAULT 'ORIGIN_CHAIN',
     deadline           VARCHAR(64)  DEFAULT NULL,
     referral           VARCHAR(128) DEFAULT NULL,
+    request_payload    MEDIUMTEXT,
     quote_response     TEXT,
     status_response    TEXT,
     created_at         DATETIME     DEFAULT CURRENT_TIMESTAMP,
@@ -3138,8 +3141,10 @@ CREATE TABLE IF NOT EXISTS near_intents_orders (
     INDEX idx_account (account),
     INDEX idx_source (source),
     INDEX idx_action (action),
+    INDEX idx_hash (hash),
     INDEX idx_deposit_address (deposit_address),
-    INDEX idx_status_created (status, created_at)
+    INDEX idx_status_created (status, created_at),
+    INDEX idx_no_bridge_status_created (no_bridge, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
@@ -3158,25 +3163,44 @@ def ensure_near_intents_orders_table(network_id):
 
 
 def insert_near_intents_order(network_id, source, action, account,
-                              origin_asset, destination_asset, amount,
-                              refund_to, recipient, swap_type, slippage_tolerance,
-                              deposit_type, recipient_type, refund_type, deadline,
-                              referral, deposit_address, quote_response):
+                              origin_asset=None, destination_asset=None, amount=None,
+                              refund_to=None, recipient=None,
+                              swap_type=None, slippage_tolerance=None,
+                              deposit_type=None, recipient_type=None, refund_type=None,
+                              deadline=None, referral=None,
+                              deposit_address=None, quote_response=None,
+                              status='PENDING', no_bridge=0, hash_value=None,
+                              request_payload=None):
+    """
+    Insert a near_intents_orders row. Supports three flows:
+      - Normal swap order:    no_bridge=0, status='PENDING', 1Click fields filled.
+      - Bridge-less record:   no_bridge=1, status='NO_BRIDGE', hash_value provided,
+                              1Click fields may be NULL.
+    `request_payload` is a stringified JSON of the original caller body (kept for
+    debugging and for the noBridge "echo input" use case).
+    """
     db_conn = get_db_connect(network_id)
     sql = """INSERT INTO near_intents_orders
-             (source, action, account,
+             (source, action, account, no_bridge, hash,
               origin_asset, destination_asset, amount, refund_to, recipient,
               swap_type, slippage_tolerance, deposit_type, recipient_type, refund_type,
-              deadline, referral, deposit_address, status, quote_response,
+              deadline, referral, deposit_address, status,
+              request_payload, quote_response,
               created_at, updated_at)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,NOW(),NOW())"""
+             VALUES (%s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,%s,
+                     %s,%s,%s,%s,
+                     %s,%s,
+                     NOW(),NOW())"""
     cursor = db_conn.cursor()
     try:
         cursor.execute(sql, (
-            source, action, account,
+            source, action, account, int(bool(no_bridge)), hash_value,
             origin_asset, destination_asset, amount, refund_to, recipient,
             swap_type, slippage_tolerance, deposit_type, recipient_type, refund_type,
-            deadline, referral, deposit_address, quote_response
+            deadline, referral, deposit_address, status,
+            request_payload, quote_response
         ))
         db_conn.commit()
         return cursor.lastrowid
@@ -3243,11 +3267,29 @@ def get_near_intents_order_by_deposit_address(network_id, deposit_address):
         db_conn.close()
 
 
+def get_near_intents_order_by_id(network_id, order_id):
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM near_intents_orders WHERE id = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (order_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_near_intents_order_by_id error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 def get_pending_near_intents_orders(network_id):
-    """Return non-terminal orders created within the last hour."""
+    """Return non-terminal, bridge-backed orders created within the last hour.
+    NoBridge rows are explicitly excluded -- they carry their own on-chain hash
+    and have no upstream status to poll."""
     db_conn = get_db_connect(network_id)
     sql = """SELECT id, deposit_address, status FROM near_intents_orders
-             WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED')
+             WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED', 'NO_BRIDGE')
+               AND no_bridge = 0
                AND deposit_address IS NOT NULL
                AND created_at >= NOW() - INTERVAL 1 HOUR
              ORDER BY created_at ASC"""
