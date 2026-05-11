@@ -43,6 +43,13 @@ _CHAIN_WRAPPED_NATIVE_MARKERS = {
     # lookup sentinel — keeping a single tokenIn/tokenOut value usable across
     # same-chain (Panora) and cross-chain (1Click) flows.
     "aptos": {"0xa", "0x1::aptos_coin::aptoscoin", "apt"},
+    # NEAR: unlike Solana / Aptos, 1Click does NOT list a `contractAddress=null`
+    # native NEAR entry — the canonical NEAR-side bridge asset is wNEAR. We
+    # still mark `wrap.near` (and the empty-string / symbolic aliases) as
+    # "native" so the deposit-tx builder can branch on it, but the lookup in
+    # `resolve_1click_asset_id` will fall through to the regular contract
+    # lookup when the native sentinel key is absent (see comment there).
+    "near": {"wrap.near", "near", "wnear"},
 }
 
 _session = requests.Session()
@@ -268,23 +275,43 @@ def resolve_1click_asset_id(chain: str, address: str) -> Optional[str]:
       * EVM conventions handled by `is_native_token`: empty string,
         `0x000...0`, and the OKX sentinel `0xEeee...`.
       * Chain-specific wrapped-native markers declared in
-        `_CHAIN_WRAPPED_NATIVE_MARKERS` (e.g. wSOL mint on Solana), so the
-        frontend can use the same address across same-chain (Jupiter/OKX)
-        and cross-chain (1Click) flows without branching.
+        `_CHAIN_WRAPPED_NATIVE_MARKERS` (e.g. wSOL mint on Solana, `0xa` on
+        Aptos, `wrap.near` on NEAR), so the frontend can use the same
+        address across same-chain (Jupiter / OKX / Panora) and cross-chain
+        (1Click) flows without branching.
+
+    Fall-through behaviour for chains whose "native" marker is itself a real
+    contract address: NEAR is the canonical example — 1Click has no
+    `contractAddress=null` entry for it; native NEAR is just wNEAR
+    (`wrap.near`). For these chains the native-sentinel lookup will miss
+    and we fall through to the regular contract lookup below, which finds
+    the wNEAR entry by its actual contractAddress. For Solana / Aptos the
+    native sentinel hits and we return immediately as before.
     """
     chain_str = str(chain)
     oneclick_chain = CHAIN_TO_1CLICK.get(chain_str, chain_str).lower()
     lookup = _build_token_lookup()
     addr_lower = (address or "").lower()
 
-    if is_native_token(address or "") or _is_chain_native_address(oneclick_chain, addr_lower):
+    is_native_marker = (
+        is_native_token(address or "")
+        or _is_chain_native_address(oneclick_chain, addr_lower)
+    )
+    if is_native_marker:
         native_id = lookup.get((oneclick_chain, _NATIVE_LOOKUP_KEY))
         if native_id:
             return native_id
-        logger.warning(
-            f"1click assetId lookup miss (native): chain={chain_str} mapped_to={oneclick_chain} address={address}"
-        )
-        return None
+        # No `contractAddress=null` entry on this chain. If the caller passed
+        # one of the symbolic aliases (`near`, `wnear`, empty string) we have
+        # nothing concrete to look up below, so give up here. If they passed
+        # a real account ID (e.g. `wrap.near`), `addr_lower` is truthy and we
+        # let the contract lookup below try to resolve it.
+        if not addr_lower or is_native_token(address or ""):
+            logger.warning(
+                f"1click assetId lookup miss (native, no fallback): chain={chain_str} "
+                f"mapped_to={oneclick_chain} address={address}"
+            )
+            return None
 
     asset_id = lookup.get((oneclick_chain, addr_lower))
     if asset_id:

@@ -59,6 +59,21 @@ except Exception:
 
 APTOS_NATIVE_ALIASES = {"0xa", "0x1::aptos_coin::aptoscoin", "apt", ""}
 SOLANA_NATIVE_MINTS = {"so11111111111111111111111111111111111111112", ""}
+# NEAR-side "native NEAR" markers. 1Click's `/v0/tokens` does NOT list native
+# NEAR with `contractAddress=null` (unlike Solana / Aptos); the canonical
+# NEAR-side asset on the bridge is wNEAR (`wrap.near`). We accept the empty
+# string and a couple of common symbolic aliases so the frontend can pass
+# whatever the user picks and the backend always builds the right tx.
+NEAR_NATIVE_ALIASES = {"wrap.near", "near", "wnear", ""}
+
+# Gas budgets for NEAR FunctionCall actions. `ft_transfer_call` may trigger a
+# long cross-contract callback chain on 1Click's side (their bridge deposit
+# contract has to forward & emit logs), so we send 100 Tgas to be safe — the
+# unused portion is refunded automatically. `near_deposit` is a single state
+# write so 30 Tgas is plenty.
+_NEAR_GAS_FT_TRANSFER_CALL = "100000000000000"  # 100 Tgas
+_NEAR_GAS_NEAR_DEPOSIT = "30000000000000"       # 30 Tgas
+_NEAR_ATTACHED_YOCTO = "1"                       # NEP-141 spec requires 1 yoctoNEAR on transfer calls
 
 
 class SolanaDepositTxBuildError(RuntimeError):
@@ -207,6 +222,109 @@ def build_aptos_deposit_tx(
         "tokenAddress": addr_raw,
         "depositAddress": deposit_address,
         "amount": amount_str,
+    }
+
+
+def build_near_deposit_tx(
+    token_address: str,
+    deposit_address: str,
+    amount_smallest: str,
+    sender: str,
+    deposit_memo: str = "",
+) -> Dict:
+    """
+    Build a NEAR transaction payload that deposits `amount_smallest` of the
+    NEP-141 token `token_address` to a 1Click `depositAddress`.
+
+    1Click on NEAR expects funds to arrive via `ft_transfer_call` on the
+    target NEP-141 contract, with the deposit address as `receiver_id`. The
+    NEAR native token is NOT a NEP-141; the canonical bridge form is wNEAR
+    (`wrap.near`). We collapse the empty string and the symbolic aliases in
+    `NEAR_NATIVE_ALIASES` onto the wrap.near flow, so the frontend can pass
+    whatever the user picks.
+
+    Two transaction shapes:
+
+    1) NEAR-native source (`token_address` in `NEAR_NATIVE_ALIASES`):
+       Single signed tx with TWO actions on `wrap.near`:
+         a. near_deposit       (attaches `amount_smallest` yoctoNEAR -> wraps)
+         b. ft_transfer_call   (sends the freshly-minted wNEAR to depositAddress)
+       Net effect: user's native NEAR is wrapped and bridged cross-chain in
+       one signed transaction. Costs `amount_smallest` NEAR + 1 yoctoNEAR
+       storage attached on the ft_transfer_call (NEP-141 spec) + gas.
+       Caveat: users whose wallet has ONLY wNEAR (no native NEAR) will see
+       the `near_deposit` call fail; they should unwrap a small balance to
+       native NEAR first. This is a deliberate trade-off (B-plan over the
+       more involved dual-shape C-plan).
+
+    2) NEP-141 source (any other `token_address`):
+       Single signed tx with ONE action on the NEP-141 contract:
+         a. ft_transfer_call   (-> depositAddress)
+       User must already hold the NEP-141 token in their NEAR wallet.
+
+    Returned shape follows the NEAR `wallet-selector` / near-api-js
+    convention so the frontend can pass it straight into
+    `wallet.signAndSendTransaction({receiverId, actions})`:
+      {
+        "chainId":        "near",
+        "signerId":       "<sender>",
+        "receiverId":     "<NEP-141 contract>",
+        "standard":       "native" | "nep141",
+        "tokenAddress":   "<NEP-141 contract>",
+        "depositAddress": "<1Click depositAddress>",
+        "amount":         "<smallest unit>",
+        "actions":        [ { "type": "FunctionCall", "params": {...} }, ... ]
+      }
+    """
+    addr_raw = (token_address or "").strip()
+    addr_lower = addr_raw.lower()
+    memo = deposit_memo or ""
+    amount_str = str(amount_smallest)
+
+    ft_transfer_call_action = {
+        "type": "FunctionCall",
+        "params": {
+            "methodName": "ft_transfer_call",
+            "args": {
+                "receiver_id": deposit_address,
+                "amount": amount_str,
+                "msg": memo,
+            },
+            "gas": _NEAR_GAS_FT_TRANSFER_CALL,
+            "deposit": _NEAR_ATTACHED_YOCTO,
+        },
+    }
+
+    if addr_lower in NEAR_NATIVE_ALIASES:
+        near_deposit_action = {
+            "type": "FunctionCall",
+            "params": {
+                "methodName": "near_deposit",
+                "args": {},
+                "gas": _NEAR_GAS_NEAR_DEPOSIT,
+                "deposit": amount_str,
+            },
+        }
+        return {
+            "chainId": "near",
+            "signerId": sender,
+            "receiverId": "wrap.near",
+            "standard": "native",
+            "tokenAddress": "wrap.near",
+            "depositAddress": deposit_address,
+            "amount": amount_str,
+            "actions": [near_deposit_action, ft_transfer_call_action],
+        }
+
+    return {
+        "chainId": "near",
+        "signerId": sender,
+        "receiverId": addr_raw,
+        "standard": "nep141",
+        "tokenAddress": addr_raw,
+        "depositAddress": deposit_address,
+        "amount": amount_str,
+        "actions": [ft_transfer_call_action],
     }
 
 

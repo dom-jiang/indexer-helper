@@ -16,8 +16,8 @@ from redis_provider import get_chain_tokens_with_prices
 from swap_utils import (
     multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx,
     detect_chain_type, shrink_token, convert_slippage_to_decimal,
-    SOLANA_CHAIN_IDS, APTOS_CHAIN_IDS,
-    CHAIN_TYPE_EVM, CHAIN_TYPE_SOLANA, CHAIN_TYPE_APTOS,
+    SOLANA_CHAIN_IDS, APTOS_CHAIN_IDS, NEAR_CHAIN_IDS,
+    CHAIN_TYPE_EVM, CHAIN_TYPE_SOLANA, CHAIN_TYPE_APTOS, CHAIN_TYPE_NEAR,
     BLUECHIP_TOKENS, SOLANA_BLUECHIP_TOKENS,
     is_native_token, normalize_evm_address,
     okx_quote_exact_out, build_okx_exact_out_swap_tx,
@@ -89,7 +89,29 @@ from nearintents_utils import (
 )
 from cross_chain_tx_builder import (
     build_evm_deposit_tx, build_aptos_deposit_tx, build_solana_deposit_tx,
+    build_near_deposit_tx, NEAR_NATIVE_ALIASES,
 )
+
+
+# Bluechip / common tokens on NEAR. These mirror the Solana / Aptos static
+# tables so `_resolve_token_info` can short-circuit without depending on the
+# multichain token-price Redis cache being warm for the `near` chain key.
+# Addresses are taken verbatim from 1Click's `/v0/tokens` `contractAddress`
+# field — they are NEAR account IDs (NEP-141 contracts), NOT 0x hex.
+_NEAR_BLUECHIP_TOKENS = {
+    "NEAR":   {"address": "wrap.near", "symbol": "NEAR", "decimals": 24},
+    "wNEAR":  {"address": "wrap.near", "symbol": "wNEAR", "decimals": 24},
+    "USDT":   {"address": "usdt.tether-token.near", "symbol": "USDT", "decimals": 6},
+    "USDC":   {"address": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", "symbol": "USDC", "decimals": 6},
+    "ETH":    {"address": "eth.bridge.near", "symbol": "ETH", "decimals": 18},
+    "BTC":    {"address": "nbtc.bridge.near", "symbol": "BTC", "decimals": 8},
+    "wBTC":   {"address": "2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near", "symbol": "wBTC", "decimals": 8},
+    "AURORA": {"address": "aaaaaa20d9e0e2461697782ef11675f668207961.factory.bridge.near", "symbol": "AURORA", "decimals": 18},
+    "FRAX":   {"address": "853d955acef822db058eb8505911ed77f175b99e.factory.bridge.near", "symbol": "FRAX", "decimals": 18},
+}
+_NEAR_BLUECHIP_LOOKUP = {
+    v["address"].lower(): v for v in _NEAR_BLUECHIP_TOKENS.values()
+}
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -195,8 +217,16 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
       * Generic EVM conventions: empty string, `0x000...0`, OKX sentinel
         `0xEeee...`.
       * Chain-specific markers used by same-chain aggregators: wSOL mint on
-        Solana, `0xa` / `0x1::aptos_coin::AptosCoin` / `apt` on Aptos, etc.
-        See `nearintents_utils.is_chain_native_token` for the full list.
+        Solana, `0xa` / `0x1::aptos_coin::AptosCoin` / `apt` on Aptos,
+        `wrap.near` / `near` / `wnear` on NEAR, etc. See
+        `nearintents_utils.is_chain_native_token` for the full list.
+
+    For NEAR specifically, an additional static bluechip-token table
+    (`_NEAR_BLUECHIP_TOKENS`) is consulted before the Redis lookup so that
+    common tokens (wNEAR / USDT / USDC / ETH / BTC / wBTC / AURORA / FRAX)
+    resolve even when the multichain token-price job has not warmed up the
+    `near` chain key in Redis. This keeps cross-chain quotes working
+    without depending on a separate data pipeline.
     """
     addr_raw = address or ""
     if is_chain_native_token(chain, addr_raw):
@@ -211,6 +241,17 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
         }
 
     addr_lower = addr_raw.lower()
+
+    # NEAR bluechip short-circuit (see docstring above).
+    if str(chain).lower() in NEAR_CHAIN_IDS:
+        bluechip = _NEAR_BLUECHIP_LOOKUP.get(addr_lower)
+        if bluechip:
+            return {
+                "address": addr_raw,
+                "symbol": bluechip["symbol"],
+                "decimals": int(bluechip["decimals"]),
+            }
+
     for candidate in _candidate_chain_keys(chain):
         tokens = get_chain_tokens_with_prices(candidate)
         if not tokens:
@@ -1548,6 +1589,15 @@ def _cross_chain_swap(
                 deposit_address=deposit_address,
                 amount_smallest=amount_in,
             )
+        elif source_chain_type == CHAIN_TYPE_NEAR:
+            response_data["tx"] = build_near_deposit_tx(
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+                sender=sender,
+                deposit_memo=deposit_memo,
+            )
+            response_data["approve"] = None
         elif source_chain_type == CHAIN_TYPE_SOLANA:
             response_data["tx"] = build_solana_deposit_tx(
                 token_address=token_in.get("address", ""),

@@ -28,9 +28,16 @@ from bitget_utils import proxy_bitget_request, proxy_okx_request
 CHAIN_TYPE_EVM = "evm"
 CHAIN_TYPE_SOLANA = "solana"
 CHAIN_TYPE_APTOS = "aptos"
+CHAIN_TYPE_NEAR = "near"
 
 SOLANA_CHAIN_IDS = {"solana", "solana-mainnet", "501", 501}
 APTOS_CHAIN_IDS = {"aptos", "aptos-mainnet", "637", 637}
+# NEAR doesn't have a canonical numeric chainId in our system; keep the string
+# aliases the frontend / 1Click might pass and route them all to the same
+# NEAR-native tx builder. DO NOT add a fallthrough to `CHAIN_TYPE_EVM` for
+# these — that's exactly what produced bogus EVM `transfer(address,uint256)`
+# calldata when `fromChain=near` was tested in production.
+NEAR_CHAIN_IDS = {"near", "near-mainnet"}
 
 OKX_SOLANA_CHAIN_INDEX = "501"
 
@@ -42,6 +49,8 @@ def detect_chain_type(chain_id, chain_type_hint=None) -> str:
         return CHAIN_TYPE_SOLANA
     if chain_id in APTOS_CHAIN_IDS:
         return CHAIN_TYPE_APTOS
+    if chain_id in NEAR_CHAIN_IDS:
+        return CHAIN_TYPE_NEAR
     return CHAIN_TYPE_EVM
 
 
@@ -1692,6 +1701,16 @@ def multi_chain_quote(
         return aggregate_solana_quote(token_in, token_out, amount_in, slippage, sender, recipient)
     elif ct == CHAIN_TYPE_APTOS:
         return aggregate_aptos_quote(token_in, token_out, amount_in, slippage, sender, recipient)
+    elif ct == CHAIN_TYPE_NEAR:
+        # Same-chain NEAR swap (Ref Finance / etc.) is not yet integrated.
+        # Bail out explicitly instead of falling through to the EVM aggregator,
+        # which would produce confusing OKX/Bitget errors. NEAR is currently
+        # supported only as a cross-chain source/destination via 1Click.
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_NEAR,
+            "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
     else:
         result = aggregate_quote(chain_id, token_in, token_out, amount_in, slippage, sender, recipient)
         if result.get("success") and "chainType" not in result:
@@ -1720,6 +1739,12 @@ def multi_chain_build_tx(
         return build_solana_swap_tx(router, token_in, token_out, amount_in, slippage, sender, recipient)
     elif ct == CHAIN_TYPE_APTOS:
         return build_aptos_swap_tx(token_in, token_out, amount_in, slippage, sender, recipient)
+    elif ct == CHAIN_TYPE_NEAR:
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_NEAR,
+            "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
     else:
         return build_swap_tx(chain_id, router, token_in, token_out, amount_in, slippage, sender, recipient, market)
 
@@ -1742,6 +1767,11 @@ def multi_chain_approve_tx(
         return {"success": True, "msg": "Solana tokens do not require approval"}
     elif ct == CHAIN_TYPE_APTOS:
         return {"success": True, "msg": "Aptos tokens do not require approval"}
+    elif ct == CHAIN_TYPE_NEAR:
+        # NEAR's NEP-141 standard bakes the approval into `ft_transfer_call`
+        # (the `msg` argument carries authorization for the receiver), so
+        # there's no separate ERC20-style approval tx to build.
+        return {"success": True, "msg": "NEAR NEP-141 tokens do not require a separate approval"}
     else:
         return build_approve_tx(chain_id, router, token_address, approve_amount, spender)
 
