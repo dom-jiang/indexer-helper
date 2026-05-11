@@ -3593,11 +3593,16 @@ except Exception as _e:
     logger.warning(f"Failed to ensure near_intents_orders table: {_e}")
 
 
-def _build_oneclick_payload_from_body(body):
+def _build_oneclick_payload_from_body(body, allow_dry=False):
     """Translate caller body into the 1Click /v0/quote request shape.
-    Caller is responsible for having validated the 5 required fields."""
+    Caller is responsible for having validated the 5 required fields.
+
+    `allow_dry`: if True, honor the caller's `dry` flag (used by the trial
+    branch where a pure preview is desired). If False (default), force
+    `dry=false` so a real depositAddress is always produced -- required
+    for downstream persistence + cron polling."""
     payload = {
-        "dry": False,
+        "dry": bool(body.get("dry")) if allow_dry else False,
         "swapType": body.get("swapType", "EXACT_INPUT"),
         "slippageTolerance": body.get("slippageTolerance", 100),
         "originAsset": body["originAsset"],
@@ -3669,9 +3674,6 @@ def handle_near_intents_quote():
         if not body:
             return jsonify({"error": "Request body is required"}), 400
 
-        if body.get("dry") is True:
-            return jsonify({"error": "dry=true is not supported"}), 400
-
         no_bridge_flag = body.get("noBridge") is True
         source_raw = body.get("source")
         source_present = isinstance(source_raw, str) and source_raw.strip() != ""
@@ -3728,13 +3730,19 @@ def handle_near_intents_quote():
                 if not body.get(field):
                     return jsonify({"error": f"Missing required field: {field}"}), 400
 
-            oneclick_payload = _build_oneclick_payload_from_body(body)
+            oneclick_payload = _build_oneclick_payload_from_body(body, allow_dry=True)
             quote_data, err = _call_1click_quote(oneclick_payload)
             if err is not None:
                 return err
             return jsonify(quote_data)
 
         # -------- Branch 3: normal --------
+        if body.get("dry") is True:
+            return jsonify({
+                "error": "dry=true is not supported in normal flow; "
+                         "omit `source` to use the trial branch instead"
+            }), 400
+
         for tag in ("source", "action", "account"):
             cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
             if err is not None:
