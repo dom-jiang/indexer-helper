@@ -50,6 +50,28 @@ _CHAIN_WRAPPED_NATIVE_MARKERS = {
     # `resolve_1click_asset_id` will fall through to the regular contract
     # lookup when the native sentinel key is absent (see comment there).
     "near": {"wrap.near", "near", "wnear"},
+    # SUI: Move type path `0x2::sui::SUI` is the canonical on-chain identifier
+    # for native SUI (the wallet adapters all expect this exact form for coin
+    # objects). 1Click lists native SUI with contractAddress=null under assetId
+    # `nep141:sui.omft.near`, so we collapse the type path and the "sui" alias
+    # onto the native lookup sentinel.
+    "sui": {"0x2::sui::sui", "sui"},
+    # TRON: native TRX has no contract address. 1Click lists it with
+    # contractAddress=null under assetId `nep141:tron.omft.near`. Frontends
+    # sometimes pass the symbol "trx" instead of the empty string, so we
+    # accept both.
+    "tron": {"trx", "tron"},
+    # UTXO chains (BTC / ZEC / LTC / DOGE / BCH / DASH): the chain has no
+    # smart contracts at all, so the native coin is the only asset 1Click
+    # lists, again with contractAddress=null. We accept the chain symbol as
+    # a marker so frontends can pass either "" or "btc" / "zec" / ... and
+    # both resolve to the right 1Click assetId.
+    "btc": {"btc", "bitcoin"},
+    "zec": {"zec", "zcash"},
+    "ltc": {"ltc", "litecoin"},
+    "doge": {"doge", "dogecoin"},
+    "bch": {"bch"},
+    "dash": {"dash"},
 }
 
 _session = requests.Session()

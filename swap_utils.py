@@ -29,6 +29,15 @@ CHAIN_TYPE_EVM = "evm"
 CHAIN_TYPE_SOLANA = "solana"
 CHAIN_TYPE_APTOS = "aptos"
 CHAIN_TYPE_NEAR = "near"
+CHAIN_TYPE_SUI = "sui"
+CHAIN_TYPE_TRON = "tron"
+# Generic UTXO: covers BTC / ZEC / LTC / DOGE / BCH / DASH. Their cross-chain
+# deposit shape is identical (single P2PKH/P2WPKH transfer to depositAddress
+# with no contract call), so they share the same builder and same descriptor.
+# If we ever need per-chain branching (e.g. ZEC shielded sends, RBF for BTC)
+# we can split this out later — the `chain` field on the descriptor preserves
+# the original chain identifier the user passed.
+CHAIN_TYPE_UTXO = "utxo"
 
 SOLANA_CHAIN_IDS = {"solana", "solana-mainnet", "501", 501}
 APTOS_CHAIN_IDS = {"aptos", "aptos-mainnet", "637", 637}
@@ -38,6 +47,22 @@ APTOS_CHAIN_IDS = {"aptos", "aptos-mainnet", "637", 637}
 # these — that's exactly what produced bogus EVM `transfer(address,uint256)`
 # calldata when `fromChain=near` was tested in production.
 NEAR_CHAIN_IDS = {"near", "near-mainnet"}
+SUI_CHAIN_IDS = {"sui", "sui-mainnet", "784", 784}
+TRON_CHAIN_IDS = {"tron", "tron-mainnet", "195", 195}
+# UTXO-style chains. 1Click currently supports BTC and ZEC as ORIGIN_CHAIN
+# (verified live 2026-05-11 — both return `depositMode=SIMPLE`, no memo).
+# LTC / DOGE / BCH / DASH are listed by 1Click's `/v0/tokens` but have not
+# been exercised against the production quote endpoint; they ride the same
+# code path on our side, so deposit-tx building will Just Work as soon as
+# 1Click flips them on.
+UTXO_CHAIN_IDS = {
+    "btc", "bitcoin",
+    "zec", "zcash",
+    "ltc", "litecoin",
+    "doge", "dogecoin",
+    "bch",
+    "dash",
+}
 
 OKX_SOLANA_CHAIN_INDEX = "501"
 
@@ -51,6 +76,15 @@ def detect_chain_type(chain_id, chain_type_hint=None) -> str:
         return CHAIN_TYPE_APTOS
     if chain_id in NEAR_CHAIN_IDS:
         return CHAIN_TYPE_NEAR
+    if chain_id in SUI_CHAIN_IDS:
+        return CHAIN_TYPE_SUI
+    if chain_id in TRON_CHAIN_IDS:
+        return CHAIN_TYPE_TRON
+    # UTXO chains are matched on the string form only (no numeric chain IDs
+    # are stable for Bitcoin-family chains in our system).
+    chain_id_str = str(chain_id).lower() if chain_id is not None else ""
+    if chain_id_str in UTXO_CHAIN_IDS:
+        return CHAIN_TYPE_UTXO
     return CHAIN_TYPE_EVM
 
 
@@ -1711,6 +1745,33 @@ def multi_chain_quote(
             "chainType": CHAIN_TYPE_NEAR,
             "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
         }
+    elif ct == CHAIN_TYPE_SUI:
+        # SUI same-chain swap (Cetus / Turbos / Aftermath etc.) is not yet
+        # integrated. Cross-chain via 1Click works.
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_SUI,
+            "error": "SUI same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
+    elif ct == CHAIN_TYPE_TRON:
+        # TRON same-chain swap (SunSwap / JustMoney) is not yet integrated.
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_TRON,
+            "error": "TRON same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
+    elif ct == CHAIN_TYPE_UTXO:
+        # UTXO chains have no DEX concept. Same-chain "swap" is effectively
+        # just sending the native coin to yourself, which the frontend should
+        # never request. Reject explicitly so misrouted requests fail loud.
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_UTXO,
+            "error": (
+                "UTXO chains (BTC/ZEC/LTC/DOGE/BCH/DASH) have no on-chain DEX; "
+                "same-chain swap is not supported. Use cross-chain via 1Click."
+            ),
+        }
     else:
         result = aggregate_quote(chain_id, token_in, token_out, amount_in, slippage, sender, recipient)
         if result.get("success") and "chainType" not in result:
@@ -1745,6 +1806,27 @@ def multi_chain_build_tx(
             "chainType": CHAIN_TYPE_NEAR,
             "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
         }
+    elif ct == CHAIN_TYPE_SUI:
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_SUI,
+            "error": "SUI same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
+    elif ct == CHAIN_TYPE_TRON:
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_TRON,
+            "error": "TRON same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
+        }
+    elif ct == CHAIN_TYPE_UTXO:
+        return {
+            "success": False,
+            "chainType": CHAIN_TYPE_UTXO,
+            "error": (
+                "UTXO chains (BTC/ZEC/LTC/DOGE/BCH/DASH) have no on-chain DEX; "
+                "same-chain swap is not supported. Use cross-chain via 1Click."
+            ),
+        }
     else:
         return build_swap_tx(chain_id, router, token_in, token_out, amount_in, slippage, sender, recipient, market)
 
@@ -1772,6 +1854,18 @@ def multi_chain_approve_tx(
         # (the `msg` argument carries authorization for the receiver), so
         # there's no separate ERC20-style approval tx to build.
         return {"success": True, "msg": "NEAR NEP-141 tokens do not require a separate approval"}
+    elif ct == CHAIN_TYPE_SUI:
+        # SUI's coin object model passes ownership directly in the same tx
+        # that constructs the transfer — no separate approval step.
+        return {"success": True, "msg": "SUI tokens do not require approval"}
+    elif ct == CHAIN_TYPE_TRON:
+        # TRC20 has the same `approve(address,uint256)` shape as ERC20, but
+        # 1Click's bridge takes funds via a direct transfer to depositAddress,
+        # so the user does not need to pre-approve the bridge. The deposit
+        # tx is a single transferFromOwner call signed by the user.
+        return {"success": True, "msg": "TRON deposit-to-address transfers do not require approval"}
+    elif ct == CHAIN_TYPE_UTXO:
+        return {"success": True, "msg": "UTXO chains do not have a token-approval concept"}
     else:
         return build_approve_tx(chain_id, router, token_address, approve_amount, spender)
 
@@ -1804,6 +1898,59 @@ def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
                 for k, v in APTOS_BLUECHIP_TOKENS.items()
             ],
             "needsApproval": False,
+        }
+    elif chain_type == CHAIN_TYPE_NEAR or chain_id in NEAR_CHAIN_IDS:
+        # NEAR is only supported through cross-chain (1Click). Surface the
+        # bridge router under the "crossChainRouters" key so the frontend's
+        # supported-routers UI can show "cross-chain only".
+        return {
+            "chainType": CHAIN_TYPE_NEAR,
+            "chainId": "near",
+            "routers": [],
+            "crossChainRouters": [
+                {"name": "nearintents", "supported": True},
+            ],
+            "bluechipTokens": [],
+            "needsApproval": False,
+            "sameChainSupported": False,
+        }
+    elif chain_type == CHAIN_TYPE_SUI or chain_id in SUI_CHAIN_IDS:
+        return {
+            "chainType": CHAIN_TYPE_SUI,
+            "chainId": "sui",
+            "routers": [],
+            "crossChainRouters": [
+                {"name": "nearintents", "supported": True},
+            ],
+            "bluechipTokens": [],
+            "needsApproval": False,
+            "sameChainSupported": False,
+        }
+    elif chain_type == CHAIN_TYPE_TRON or chain_id in TRON_CHAIN_IDS:
+        return {
+            "chainType": CHAIN_TYPE_TRON,
+            "chainId": "tron",
+            "routers": [],
+            "crossChainRouters": [
+                {"name": "nearintents", "supported": True},
+            ],
+            "bluechipTokens": [],
+            "needsApproval": False,
+            "sameChainSupported": False,
+        }
+    elif chain_type == CHAIN_TYPE_UTXO or (
+        chain_id is not None and str(chain_id).lower() in UTXO_CHAIN_IDS
+    ):
+        return {
+            "chainType": CHAIN_TYPE_UTXO,
+            "chainId": str(chain_id) if chain_id is not None else "",
+            "routers": [],
+            "crossChainRouters": [
+                {"name": "nearintents", "supported": True},
+            ],
+            "bluechipTokens": [],
+            "needsApproval": False,
+            "sameChainSupported": False,
         }
     else:
         return get_supported_routers(chain_id)

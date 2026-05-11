@@ -17,7 +17,9 @@ from swap_utils import (
     multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx,
     detect_chain_type, shrink_token, convert_slippage_to_decimal,
     SOLANA_CHAIN_IDS, APTOS_CHAIN_IDS, NEAR_CHAIN_IDS,
+    SUI_CHAIN_IDS, TRON_CHAIN_IDS, UTXO_CHAIN_IDS,
     CHAIN_TYPE_EVM, CHAIN_TYPE_SOLANA, CHAIN_TYPE_APTOS, CHAIN_TYPE_NEAR,
+    CHAIN_TYPE_SUI, CHAIN_TYPE_TRON, CHAIN_TYPE_UTXO,
     BLUECHIP_TOKENS, SOLANA_BLUECHIP_TOKENS,
     is_native_token, normalize_evm_address,
     okx_quote_exact_out, build_okx_exact_out_swap_tx,
@@ -90,6 +92,8 @@ from nearintents_utils import (
 from cross_chain_tx_builder import (
     build_evm_deposit_tx, build_aptos_deposit_tx, build_solana_deposit_tx,
     build_near_deposit_tx, NEAR_NATIVE_ALIASES,
+    build_sui_deposit_tx, build_tron_deposit_tx, build_utxo_deposit_tx,
+    SUI_NATIVE_TYPE,
 )
 
 
@@ -111,6 +115,45 @@ _NEAR_BLUECHIP_TOKENS = {
 }
 _NEAR_BLUECHIP_LOOKUP = {
     v["address"].lower(): v for v in _NEAR_BLUECHIP_TOKENS.values()
+}
+
+
+# SUI bluechip tokens. Same idea as `_NEAR_BLUECHIP_TOKENS` — let
+# `_resolve_token_info` short-circuit for common assets when the multichain
+# token-price Redis cache is cold for the `sui` chain key. Addresses are SUI
+# Move type tags taken from 1Click's `/v0/tokens` for `blockchain=sui`. The
+# native SUI entry uses the canonical `0x2::sui::SUI` so the frontend can use
+# the same address across same-chain (future Cetus integration) and
+# cross-chain (1Click) flows; native detection in
+# `nearintents_utils.is_chain_native_token` handles this case explicitly.
+_SUI_BLUECHIP_TOKENS = {
+    "SUI":  {"address": "0x2::sui::SUI", "symbol": "SUI", "decimals": 9},
+    "USDC": {
+        "address": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        "symbol": "USDC",
+        "decimals": 6,
+    },
+}
+_SUI_BLUECHIP_LOOKUP = {
+    v["address"].lower(): v for v in _SUI_BLUECHIP_TOKENS.values()
+}
+
+
+# TRON bluechip tokens. TRC20 addresses are base58check (case-sensitive); we
+# store the original form here and normalize to lowercase when building the
+# lookup map (mirrors NEAR / SUI). 1Click only lists TRX and USDT on TRON
+# today; we include both so cross-chain TRX/USDT -> EVM flows resolve
+# without depending on Redis.
+_TRON_BLUECHIP_TOKENS = {
+    "TRX":  {"address": "", "symbol": "TRX", "decimals": 6},
+    "USDT": {
+        "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "symbol": "USDT",
+        "decimals": 6,
+    },
+}
+_TRON_BLUECHIP_LOOKUP = {
+    v["address"].lower(): v for v in _TRON_BLUECHIP_TOKENS.values() if v.get("address")
 }
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -251,6 +294,35 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
                 "symbol": bluechip["symbol"],
                 "decimals": int(bluechip["decimals"]),
             }
+
+    # SUI bluechip short-circuit. SUI Move type paths are quite long and
+    # rarely make it into the generic multichain token-price feed, so we
+    # always check the static table first when fromChain/toChain is SUI.
+    if chain in SUI_CHAIN_IDS or str(chain).lower() in {str(c).lower() for c in SUI_CHAIN_IDS}:
+        bluechip = _SUI_BLUECHIP_LOOKUP.get(addr_lower)
+        if bluechip:
+            return {
+                "address": addr_raw,
+                "symbol": bluechip["symbol"],
+                "decimals": int(bluechip["decimals"]),
+            }
+
+    # TRON bluechip short-circuit. TRC20 addresses are base58 (case-sensitive
+    # on the wire) but we lowercase both sides of the lookup to be tolerant
+    # of frontend casing inconsistencies.
+    if chain in TRON_CHAIN_IDS or str(chain).lower() in {str(c).lower() for c in TRON_CHAIN_IDS}:
+        bluechip = _TRON_BLUECHIP_LOOKUP.get(addr_lower)
+        if bluechip:
+            return {
+                "address": addr_raw,
+                "symbol": bluechip["symbol"],
+                "decimals": int(bluechip["decimals"]),
+            }
+
+    # UTXO chains only have a single native asset that's already handled by
+    # `is_chain_native_token` above. Anything else on a UTXO chain is not
+    # supported by 1Click, so let the Redis lookup below (which will miss)
+    # produce the standard "Token not found" error.
 
     for candidate in _candidate_chain_keys(chain):
         tokens = get_chain_tokens_with_prices(candidate)
@@ -736,8 +808,18 @@ def unified_quote(
 
     if not from_chain or not to_chain:
         return {"code": -1, "msg": "fromChain and toChain are required"}
-    if not token_in_address or not token_out_address:
-        return {"code": -1, "msg": "tokenIn and tokenOut addresses are required"}
+    # NOTE: we deliberately allow empty-string tokenIn / tokenOut here. For
+    # several chains (EVM native ETH, UTXO chains like BTC/ZEC where there's
+    # no contract address at all, SUI / TRON / NEAR where empty string is one
+    # of the accepted native markers), an empty string is the canonical way
+    # the frontend signals "native gas token". `_resolve_token_info` handles
+    # that case via `is_chain_native_token`; if the chain genuinely doesn't
+    # have a native asset listed by our metadata table the resolver will
+    # return None and the standard "Token not found" message fires below.
+    if token_in_address is None:
+        return {"code": -1, "msg": "tokenIn is required"}
+    if token_out_address is None:
+        return {"code": -1, "msg": "tokenOut is required"}
     if not amount_in:
         return {"code": -1, "msg": "amountIn is required"}
     if not sender:
@@ -749,9 +831,9 @@ def unified_quote(
     token_out_info = _resolve_token_info(to_chain, token_out_address)
 
     if not token_in_info:
-        return {"code": -1, "msg": f"Token {token_in_address} not found on chain {from_chain}. Check address and chain."}
+        return {"code": -1, "msg": f"Token {token_in_address!r} not found on chain {from_chain}. Check address and chain."}
     if not token_out_info:
-        return {"code": -1, "msg": f"Token {token_out_address} not found on chain {to_chain}. Check address and chain."}
+        return {"code": -1, "msg": f"Token {token_out_address!r} not found on chain {to_chain}. Check address and chain."}
 
     if not _is_cross_chain(from_chain, to_chain):
         return _same_chain_quote(from_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
@@ -946,8 +1028,13 @@ def unified_swap(
 
     if not from_chain or not to_chain:
         return {"code": -1, "msg": "fromChain and toChain are required"}
-    if not token_in_address or not token_out_address:
-        return {"code": -1, "msg": "tokenIn and tokenOut addresses are required"}
+    # See note in `unified_quote`: empty string is a valid native-token
+    # marker (UTXO chains have no contract address, EVM native is ""), so we
+    # only reject genuinely missing fields here.
+    if token_in_address is None:
+        return {"code": -1, "msg": "tokenIn is required"}
+    if token_out_address is None:
+        return {"code": -1, "msg": "tokenOut is required"}
     if not amount_in:
         return {"code": -1, "msg": "amountIn is required"}
     if not sender:
@@ -959,9 +1046,9 @@ def unified_swap(
     token_out_info = _resolve_token_info(to_chain, token_out_address)
 
     if not token_in_info:
-        return {"code": -1, "msg": f"Token {token_in_address} not found on chain {from_chain}"}
+        return {"code": -1, "msg": f"Token {token_in_address!r} not found on chain {from_chain}"}
     if not token_out_info:
-        return {"code": -1, "msg": f"Token {token_out_address} not found on chain {to_chain}"}
+        return {"code": -1, "msg": f"Token {token_out_address!r} not found on chain {to_chain}"}
 
     if not _is_cross_chain(from_chain, to_chain):
         return _same_chain_swap(
@@ -1607,6 +1694,37 @@ def _cross_chain_swap(
                 deposit_memo=deposit_memo,
                 sender=sender,
             )
+        elif source_chain_type == CHAIN_TYPE_SUI:
+            response_data["tx"] = build_sui_deposit_tx(
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+                decimals=int(token_in.get("decimals", 9)),
+                sender=sender,
+                deposit_memo=deposit_memo,
+            )
+            response_data["approve"] = None
+        elif source_chain_type == CHAIN_TYPE_TRON:
+            response_data["tx"] = build_tron_deposit_tx(
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+                decimals=int(token_in.get("decimals", 6)),
+                sender=sender,
+                deposit_memo=deposit_memo,
+            )
+            response_data["approve"] = None
+        elif source_chain_type == CHAIN_TYPE_UTXO:
+            response_data["tx"] = build_utxo_deposit_tx(
+                chain_id=from_chain,
+                token_address=token_in.get("address", ""),
+                deposit_address=deposit_address,
+                amount_smallest=amount_in,
+                decimals=int(token_in.get("decimals", 8)),
+                symbol=token_in.get("symbol", ""),
+                deposit_memo=deposit_memo,
+            )
+            response_data["approve"] = None
         else:
             response_data["tx"] = {
                 "depositAddress": deposit_address,

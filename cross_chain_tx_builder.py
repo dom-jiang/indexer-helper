@@ -65,6 +65,27 @@ SOLANA_NATIVE_MINTS = {"so11111111111111111111111111111111111111112", ""}
 # string and a couple of common symbolic aliases so the frontend can pass
 # whatever the user picks and the backend always builds the right tx.
 NEAR_NATIVE_ALIASES = {"wrap.near", "near", "wnear", ""}
+# SUI native coin type path. SUI's wallet adapters (Sui Wallet / Suiet / Slush)
+# all expect this exact Move type tag when splitting from the gas coin. We
+# accept the alias "sui" and empty string as the user may pass either; the
+# generated tx descriptor always emits the canonical type path back.
+SUI_NATIVE_TYPE = "0x2::sui::SUI"
+SUI_NATIVE_ALIASES = {"0x2::sui::sui", "sui", ""}
+# TRON native TRX has no contract address. Empty string and the "trx"/"tron"
+# aliases all mean "native TRX" for deposit-tx building.
+TRON_NATIVE_ALIASES = {"trx", "tron", ""}
+# Bitcoin-family UTXO chains where 1Click currently uses `depositMode=SIMPLE`
+# (no memo, single P2WPKH/P2PKH transfer). Verified against the production
+# 1Click /v0/quote endpoint on 2026-05-11 for BTC and ZEC. The other chains
+# in this set are listed by 1Click's `/v0/tokens` and ride the same code path
+# on our side; they'll Just Work once 1Click enables them as ORIGIN_CHAIN.
+UTXO_CHAIN_IDS = {
+    "btc", "bitcoin",
+    "zec", "zcash",
+    "ltc", "litecoin",
+    "doge", "dogecoin",
+    "bch", "dash",
+}
 
 # Gas budgets for NEAR FunctionCall actions. `ft_transfer_call` may trigger a
 # long cross-contract callback chain on 1Click's side (their bridge deposit
@@ -638,3 +659,210 @@ def build_solana_deposit_tx(
         decimals=decimals,
         memo=deposit_memo or "",
     )
+
+
+# ============================================================
+# SUI cross-chain deposit
+# ============================================================
+#
+# SUI uses an object-centric model: every coin balance is a `Coin<T>` object
+# owned by an address. The wallet adapter SDKs (`@mysten/sui.js`,
+# `@mysten/wallet-standard`) accept a Programmable Transaction Block (PTB)
+# description and handle gas coin selection / signing internally. Rather than
+# build a binary `TransactionBlock` on the backend (which would require pinning
+# to a specific SDK version and re-implementing object selection ourselves),
+# we emit a declarative descriptor that the frontend converts into a PTB at
+# signing time. This mirrors the Aptos / NEAR strategy in this module.
+#
+# The two shapes the frontend handles are:
+#   - native SUI:  `splitCoins(gas, [amount])` -> `transferObjects([coin], to)`
+#   - non-native Coin<T>:  the frontend looks up its own `Coin<T>` objects
+#       (or merges from balance), splits the requested amount, and transfers
+#       to `depositAddress`. The descriptor only needs the type tag.
+
+def build_sui_deposit_tx(
+    token_address: str,
+    deposit_address: str,
+    amount_smallest: str,
+    decimals: int = 9,
+    sender: str = "",
+    deposit_memo: str = "",
+) -> Dict:
+    """Build a declarative SUI deposit descriptor.
+
+    Returns a payload of the form::
+
+        {
+          "kind":           "sui_transfer",
+          "chainId":        "sui",
+          "standard":       "native" | "coin",
+          "coinType":       "0x2::sui::SUI" | "<package>::<module>::<TYPE>",
+          "tokenAddress":   "<coin type>",
+          "depositAddress": "0x...",
+          "amount":         "<smallest unit>",
+          "decimals":       9,
+          "sender":         "0x...",
+          "depositMemo":    "" | "<1Click memo>"
+        }
+
+    SUI does not currently use `depositMemo` for any 1Click route (verified
+    live 2026-05-11 — production quotes return `depositMode=SIMPLE` and no
+    memo field), so the field will be empty in practice. We still pass it
+    through so that the response shape stays uniform with the other
+    chain-specific builders and we'll be ready if 1Click ever flips a chain
+    to memo mode.
+    """
+    addr_raw = (token_address or "").strip()
+    addr_lower = addr_raw.lower()
+    amount_str = str(amount_smallest)
+
+    is_native = (not addr_raw) or (addr_lower in SUI_NATIVE_ALIASES)
+    coin_type = SUI_NATIVE_TYPE if is_native else addr_raw
+
+    return {
+        "kind": "sui_transfer",
+        "chainId": "sui",
+        "standard": "native" if is_native else "coin",
+        "coinType": coin_type,
+        "tokenAddress": coin_type,
+        "depositAddress": deposit_address,
+        "amount": amount_str,
+        "decimals": int(decimals) if decimals else 9,
+        "sender": sender,
+        "depositMemo": deposit_memo or "",
+    }
+
+
+# ============================================================
+# TRON cross-chain deposit
+# ============================================================
+#
+# TRON has two transfer shapes:
+#   - native TRX: `tronWeb.transactionBuilder.sendTrx(to, amount, sender)`
+#   - TRC20:      `contract.transfer(to, amount).send({from: sender})`
+# Both produce a signed transaction that the frontend submits via TronWeb.
+# Building the unsigned tx on the backend would require speaking TronWeb's
+# protobuf format and pulling a recent block header from a full node, which
+# we currently don't have a stable RPC for. Emitting a declarative descriptor
+# instead keeps the same wallet-adapter pattern as Aptos / SUI / NEAR.
+
+def build_tron_deposit_tx(
+    token_address: str,
+    deposit_address: str,
+    amount_smallest: str,
+    decimals: int = 6,
+    sender: str = "",
+    deposit_memo: str = "",
+) -> Dict:
+    """Build a declarative TRON deposit descriptor.
+
+    Returns a payload of the form::
+
+        {
+          "kind":           "tron_transfer",
+          "chainId":        "tron",
+          "standard":       "trx" | "trc20",
+          "tokenAddress":   "" | "T...",
+          "depositAddress": "T...",
+          "amount":         "<smallest unit, sun for TRX>",
+          "decimals":       6,
+          "sender":         "T...",
+          "depositMemo":    ""
+        }
+
+    Native TRX uses 6 decimals (1 TRX = 1_000_000 sun). TRC20 tokens carry
+    their own decimals in the descriptor for frontend display formatting;
+    on-chain the integer amount is what's used.
+    """
+    addr_raw = (token_address or "").strip()
+    addr_lower = addr_raw.lower()
+    amount_str = str(amount_smallest)
+
+    is_native = (not addr_raw) or (addr_lower in TRON_NATIVE_ALIASES)
+
+    return {
+        "kind": "tron_transfer",
+        "chainId": "tron",
+        "standard": "trx" if is_native else "trc20",
+        "tokenAddress": "" if is_native else addr_raw,
+        "depositAddress": deposit_address,
+        "amount": amount_str,
+        "decimals": int(decimals) if decimals else 6,
+        "sender": sender,
+        "depositMemo": deposit_memo or "",
+    }
+
+
+# ============================================================
+# UTXO cross-chain deposit (BTC / ZEC / LTC / DOGE / BCH / DASH)
+# ============================================================
+#
+# 1Click's UTXO-chain deposits all use `depositMode = SIMPLE`: the user just
+# sends `amount` of the native coin to `depositAddress`. There is no contract
+# call, no token approval, and (verified live 2026-05-11) no `depositMemo`.
+# We still propagate `depositMemo` through to the descriptor so we won't have
+# to plumb it again if 1Click ever flips a chain to `MEMO` mode (e.g. an
+# OP_RETURN tag on BTC). When `memo` is empty the frontend should just emit a
+# plain send; otherwise it should attach the memo per chain convention.
+#
+# Because the descriptor only carries the destination address and amount,
+# the frontend's wallet integration (UniSat, Xverse, Phantom-BTC, the user's
+# own ZEC desktop wallet, ...) is responsible for UTXO selection, fee
+# estimation, and signing. Backend-side PSBT assembly is intentionally NOT
+# attempted here — it would require a full UTXO indexer per chain, and is
+# orthogonal to the cross-chain orchestration this module is responsible for.
+
+def build_utxo_deposit_tx(
+    chain_id: str,
+    token_address: str,
+    deposit_address: str,
+    amount_smallest: str,
+    decimals: int = 8,
+    symbol: str = "",
+    deposit_memo: str = "",
+) -> Dict:
+    """Build a declarative UTXO-chain deposit descriptor.
+
+    Returns a payload of the form::
+
+        {
+          "kind":           "utxo_transfer",
+          "chain":          "btc" | "zec" | "ltc" | ...,
+          "chainId":        "<original chain id>",
+          "tokenAddress":   "",
+          "depositAddress": "bc1q..." | "t1..." | ...,
+          "amount":         "<smallest unit, sat / zat / litoshi / ...>",
+          "decimals":       8,
+          "symbol":         "BTC" | "ZEC" | ...,
+          "depositMemo":    "" | "<1Click memo>"
+        }
+
+    `chain` is normalized to the short form (`btc` for "btc"/"bitcoin",
+    `zec` for "zec"/"zcash", etc.) so the frontend can drive a single
+    switch statement over wallet adapters.
+    """
+    chain_str = (str(chain_id) if chain_id is not None else "").lower()
+    if chain_str in ("bitcoin", "btc"):
+        chain_short = "btc"
+    elif chain_str in ("zcash", "zec"):
+        chain_short = "zec"
+    elif chain_str in ("litecoin", "ltc"):
+        chain_short = "ltc"
+    elif chain_str in ("dogecoin", "doge"):
+        chain_short = "doge"
+    elif chain_str in ("bch", "dash"):
+        chain_short = chain_str
+    else:
+        chain_short = chain_str
+
+    return {
+        "kind": "utxo_transfer",
+        "chain": chain_short,
+        "chainId": str(chain_id) if chain_id is not None else "",
+        "tokenAddress": "",
+        "depositAddress": deposit_address,
+        "amount": str(amount_smallest),
+        "decimals": int(decimals) if decimals else 8,
+        "symbol": symbol or chain_short.upper(),
+        "depositMemo": deposit_memo or "",
+    }
