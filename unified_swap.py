@@ -95,6 +95,8 @@ from cross_chain_tx_builder import (
     build_sui_deposit_tx, build_tron_deposit_tx, build_utxo_deposit_tx,
     SUI_NATIVE_TYPE,
 )
+from db_provider import add_multichain_lending_requests
+from config import Cfg
 
 
 # Bluechip / common tokens on NEAR. These mirror the Solana / Aptos static
@@ -650,6 +652,7 @@ def _preswap_cross_chain_quote(
     slippage: float,
     sender: str,
     recipient: str,
+    oneclick_extensions: Optional[Dict] = None,
 ) -> Dict:
     """Try the two-stage pre-swap + NearIntents route. Returns a unified quote dict
     ({"success": True/False, ...}) shaped like a cross-chain quote, with added
@@ -709,6 +712,7 @@ def _preswap_cross_chain_quote(
                 sender=sender,
                 recipient=recipient,
                 slippage=slippage,
+                oneclick_extensions=oneclick_extensions,
             )
             if not near_res.get("success"):
                 errors.append(f"{inter['symbol']}: 1Click quote failed: {near_res.get('error')}")
@@ -786,6 +790,111 @@ def _preswap_cross_chain_quote(
     }
 
 
+def _mca_flow(mca_block: Optional[Dict]) -> str:
+    if not mca_block or not isinstance(mca_block, dict):
+        return ""
+    return str(mca_block.get("flow") or mca_block.get("mcaFlow") or "").strip().lower()
+
+
+def _mca_deposit_extensions(mca_block: Optional[Dict]) -> Optional[Dict]:
+    """Map optional `mca` block (flow=deposit) into 1Click /quote extra fields."""
+    if _mca_flow(mca_block) != "deposit" or not mca_block:
+        return None
+    ext: Dict = {}
+    crm = mca_block.get("customRecipientMsg") or mca_block.get("custom_recipient_msg")
+    if crm:
+        ext["customRecipientMsg"] = crm
+    fees = mca_block.get("appFees") or mca_block.get("app_fees")
+    if isinstance(fees, list) and fees:
+        ext["appFees"] = fees
+    if mca_block.get("referral"):
+        ext["referral"] = str(mca_block["referral"])
+    rt = mca_block.get("refundTo") or mca_block.get("refund_to")
+    if rt:
+        ext["refundTo"] = rt
+    rf_type = mca_block.get("refundType") or mca_block.get("refund_type")
+    if rf_type:
+        ext["refundType"] = rf_type
+    qwm = mca_block.get("quoteWaitingTimeMs")
+    if qwm is None:
+        qwm = mca_block.get("quote_waiting_time_ms")
+    if qwm is not None:
+        try:
+            ext["quoteWaitingTimeMs"] = int(qwm)
+        except (TypeError, ValueError):
+            pass
+    ir = mca_block.get("intentsRecipient") or mca_block.get("recipientOverride") or mca_block.get("recipient_override")
+    if ir:
+        ext["recipient"] = ir
+    return ext if ext else None
+
+
+def _mca_context_for_quote(
+    mca_block: Optional[Dict],
+    *,
+    deposit_extras_scheduled: bool,
+    is_cross_chain: bool,
+) -> Optional[Dict]:
+    flow = _mca_flow(mca_block)
+    if not flow:
+        return None
+    ctx: Dict = {"flow": flow}
+    if mca_block:
+        mca_acc = (
+            mca_block.get("mcaAccountId")
+            or mca_block.get("mca_id")
+            or mca_block.get("mca")
+        )
+        if mca_acc:
+            ctx["mcaAccountId"] = str(mca_acc)
+    if flow == "deposit":
+        ctx["depositOneClickConfigured"] = bool(deposit_extras_scheduled) and bool(is_cross_chain)
+        ctx["note"] = (
+            "When NearIntents 1Click is selected (two-stage Stage-B counts), extras from "
+            "`mca` are merged into 1Click /v0/quote. OmniBridge-only quotes ignore them. "
+            "Same-chain quotes never hit 1Click — deposit extras are not applied."
+        )
+    elif flow == "withdraw":
+        if ctx.get("mcaAccountId"):
+            ctx["intentsRefundToSuggested"] = ctx["mcaAccountId"]
+        ctx["withdrawExecutionPlan"] = [
+            {"step": 1, "action": "sign_message", "description": "User signs canonical business JSON via bound wallet"},
+            {"step": 2, "action": "mcaRelayer",
+             "description": "POST /api/swap/swap with mcaRelayer; backend forwards to multichain_lending_requests"},
+            {"step": 3, "action": "bridge_followup",
+             "description": "Complete bridge leg using standard swap/deposit UX"},
+        ]
+        ctx["note"] = "Backend does not assemble `business`; build it client-side today."
+    return ctx
+
+
+def _unified_mca_relayer_submit(payload: Dict) -> Dict:
+    """Forward a signed MCA relayer package to multichain_lending_requests (DB queue)."""
+    try:
+        mca_id = payload.get("mcaAccountId") or payload.get("mca_id")
+        wallet = payload.get("wallet")
+        requests_list = payload.get("request")
+        page_display_data = str(payload.get("page_display_data") or payload.get("pageDisplayData") or "")
+        if not mca_id or not wallet:
+            return {"code": -1, "msg": "mcaRelayer requires mcaAccountId and wallet", "data": None}
+        if not isinstance(requests_list, list) or not requests_list:
+            return {"code": -1, "msg": "mcaRelayer.request must be a non-empty array", "data": None}
+        batch_id = add_multichain_lending_requests(
+            Cfg.NETWORK_ID, mca_id, wallet, requests_list, page_display_data
+        )
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "batchId": str(batch_id),
+                "submissionType": "mca_relayer",
+            },
+        }
+    except Exception as e:
+        logger.exception(f"_unified_mca_relayer_submit error: {e}")
+        return {"code": -1, "msg": str(e), "data": None}
+
+
 def unified_quote(
     from_chain: str,
     to_chain: str,
@@ -795,6 +904,7 @@ def unified_quote(
     slippage: float = 0.5,
     sender: str = "",
     recipient: str = "",
+    mca: Optional[Dict] = None,
 ) -> Dict:
     """
     Unified quote entry point.
@@ -835,10 +945,34 @@ def unified_quote(
     if not token_out_info:
         return {"code": -1, "msg": f"Token {token_out_address!r} not found on chain {to_chain}. Check address and chain."}
 
+    oneclick_ext = _mca_deposit_extensions(mca)
+
     if not _is_cross_chain(from_chain, to_chain):
-        return _same_chain_quote(from_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
+        resp = _same_chain_quote(from_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
     else:
-        return _cross_chain_quote(from_chain, to_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
+        resp = _cross_chain_quote(
+            from_chain,
+            to_chain,
+            token_in_info,
+            token_out_info,
+            amount_in,
+            slippage,
+            sender,
+            recipient,
+            mca_block=mca,
+        )
+
+    mc_ctx = _mca_context_for_quote(
+        mca if isinstance(mca, dict) else None,
+        deposit_extras_scheduled=bool(oneclick_ext),
+        is_cross_chain=_is_cross_chain(from_chain, to_chain),
+    )
+    if mc_ctx is not None and isinstance(resp, dict) and resp.get("code") == 0:
+        dat = resp.get("data")
+        if isinstance(dat, dict):
+            dat["mcaContext"] = mc_ctx
+
+    return resp
 
 
 def _same_chain_quote(
@@ -899,8 +1033,10 @@ def _cross_chain_quote(
     slippage: float,
     sender: str,
     recipient: str,
+    mca_block: Optional[Dict] = None,
 ) -> Dict:
     """Run OmniBridge + NearIntents quotes in parallel, return best."""
+    oneclick_extensions = _mca_deposit_extensions(mca_block)
     omni_result = None
     near_result = None
     errors = []
@@ -925,17 +1061,21 @@ def _cross_chain_quote(
     oneclick_from = CHAIN_TO_1CLICK.get(from_chain)
     oneclick_to = CHAIN_TO_1CLICK.get(to_chain)
     if oneclick_from or oneclick_to:
-        f = _executor.submit(
-            nearintents_quote,
-            from_chain=from_chain,
-            to_chain=to_chain,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=amount_in,
-            sender=sender,
-            recipient=recipient,
-            slippage=slippage,
-        )
+
+        def _run_near_quote():
+            return nearintents_quote(
+                from_chain=from_chain,
+                to_chain=to_chain,
+                token_in=token_in,
+                token_out=token_out,
+                amount_in=amount_in,
+                sender=sender,
+                recipient=recipient,
+                slippage=slippage,
+                oneclick_extensions=oneclick_extensions,
+            )
+
+        f = _executor.submit(_run_near_quote)
         futures[f] = "nearintents"
 
     if not futures:
@@ -970,6 +1110,7 @@ def _cross_chain_quote(
             slippage=slippage,
             sender=sender,
             recipient=recipient,
+            oneclick_extensions=oneclick_extensions,
         )
         if preswap_res.get("success"):
             best_quote = preswap_res.get("quote")
@@ -1017,12 +1158,18 @@ def unified_swap(
     quote_min_amount_out: str = "",
     pre_swap: Optional[Dict] = None,
     bridge: Optional[Dict] = None,
+    mca_relayer: Optional[Dict] = None,
+    mca_oneclick: Optional[Dict] = None,
 ) -> Dict:
     """
     Unified swap (build tx) entry point.
     - Same chain: build tx + approve info
     - Cross chain: build via specified router (omnibridge / nearintents)
+    - Optional `mca_relayer`: forward signed relayer payloads (no ordinary swap tx)
     """
+    if mca_relayer is not None and isinstance(mca_relayer, dict) and mca_relayer:
+        return _unified_mca_relayer_submit(mca_relayer)
+
     from_chain = _normalize_chain_id(from_chain)
     to_chain = _normalize_chain_id(to_chain)
 
@@ -1079,6 +1226,7 @@ def unified_swap(
             quote_min_amount_out=quote_min_amount_out,
             pre_swap=pre_swap,
             bridge=bridge,
+            oneclick_extensions=_mca_deposit_extensions(mca_oneclick),
         )
 
 
@@ -1350,6 +1498,7 @@ def _preswap_cross_chain_swap(
     bridge: Dict,
     quote_expected_out: str = "",
     quote_min_amount_out: str = "",
+    oneclick_extensions: Optional[Dict] = None,
 ) -> Dict:
     """Build the two-stage cross-chain swap.
 
@@ -1399,6 +1548,7 @@ def _preswap_cross_chain_swap(
             sender=sender,
             recipient=recipient,
             slippage=slippage,
+            oneclick_extensions=oneclick_extensions,
         )
         if not near_res.get("success"):
             return {"code": -1, "msg": f"Bridge order creation failed: {near_res.get('error')}"}
@@ -1566,6 +1716,7 @@ def _cross_chain_swap(
     quote_min_amount_out: str = "",
     pre_swap: Optional[Dict] = None,
     bridge: Optional[Dict] = None,
+    oneclick_extensions: Optional[Dict] = None,
 ) -> Dict:
     """
     Build cross-chain swap via specified router.
@@ -1598,6 +1749,7 @@ def _cross_chain_swap(
             bridge=bridge or {},
             quote_expected_out=quote_expected_out,
             quote_min_amount_out=quote_min_amount_out,
+            oneclick_extensions=oneclick_extensions,
         )
 
     try:
@@ -1627,6 +1779,7 @@ def _cross_chain_swap(
                 sender=sender,
                 recipient=recipient,
                 slippage=slippage,
+                oneclick_extensions=oneclick_extensions,
             )
         else:
             return {"code": -1, "msg": f"Unknown cross-chain router: {router}. Supported: omnibridge, nearintents, {_PRESWAP_ROUTER_NAME}"}

@@ -16,15 +16,16 @@ from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id,
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, \
     get_token_price_ratio_report, get_history_token_price_report, get_market_token_price, get_burrow_total_fee, \
     get_burrow_total_revenue, get_nbtc_total_supply, list_burrow_asset_token_metadata, get_whitelist_tokens, \
-    get_rnear_apy, add_rnear_apy, get_dcl_point_data, add_dcl_point_data, set_dcl_point_ttl, add_dcl_bin_point_data, \
+    get_rnear_apy, add_rnear_apy, add_dcl_point_data, set_dcl_point_ttl, add_dcl_bin_point_data, \
     get_dcl_bin_point_data, get_multichain_lending_tokens_data, get_multichain_lending_token_icon, get_lst_total_fee_24h, \
     get_lst_total_revenue_24h, get_cross_chain_total_fee_24h, get_cross_chain_total_revenue_24h, get_cross_chain_total_volume_24h, get_chain_tokens_with_prices
-from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, is_base64, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
+from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
 from config import Cfg
-from db_provider import get_db_connect, get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, query_burrow_liquidate_log, update_burrow_liquidate_log, get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
+from db_provider import get_db_connect, get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, \
+    get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
 from db_provider import query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
-    query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
+    query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
     query_dcl_user_tvl, query_dcl_user_change_log, query_burrow_log, get_history_token_price_by_token, add_orderly_trading_data, \
     add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info, get_pools_volume_24h, \
     query_meme_burrow_log, get_whitelisted_tokens_to_db, query_conversion_token_record, get_token_day_data_list, \
@@ -49,24 +50,20 @@ from s3_client import AwsS3Config, download_and_upload_image_to_s3
 from zcash_utils import get_deposit_address, verify_add_zcash, ZcashRPC, call_evm_mpc_contract
 from bitget_utils import proxy_bitget_request, proxy_okx_request
 from proxy_api_utils import proxy_api_request
-from swap_utils import aggregate_quote, build_swap_tx, build_approve_tx, get_supported_routers, \
-    multi_chain_quote, multi_chain_build_tx, multi_chain_approve_tx, multi_chain_supported_routers, detect_chain_type
 from unified_swap import unified_quote, unified_swap
 from boss.routes import init_boss_routes
 from boss.auth import validate_swap_jwt
 from boss.rate_limiter import check_rate_limit
 from trxx_utils import (
     trxx_create_order, trxx_query_order, trxx_estimate_price, trxx_get_index_data,
-    trxx_reclaim_order, trxx_transfer_activate, verify_trxx_webhook_signature,
+    trxx_reclaim_order, verify_trxx_webhook_signature,
     verify_frontend_signature, VALID_PERIODS, PERIOD_MAP, start_trxx_scheduler,
     _notify_third_party,
 )
 from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_by_serial, \
-    update_trxx_order_status as db_update_trxx_order_status, get_pending_trxx_orders, \
-    trxx_webhook_event_exists, create_trxx_webhook_event, \
+    update_trxx_order_status as db_update_trxx_order_status, trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
-    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions, \
-    get_swap_transaction_by_hash
+    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
 service_version = "20260318.01"
@@ -79,7 +76,12 @@ init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
 
 
 def _get_swap_endpoint_group(path: str) -> str | None:
-    if "/api/swap/quote" in path or "/api/swap/order-status" in path or "/api/swap/history" in path:
+    if (
+        "/api/swap/quote" in path
+        or "/api/swap/order-status" in path
+        or "/api/swap/history" in path
+        or "/api/swap/mca-withdraw-jobs" in path
+    ):
         return "quote"
     if "/api/swap/swap" in path or "/api/swap/report" in path:
         return "build"
@@ -2589,6 +2591,7 @@ def api_swap_quote():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
+        mca = body.get("mca") if isinstance(body.get("mca"), dict) else None
         result = unified_quote(
             from_chain=body.get("fromChain", body.get("chainId", "")),
             to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
@@ -2598,6 +2601,7 @@ def api_swap_quote():
             slippage=float(body.get("slippage", 0.5)),
             sender=body.get("sender", ""),
             recipient=body.get("recipient", ""),
+            mca=mca,
         )
 
         return jsonify(result)
@@ -2636,6 +2640,18 @@ def api_swap_build():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
+        orch = body.get("mcaWithdrawOrchestration")
+        if isinstance(orch, dict) and orch:
+            from job.mca_withdraw_job import enqueue_mca_withdraw_orchestration_job
+
+            ret = enqueue_mca_withdraw_orchestration_job(Cfg.NETWORK_ID, orch)
+            http = 202 if ret.get("code") == 0 else 400
+            return jsonify(ret), http
+
+        mca_rel = body.get("mcaRelayer") if isinstance(body.get("mcaRelayer"), dict) else None
+        mca_oc = body.get("mca") if isinstance(body.get("mca"), dict) else None
+        if mca_oc is None and isinstance(body.get("mcaOneclick"), dict):
+            mca_oc = body.get("mcaOneclick")
         result = unified_swap(
             from_chain=body.get("fromChain", body.get("chainId", "")),
             to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
@@ -2651,12 +2667,35 @@ def api_swap_build():
             quote_min_amount_out=str(body.get("minAmountOut", body.get("quoteMinAmountOut", ""))),
             pre_swap=body.get("preSwap") if isinstance(body.get("preSwap"), dict) else None,
             bridge=body.get("bridge") if isinstance(body.get("bridge"), dict) else None,
+            mca_relayer=mca_rel,
+            mca_oneclick=mca_oc,
         )
 
         return jsonify(result)
     except Exception as e:
         logger.error(f"api_swap_build error: {e}")
         return jsonify({"code": -1, "msg": str(e), "data": None})
+
+
+@app.route("/api/swap/mca-withdraw-jobs", methods=["GET"])
+def api_swap_mca_withdraw_jobs():
+    """
+    Poll async MCA-withdraw orchestration job status (enqueue via POST /api/swap/swap
+    body field mcaWithdrawOrchestration). Query ?id=<jobId>.
+    """
+    try:
+        job_raw = request.args.get("id", "").strip()
+        if not job_raw:
+            return jsonify({"code": -1, "msg": "id is required"})
+        job_id_int = int(job_raw)
+        from job.mca_withdraw_job import public_job
+
+        return jsonify(public_job(Cfg.NETWORK_ID, job_id_int))
+    except ValueError:
+        return jsonify({"code": -1, "msg": "id must be an integer"})
+    except Exception as e:
+        logger.error(f"api_swap_mca_withdraw_jobs error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
 
 
 @app.route('/api/swap/order-status', methods=['GET'])

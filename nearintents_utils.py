@@ -13,7 +13,7 @@ import json
 import time
 import requests
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from loguru import logger
 from config import Cfg
 from redis_provider import get_1click_tokens_cache, set_1click_tokens_cache
@@ -75,6 +75,34 @@ _CHAIN_WRAPPED_NATIVE_MARKERS = {
 }
 
 _session = requests.Session()
+
+# Optional keys merged into 1Click POST /v0/quote bodies (after defaults).
+_ONECLICK_QUOTE_OPTIONAL_KEYS = frozenset({
+    "customRecipientMsg",
+    "appFees",
+    "referral",
+    "quoteWaitingTimeMs",
+    "refundTo",
+    "refundType",
+    "recipient",
+    "recipientType",
+    "depositType",
+    "swapType",
+    "deadline",
+})
+
+
+def merge_oneclick_quote_extensions(
+    body: Dict[str, Any],
+    oneclick_extensions: Optional[Dict[str, Any]],
+) -> None:
+    """Merge whitelisted NearIntents 1Click fields into an outgoing quote body (mutates `body`)."""
+    if not oneclick_extensions or not isinstance(oneclick_extensions, dict):
+        return
+    for key, val in oneclick_extensions.items():
+        if key in _ONECLICK_QUOTE_OPTIONAL_KEYS and val is not None:
+            body[key] = val
+
 
 CHAIN_TO_1CLICK = {
     # chain ids and common aliases => 1Click blockchain short name (from /v0/tokens)
@@ -362,6 +390,7 @@ def nearintents_quote(
     sender: str,
     recipient: str = "",
     slippage: float = 0.5,
+    oneclick_extensions: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Get cross-chain quote from NearIntents 1Click API (dry run).
@@ -395,6 +424,7 @@ def nearintents_quote(
         "refundType": "ORIGIN_CHAIN",
         "deadline": deadline,
     }
+    merge_oneclick_quote_extensions(body, oneclick_extensions)
 
     try:
         resp = _session.post(
@@ -445,6 +475,7 @@ def nearintents_build_tx(
     sender: str,
     recipient: str = "",
     slippage: float = 0.5,
+    oneclick_extensions: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Build cross-chain swap via NearIntents 1Click API (dry=false).
@@ -478,6 +509,7 @@ def nearintents_build_tx(
         "refundType": "ORIGIN_CHAIN",
         "deadline": deadline,
     }
+    merge_oneclick_quote_extensions(body, oneclick_extensions)
 
     try:
         resp = _session.post(
