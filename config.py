@@ -6,8 +6,21 @@ __author__ = 'Marco'
 try:
     from rpc_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
-    TESTNET_RPC_URL= ["https://rpc.testnet.near.org", ]
-    MAINNET_RPC_URL= ["https://rpc.mainnet.near.org", ]
+    TESTNET_RPC_URL = ["https://rpc.testnet.near.org", ]
+    MAINNET_RPC_URL = ["https://rpc.mainnet.near.org", ]
+
+try:
+    from db_info import (
+        MCA_BURROW_LOGIC_CONTRACT,
+        MCA_INTENTS_APP_FEES_RECIPIENT,
+        MCA_INTENTS_APP_FEES,
+        MCA_DEFAULT_REFERRAL,
+    )
+except ImportError:
+    MCA_BURROW_LOGIC_CONTRACT = None
+    MCA_INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
+    MCA_INTENTS_APP_FEES = 5
+    MCA_DEFAULT_REFERRAL = "rhea_lending"
 
 try:
     from db_info import REDIS_HOST, REDIS_PORT
@@ -181,6 +194,11 @@ class Cfg:
     # https://app.panora.exchange/developer — the `/swap` endpoint is gated
     # and returns 401 without a key. Override in `db_info.py` for production.
     PANORA_API_KEY = PANORA_API_KEY
+    # MCA deposit → NearIntents defaults (swap API server-side CRM fill).
+    MCA_BURROW_LOGIC_CONTRACT = MCA_BURROW_LOGIC_CONTRACT
+    MCA_INTENTS_APP_FEES_RECIPIENT = MCA_INTENTS_APP_FEES_RECIPIENT
+    MCA_INTENTS_APP_FEES = MCA_INTENTS_APP_FEES
+    MCA_DEFAULT_REFERRAL = MCA_DEFAULT_REFERRAL
     # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
     # cross-chain Solana deposit transactions on the backend. Set to a
     # paid/private RPC (Helius / QuickNode / Triton ...) in production; the
@@ -215,7 +233,8 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
-            "NBTC_CONTRACT": "nbtc.bridge.testnet"
+            "NBTC_CONTRACT": "nbtc.bridge.testnet",
+            "BURROW_CONTRACT": "contract.dev-burrow.testnet",
         },
         "TESTNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,
@@ -249,7 +268,8 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
-            "NBTC_CONTRACT": "nbtc.bridge.testnet"
+            "NBTC_CONTRACT": "nbtc.bridge.testnet",
+            "BURROW_CONTRACT": "contract.dev-burrow.testnet",
         },
         "MAINNET": {
             "NEAR_RPC_URL": MAINNET_RPC_URL,

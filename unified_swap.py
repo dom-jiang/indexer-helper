@@ -849,6 +849,8 @@ def _mca_context_for_quote(
             ctx["mcaAccountId"] = str(mca_acc)
     if flow == "deposit":
         ctx["depositOneClickConfigured"] = bool(deposit_extras_scheduled) and bool(is_cross_chain)
+        if mca_block.get("depositCrmAutoFilled"):
+            ctx["customRecipientMsgAutoFilled"] = True
         ctx["note"] = (
             "When NearIntents 1Click is selected (two-stage Stage-B counts), extras from "
             "`mca` are merged into 1Click /v0/quote. OmniBridge-only quotes ignore them. "
@@ -945,7 +947,15 @@ def unified_quote(
     if not token_out_info:
         return {"code": -1, "msg": f"Token {token_out_address!r} not found on chain {to_chain}. Check address and chain."}
 
-    oneclick_ext = _mca_deposit_extensions(mca)
+    mca_enriched = mca
+    if isinstance(mca, dict) and mca:
+        from mca_burrow_auto import enrich_mca_deposit_block
+
+        mca_enriched, crm_err = enrich_mca_deposit_block(dict(mca), Cfg.NETWORK_ID)
+        if crm_err:
+            return {"code": -1, "msg": crm_err, "data": None}
+
+    oneclick_ext = _mca_deposit_extensions(mca_enriched)
 
     if not _is_cross_chain(from_chain, to_chain):
         resp = _same_chain_quote(from_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
@@ -959,11 +969,11 @@ def unified_quote(
             slippage,
             sender,
             recipient,
-            mca_block=mca,
+            mca_block=mca_enriched,
         )
 
     mc_ctx = _mca_context_for_quote(
-        mca if isinstance(mca, dict) else None,
+        mca_enriched if isinstance(mca_enriched, dict) else None,
         deposit_extras_scheduled=bool(oneclick_ext),
         is_cross_chain=_is_cross_chain(from_chain, to_chain),
     )
@@ -1197,6 +1207,14 @@ def unified_swap(
     if not token_out_info:
         return {"code": -1, "msg": f"Token {token_out_address!r} not found on chain {to_chain}"}
 
+    mca_oc = mca_oneclick
+    if isinstance(mca_oc, dict) and mca_oc:
+        from mca_burrow_auto import enrich_mca_deposit_block
+
+        mca_oc, crm_err = enrich_mca_deposit_block(dict(mca_oc), Cfg.NETWORK_ID)
+        if crm_err:
+            return {"code": -1, "msg": crm_err, "data": None}
+
     if not _is_cross_chain(from_chain, to_chain):
         return _same_chain_swap(
             from_chain,
@@ -1226,7 +1244,7 @@ def unified_swap(
             quote_min_amount_out=quote_min_amount_out,
             pre_swap=pre_swap,
             bridge=bridge,
-            oneclick_extensions=_mca_deposit_extensions(mca_oneclick),
+            oneclick_extensions=_mca_deposit_extensions(mca_oc),
         )
 
 
