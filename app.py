@@ -2640,6 +2640,17 @@ def api_swap_build():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
+        near_signed = (
+            body.get("nearMcaDepositSignedTx")
+            or body.get("nearSignedTx")
+            or body.get("signedNearTxBase64")
+        )
+        if isinstance(near_signed, str) and near_signed.strip():
+            from unified_swap import broadcast_near_signed_transaction
+
+            ret = broadcast_near_signed_transaction(Cfg.NETWORK_ID, near_signed.strip())
+            return jsonify(ret)
+
         orch = body.get("mcaWithdrawOrchestration")
         if isinstance(orch, dict) and orch:
             from job.mca_withdraw_job import enqueue_mca_withdraw_orchestration_job
