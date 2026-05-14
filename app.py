@@ -62,7 +62,10 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
     ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
+    query_near_intents_orders_merged_meta, \
     get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
+    ensure_hyperliquid_deposit_orders_table, get_hyperliquid_deposit_by_unique_key, \
+    insert_hyperliquid_deposit_order, get_hyperliquid_deposit_order_by_id, \
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
@@ -3587,10 +3590,66 @@ def _format_near_intents_row(row):
     return item
 
 
+def _hydrate_near_intents_merged_row(network_id, meta_row):
+    """Turn a meta row from `query_near_intents_orders_merged_meta` into API payload."""
+    if not meta_row:
+        return None
+    kind = meta_row.get("record_kind")
+    if kind == "swap":
+        oid = meta_row.get("near_intents_order_id")
+        row = get_near_intents_order_by_id(network_id, oid)
+        if not row:
+            return None
+        item = _format_near_intents_row(row)
+        item["record_kind"] = "swap"
+        item["near_intents_order_id"] = row.get("id")
+        item["hl_deposit_order_id"] = None
+        item["hl_status"] = None
+        item["hl_status_text"] = None
+        item["status_text"] = item.get("status")
+        return item
+
+    if kind == "hl_deposit":
+        hl_id = meta_row.get("hl_deposit_order_id")
+        hl = get_hyperliquid_deposit_order_by_id(network_id, hl_id)
+        parent = get_near_intents_order_by_id(network_id, meta_row.get("near_intents_order_id"))
+        if not hl or not parent:
+            return None
+        item = _format_near_intents_row(dict(parent))
+        item["id"] = hl.get("id")
+        item["near_intents_order_id"] = parent.get("id")
+        item["record_kind"] = "hl_deposit"
+        item["quote_response"] = None
+        item["status_response"] = None
+        item["request_payload"] = None
+        item["hl_deposit_order_id"] = hl.get("id")
+        item["hl_status"] = hl.get("hl_status")
+        item["hl_status_text"] = hl.get("hl_status_text")
+        item["mca_account"] = hl.get("mca_account")
+        item["mca_mapped_evm_account"] = hl.get("mca_mapped_evm_account")
+        item["transfer_tx_hash"] = hl.get("transfer_tx_hash")
+        item["deposit_address"] = hl.get("deposit_address")
+        item["batch_id"] = hl.get("batch_id")
+        item["permit_id"] = hl.get("permit_id")
+        item["hl_error_message"] = hl.get("error_message") or ""
+        item["created_at"] = str(hl.get("created_at") or "")
+        item["updated_at"] = str(hl.get("updated_at") or "")
+        item["status"] = hl.get("hl_status")
+        item["status_text"] = hl.get("hl_status_text")
+        return item
+
+    return None
+
+
 try:
     ensure_near_intents_orders_table(Cfg.NETWORK_ID)
 except Exception as _e:
     logger.warning(f"Failed to ensure near_intents_orders table: {_e}")
+
+try:
+    ensure_hyperliquid_deposit_orders_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure hyperliquid_deposit_orders table: {_e}")
 
 
 def _build_oneclick_payload_from_body(body, allow_dry=False):
@@ -3823,11 +3882,15 @@ def handle_near_intents_orders():
         if page_size < 1 or page_size > 100:
             page_size = 10
 
-        data_list, total_number = query_near_intents_orders(
+        data_list, total_number = query_near_intents_orders_merged_meta(
             Cfg.NETWORK_ID, source, account, action_filter, page_number, page_size
         )
 
-        record_list = [_format_near_intents_row(row) for row in (data_list or [])]
+        record_list = []
+        for meta in data_list or []:
+            hydrated = _hydrate_near_intents_merged_row(Cfg.NETWORK_ID, meta)
+            if hydrated is not None:
+                record_list.append(hydrated)
         total_page = math.ceil(total_number / page_size) if total_number > 0 else 0
 
         return jsonify({
@@ -3841,6 +3904,143 @@ def handle_near_intents_orders():
     except Exception as e:
         logger.error(f"handle_near_intents_orders error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _require_non_empty_str(body, key, max_len=256):
+    v = body.get(key)
+    if not isinstance(v, str) or not v.strip():
+        return None, (jsonify({"error": f"Missing or invalid field: {key}"}), 400)
+    s = v.strip()
+    if len(s) > max_len:
+        return None, (jsonify({"error": f"Field {key} too long (max {max_len})"}), 400)
+    return s, None
+
+
+@app.route('/api/hyperliquid/deposit', methods=['POST'])
+def handle_hyperliquid_deposit():
+    """
+    Start HyperLiquid deposit orchestration (1Click transfer + relayer batch + Arb permit).
+    Idempotent on (near_intents_order_id, transfer_tx_hash, batch_id).
+    """
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "Request body is required"}), 400
+
+        nio = body.get("near_intents_order_id")
+        try:
+            near_intents_order_id = int(nio)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid near_intents_order_id"}), 400
+
+        parent = get_near_intents_order_by_id(Cfg.NETWORK_ID, near_intents_order_id)
+        if not parent:
+            return jsonify({"error": "near_intents_order not found"}), 404
+
+        mca_account, err = _require_non_empty_str(body, "mca_account", 128)
+        if err:
+            return err
+        mca_mapped, err = _require_non_empty_str(body, "mca_mapped_evm_account", 128)
+        if err:
+            return err
+        tx_hash, err = _require_non_empty_str(body, "transfer_tx_hash", 128)
+        if err:
+            return err
+        dep_addr, err = _require_non_empty_str(body, "deposit_address", 256)
+        if err:
+            return err
+        batch_id, err = _require_non_empty_str(body, "batch_id", 64)
+        if err:
+            return err
+
+        existing = get_hyperliquid_deposit_by_unique_key(
+            Cfg.NETWORK_ID, near_intents_order_id, tx_hash, batch_id
+        )
+        if existing:
+            eid = int(existing["id"])
+            return jsonify({
+                "hl_deposit_order_id": eid,
+                "order_id": eid,
+                "hl_status": existing.get("hl_status"),
+                "hl_status_text": existing.get("hl_status_text"),
+                "status": existing.get("hl_status"),
+                "status_text": existing.get("hl_status_text"),
+                "deduplicated": True,
+            })
+
+        try:
+            new_id = insert_hyperliquid_deposit_order(
+                Cfg.NETWORK_ID,
+                near_intents_order_id,
+                mca_account,
+                mca_mapped,
+                tx_hash,
+                dep_addr,
+                batch_id,
+                hl_status=1,
+                hl_status_text="TRANSFER_PENDING",
+            )
+        except Exception as ins_err:
+            msg = str(ins_err)
+            if "1062" in msg or "Duplicate entry" in msg:
+                existing = get_hyperliquid_deposit_by_unique_key(
+                    Cfg.NETWORK_ID, near_intents_order_id, tx_hash, batch_id
+                )
+                if existing:
+                    eid = int(existing["id"])
+                    return jsonify({
+                        "hl_deposit_order_id": eid,
+                        "order_id": eid,
+                        "hl_status": existing.get("hl_status"),
+                        "hl_status_text": existing.get("hl_status_text"),
+                        "status": existing.get("hl_status"),
+                        "status_text": existing.get("hl_status_text"),
+                        "deduplicated": True,
+                    })
+            logger.error(f"handle_hyperliquid_deposit insert error: {ins_err}")
+            return jsonify({"error": msg}), 500
+        return jsonify({
+            "hl_deposit_order_id": new_id,
+            "order_id": new_id,
+            "hl_status": 1,
+            "hl_status_text": "TRANSFER_PENDING",
+            "status": 1,
+            "status_text": "TRANSFER_PENDING",
+        })
+
+    except Exception as e:
+        logger.error(f"handle_hyperliquid_deposit error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/hyperliquid/deposit-orders/<int:hl_deposit_order_id>", methods=["GET"])
+def handle_hyperliquid_deposit_order_detail(hl_deposit_order_id):
+    try:
+        row = get_hyperliquid_deposit_order_by_id(Cfg.NETWORK_ID, hl_deposit_order_id)
+        if not row:
+            return jsonify({"code": -1, "msg": "not found", "data": None}), 404
+
+        data = {
+            "hl_deposit_order_id": row.get("id"),
+            "order_id": row.get("id"),
+            "near_intents_order_id": row.get("near_intents_order_id"),
+            "status": row.get("hl_status"),
+            "status_text": row.get("hl_status_text"),
+            "hl_status": row.get("hl_status"),
+            "hl_status_text": row.get("hl_status_text"),
+            "transfer_tx_hash": row.get("transfer_tx_hash"),
+            "deposit_address": row.get("deposit_address"),
+            "batch_id": row.get("batch_id"),
+            "permit_id": row.get("permit_id") or "",
+            "mca_account": row.get("mca_account"),
+            "mca_mapped_evm_account": row.get("mca_mapped_evm_account"),
+            "error_message": row.get("error_message") or "",
+        }
+        return jsonify({"code": 0, "data": data})
+
+    except Exception as e:
+        logger.error(f"handle_hyperliquid_deposit_order_detail error: {e}")
+        return jsonify({"code": -1, "msg": str(e), "data": None}), 500
 
 
 @app.route('/api/near_intents/order', methods=['GET'])

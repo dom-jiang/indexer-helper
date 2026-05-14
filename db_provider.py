@@ -3324,6 +3324,237 @@ def update_near_intents_order_status(network_id, order_id, status, status_respon
 
 
 # ============================================================
+# HyperLiquid deposit orchestration (1Click + lending + Arb permit)
+# ============================================================
+
+HYPERLIQUID_DEPOSIT_ORDERS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS hyperliquid_deposit_orders (
+    id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    near_intents_order_id BIGINT UNSIGNED NOT NULL,
+    mca_account        VARCHAR(128) NOT NULL,
+    mca_mapped_evm_account VARCHAR(128) NOT NULL,
+    transfer_tx_hash   VARCHAR(128) NOT NULL,
+    deposit_address    VARCHAR(256) NOT NULL,
+    batch_id           VARCHAR(64)  NOT NULL,
+    hl_status          INT          NOT NULL DEFAULT 1,
+    hl_status_text     VARCHAR(64)  NOT NULL DEFAULT 'TRANSFER_PENDING',
+    permit_id          VARCHAR(64)  DEFAULT NULL,
+    error_message      TEXT,
+    oneclick_status_snapshot TEXT,
+    permit_response_snapshot TEXT,
+    records_snapshot   TEXT,
+    permit_started_at  DATETIME     DEFAULT NULL,
+    confirm_started_at DATETIME     DEFAULT NULL,
+    created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_nio_tx_batch (near_intents_order_id, transfer_tx_hash, batch_id),
+    KEY idx_nio (near_intents_order_id),
+    KEY idx_hl_status_created (hl_status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+
+def ensure_hyperliquid_deposit_orders_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(HYPERLIQUID_DEPOSIT_ORDERS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        print("ensure_hyperliquid_deposit_orders_table error:", e)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_deposit_by_unique_key(network_id, near_intents_order_id, transfer_tx_hash, batch_id):
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "SELECT * FROM hyperliquid_deposit_orders WHERE near_intents_order_id = %s "
+        "AND transfer_tx_hash = %s AND batch_id = %s LIMIT 1"
+    )
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (near_intents_order_id, transfer_tx_hash, str(batch_id)))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_deposit_by_unique_key error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_hyperliquid_deposit_order(
+    network_id,
+    near_intents_order_id,
+    mca_account,
+    mca_mapped_evm_account,
+    transfer_tx_hash,
+    deposit_address,
+    batch_id,
+    hl_status=1,
+    hl_status_text="TRANSFER_PENDING",
+):
+    db_conn = get_db_connect(network_id)
+    sql = """INSERT INTO hyperliquid_deposit_orders
+        (near_intents_order_id, mca_account, mca_mapped_evm_account, transfer_tx_hash,
+         deposit_address, batch_id, hl_status, hl_status_text, created_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())"""
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(
+            sql,
+            (
+                near_intents_order_id,
+                mca_account,
+                mca_mapped_evm_account,
+                transfer_tx_hash,
+                deposit_address,
+                str(batch_id),
+                int(hl_status),
+                hl_status_text,
+            ),
+        )
+        db_conn.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        db_conn.rollback()
+        print("insert_hyperliquid_deposit_order error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_deposit_order_by_id(network_id, hl_deposit_order_id):
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM hyperliquid_deposit_orders WHERE id = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (hl_deposit_order_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_deposit_order_by_id error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_hyperliquid_deposit_order(network_id, hl_deposit_order_id, fields: dict):
+    """Partial update by id. `fields` maps column_name -> value."""
+    if not fields:
+        return
+    nullable_keys = {
+        "permit_id", "error_message", "oneclick_status_snapshot",
+        "permit_response_snapshot", "records_snapshot",
+        "permit_started_at", "confirm_started_at",
+    }
+    cols = []
+    vals = []
+    for k, v in fields.items():
+        if v is None and k not in nullable_keys:
+            continue
+        cols.append("`%s` = %%s" % str(k).replace("`", ""))
+        vals.append(v)
+    if not cols:
+        return
+    sql = "UPDATE hyperliquid_deposit_orders SET " + ", ".join(cols) + ", updated_at = NOW() WHERE id = %s"
+    vals.append(hl_deposit_order_id)
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(vals))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_hyperliquid_deposit_order error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def fetch_hyperliquid_deposit_orders_active(network_id, limit=30):
+    """Rows still in progress (not 7 SUCCESS / 91 FAILED)."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT * FROM hyperliquid_deposit_orders
+             WHERE hl_status NOT IN (7, 91)
+             ORDER BY id ASC
+             LIMIT %s"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (int(limit),))
+        return cursor.fetchall()
+    except Exception as e:
+        print("fetch_hyperliquid_deposit_orders_active error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_near_intents_orders_merged_meta(network_id, source, account, action, page_number, page_size):
+    """
+    Lightweight merged listing: swap rows + hyperliquid deposit rows for the same
+    source/account (and optional action on the parent near_intents row).
+    Returns (meta_rows, total_count) where each meta row has
+    record_kind, list_created_at, list_tid, near_intents_order_id, hl_deposit_order_id.
+    """
+    start = handel_page_number(page_number, page_size)
+
+    swap_parts = ["n.source = %s", "n.account = %s"]
+    swap_params = [source, account]
+    if action:
+        swap_parts.append("n.action = %s")
+        swap_params.append(action)
+    where_swap = " AND ".join(swap_parts)
+
+    join_parts = ["p.source = %s", "p.account = %s"]
+    join_params = [source, account]
+    if action:
+        join_parts.append("p.action = %s")
+        join_params.append(action)
+    where_join = " AND ".join(join_parts)
+
+    union_inner = (
+        "SELECT 'swap' AS record_kind, n.created_at AS list_created_at, n.id AS list_tid, "
+        "n.id AS near_intents_order_id, CAST(NULL AS UNSIGNED) AS hl_deposit_order_id "
+        "FROM near_intents_orders n WHERE " + where_swap +
+        " UNION ALL "
+        "SELECT 'hl_deposit', h.created_at, h.id, p.id, h.id "
+        "FROM hyperliquid_deposit_orders h "
+        "INNER JOIN near_intents_orders p ON p.id = h.near_intents_order_id "
+        "WHERE " + where_join
+    )
+
+    params_union = swap_params + join_params
+
+    count_sql = "SELECT COUNT(*) AS total_number FROM (" + union_inner + ") merged"
+    page_sql = (
+        "SELECT * FROM (" + union_inner + ") merged "
+        "ORDER BY list_created_at DESC, list_tid DESC LIMIT %s, %s"
+    )
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(count_sql, tuple(params_union))
+        total = cursor.fetchone()["total_number"]
+        cursor.execute(page_sql, tuple(params_union + [start, page_size]))
+        rows = cursor.fetchall()
+        return rows, total
+    except Exception as e:
+        print("query_near_intents_orders_merged_meta error:", e)
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+# ============================================================
 # User access logs (frontend beacon tracking)
 # ============================================================
 
