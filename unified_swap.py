@@ -1001,14 +1001,210 @@ def _mca_context_for_quote(
             )
         else:
             ctx["withdrawExecutionPlan"] = [
-                {"step": 1, "action": "sign_message", "description": "User signs canonical business JSON via bound wallet"},
-                {"step": 2, "action": "mcaRelayer",
-                 "description": "POST /api/swap/swap with mcaRelayer; backend forwards to multichain_lending_requests"},
-                {"step": 3, "action": "bridge_followup",
-                 "description": "Complete bridge leg using standard swap/deposit UX"},
+                {
+                    "step": 1,
+                    "action": "sign_message_or_near_exec",
+                    "description": "If `mcaWithdrawToIntents.submissionMode` is `multichain_relayer`: sign `messageToSign` with `mca.signer`. If `near_exec`: sign & send NEAR tx from `nearExecWalletPreview` (MCA `exec`, same as in-app `call_on_near`).",
+                },
+                {
+                    "step": 2,
+                    "action": "mcaRelayer",
+                    "description": "Relayer path only: POST /api/swap/swap with `mcaRelayer`. NEAR-exec path broadcasts the signed `exec` from the wallet (no multichain relayer).",
+                },
             ]
-            ctx["note"] = "Backend does not assemble `business`; build it client-side today."
+            ctx["note"] = (
+                "Cross-chain Lending withdraw + 1Click: `/quote` may include `data.mcaWithdrawToIntents` with "
+                "`business` + `depositAddress` (NearIntents `dry:false`). "
+                "`submissionMode`: `near_exec` (NEAR wallet signs MCA `exec`) or `multichain_relayer` (off-chain `sign_message` + relayer)."
+            )
     return ctx
+
+
+def _unified_chain_to_oneclick_slug(chain_val: str) -> str:
+    c = str(chain_val or "").strip()
+    return str(CHAIN_TO_1CLICK.get(c, CHAIN_TO_1CLICK.get(c.lower(), c.lower())))
+
+
+def _try_attach_mca_withdraw_near_to_intents_quote(
+    *,
+    data: Dict[str, Any],
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict[str, Any],
+    token_out: Dict[str, Any],
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    recipient: str,
+    mca_block: Optional[Dict[str, Any]],
+    oneclick_extensions: Optional[Dict[str, Any]],
+) -> None:
+    """
+    MCA Burrow withdraw on NEAR + ft_transfer to 1Click `depositAddress` (matches `withdrawFromMca` without simpleWithdrawData).
+
+    - `mca.signer.chain` in (`near`, `near-mainnet`): `submissionMode=near_exec`, `nearExecWalletPreview` for MCA `exec`.
+    - Otherwise: `submissionMode=multichain_relayer`, `messageToSign` + `mcaRelayer` fields.
+
+    Requires `nearintents_build_tx` to succeed. Writes `data['mcaWithdrawToIntents']`.
+    """
+    try:
+        if not mca_block or not isinstance(mca_block, dict):
+            return
+        if _mca_flow(mca_block) != "withdraw":
+            return
+        oc_from = _unified_chain_to_oneclick_slug(from_chain)
+        if oc_from != "near":
+            return
+
+        signer_obj = mca_block.get("signer") or mca_block.get("depositSigner") or {}
+        if not isinstance(signer_obj, dict):
+            return
+        sign_chain = str(
+            signer_obj.get("chain") or signer_obj.get("signerChain") or signer_obj.get("signer_chain") or ""
+        ).strip().lower()
+        if not sign_chain:
+            return
+
+        is_near_signer = sign_chain in ("near", "near-mainnet")
+
+        mca_acc = (
+            mca_block.get("mcaAccountId")
+            or mca_block.get("mca_id")
+            or mca_block.get("mca")
+        )
+        if not mca_acc:
+            return
+
+        amt_borrow = (
+            mca_block.get("amountBurrow")
+            or mca_block.get("amount_burrow")
+            or mca_block.get("amount_with_inner_decimal")
+            or amount_in
+        )
+        tid = str((token_in or {}).get("address") or "").strip()
+        if not tid:
+            return
+
+        front_target = (
+            "near"
+            if _unified_chain_to_oneclick_slug(to_chain) == "near"
+            else str(to_chain)
+        )
+
+        build_res = nearintents_build_tx(
+            from_chain=from_chain,
+            to_chain=to_chain,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=str(amount_in),
+            sender=sender,
+            recipient=recipient,
+            slippage=slippage,
+            oneclick_extensions=oneclick_extensions,
+        )
+        if not build_res.get("success"):
+            logger.warning(
+                f"mcaWithdrawToIntents: nearintents_build_tx failed: {build_res.get('error')}"
+            )
+            return
+        tx_wrap = build_res.get("tx") or {}
+        dep = str(tx_wrap.get("depositAddress") or "").strip()
+        if not dep:
+            logger.warning("mcaWithdrawToIntents: empty depositAddress from nearintents_build_tx")
+            return
+
+        from mca_withdraw_cross_intents import (
+            assemble_mca_withdraw_to_intents_business,
+            attach_deposit_yocto_for_relayer,
+            build_mca_register_token_tx_requests,
+            build_near_exec_wallet_preview_for_business,
+            message_to_sign_for_business,
+        )
+
+        nw = str(Cfg.NETWORK_ID)
+        mca_s = str(mca_acc)
+
+        business = assemble_mca_withdraw_to_intents_business(
+            network_id=nw,
+            mca_account_id=mca_s,
+            token_id_nep141=tid,
+            amount_token_smallest=str(amount_in),
+            amount_burrow_inner=str(amt_borrow),
+            intents_deposit_address=dep,
+            frontend_target_chain=front_target,
+            sign_chain_is_near=is_near_signer,
+            simple_withdraw_tx=None,
+        )
+
+        reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)
+
+        submission_mode = "near_exec" if is_near_signer else "multichain_relayer"
+        out: Dict[str, Any] = {
+            "version": 1,
+            "submissionMode": submission_mode,
+            "depositAddress": dep,
+            "depositMemo": tx_wrap.get("depositMemo") or "",
+            "business": business,
+            "mcaAccountId": mca_s,
+            "tokenId": tid,
+            "amountIn": str(amount_in),
+            "amountBurrowInner": str(amt_borrow),
+        }
+
+        if is_near_signer:
+            exec_signer_near = str(
+                mca_block.get("execSignerAccountId")
+                or mca_block.get("exec_signer_near")
+                or mca_block.get("nearSignerAccountId")
+                or signer_obj.get("identityKey")
+                or signer_obj.get("identity_key")
+                or ""
+            ).strip()
+            if not exec_signer_near:
+                logger.warning(
+                    "mcaWithdrawToIntents: near_exec requires NEAR signer account "
+                    "(mca.signer.identityKey or mca.execSignerAccountId)"
+                )
+                return
+            preview = build_near_exec_wallet_preview_for_business(
+                mca_account_id=mca_s,
+                exec_signer_near=exec_signer_near,
+                business=business,
+                token_id=tid,
+                intents_deposit_address=dep,
+                amount_token_smallest=str(amount_in),
+                amount_burrow_inner=str(amt_borrow),
+            )
+            out["nearExecWalletPreview"] = preview
+            out["signer"] = {"chain": sign_chain, "identityKey": exec_signer_near}
+            data["nearMcaWithdrawTx"] = preview
+        else:
+            attach_yocto = attach_deposit_yocto_for_relayer(len(reg_txs) > 0)
+
+            from mca_burrow_auto import format_wallet_wallet_object
+
+            signer_key = str(
+                signer_obj.get("identityKey") or signer_obj.get("identity_key") or ""
+            ).strip()
+            if not signer_key:
+                logger.warning("mcaWithdrawToIntents: multichain_relayer requires mca.signer.identityKey")
+                return
+            try:
+                w_obj = format_wallet_wallet_object(sign_chain, signer_key)
+            except ValueError as e:
+                logger.warning(f"mcaWithdrawToIntents: {e}")
+                return
+            wallet_json = json.dumps(w_obj, separators=(",", ":"), ensure_ascii=False)
+
+            msg = message_to_sign_for_business(business)
+            out["messageToSign"] = msg
+            out["attachDepositYocto"] = attach_yocto
+            out["signer"] = {"chain": sign_chain, "identityKey": signer_key}
+            out["signerWalletJson"] = wallet_json
+
+        data["mcaWithdrawToIntents"] = out
+    except Exception as e:
+        logger.warning(f"_try_attach_mca_withdraw_near_to_intents_quote: {e}")
 
 
 def _synthetic_near_same_chain_mca_quote(
@@ -1381,6 +1577,27 @@ def unified_quote(
         dat = resp.get("data")
         if isinstance(dat, dict):
             dat["mcaContext"] = mc_ctx
+
+    if (
+        isinstance(resp, dict)
+        and resp.get("code") == 0
+        and isinstance(resp.get("data"), dict)
+        and _is_cross_chain(from_chain, to_chain)
+        and not near_dir
+    ):
+        _try_attach_mca_withdraw_near_to_intents_quote(
+            data=resp["data"],
+            from_chain=from_chain,
+            to_chain=to_chain,
+            token_in=token_in_info,
+            token_out=token_out_info,
+            amount_in=str(amount_in),
+            slippage=float(slippage),
+            sender=str(sender),
+            recipient=str(recipient),
+            mca_block=mca_enriched if isinstance(mca_enriched, dict) else None,
+            oneclick_extensions=oneclick_ext,
+        )
 
     return resp
 
