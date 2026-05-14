@@ -281,6 +281,17 @@ def build_near_exec_wallet_preview_for_business(
         "intentsDepositAddress": str(intents_deposit_address or "").strip(),
         "amountIn": str(amount_token_smallest or "").strip(),
         "amountBurrowInner": str(amount_burrow_inner or "").strip(),
+        # Same object as inside exec args — matches withdraw.ts `businessMap`, list UX steps via tx_requests.
+        "business": business,
+        # Drop-in for adapters that wrap src/services/chains/near.ts `call_on_near`.
+        "transactions": [
+            {
+                "contractId": mca,
+                "methodName": "exec",
+                "args": exec_args,
+                "gas": "300",
+            }
+        ],
         "actions": [
             {
                 "type": "FunctionCall",

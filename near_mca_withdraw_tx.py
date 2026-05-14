@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from mca_burrow_auto import near_view_call, _burrow_logic_contract
+from mca_withdraw_cross_intents import build_mca_register_token_tx_requests
 
 # Align with src/services/constantConfig TOKEN_STORAGE_DEPOSIT_READ = 0.00125 NEAR for storage deposits
 _TOKEN_STORAGE_DEPOSIT_READ = "0.00125"
@@ -111,10 +112,13 @@ def build_near_mca_withdraw_exec_tx_payload(
         wrap_near_contract_id=wrap_near,
     )
 
+    reg = build_mca_register_token_tx_requests(network_id, tid, mca)
+    tx_requests = [*reg, withdraw_tx_req, *transfer_tx_reqs]
+
     business = {
         "nonce": str(nonce),
         "deadline": str(deadline),
-        "tx_requests": [withdraw_tx_req, *transfer_tx_reqs],
+        "tx_requests": tx_requests,
     }
 
     signer_wallet = {"Near": signer}
@@ -134,6 +138,17 @@ def build_near_mca_withdraw_exec_tx_payload(
         "tokenId": tid,
         "mcaAccountId": mca,
         "recipientNear": rec,
+        # Mirrors withdraw.ts `businessMap` before call_on_near — UI can render tx_requests steps.
+        "business": business,
+        # Same shape as src/services/chains/near.ts `call_on_near({ transactions })`.
+        "transactions": [
+            {
+                "contractId": mca,
+                "methodName": "exec",
+                "args": exec_args,
+                "gas": "300",
+            }
+        ],
         "actions": [
             {
                 "type": "FunctionCall",
