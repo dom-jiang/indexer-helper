@@ -66,14 +66,17 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
     ensure_hyperliquid_deposit_orders_table, get_hyperliquid_deposit_by_unique_key, \
     insert_hyperliquid_deposit_order, get_hyperliquid_deposit_order_by_id, \
+    ensure_hyperliquid_transfer_jobs_table, \
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
+from hyperliquid_perps_routes import register_hyperliquid_perps
 
 service_version = "20260318.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
 app = Flask(__name__)
+register_hyperliquid_perps(app)
 # limiter = Limiter(
 #     app,
 #     key_func=get_ip_address,
@@ -3650,6 +3653,11 @@ try:
     ensure_hyperliquid_deposit_orders_table(Cfg.NETWORK_ID)
 except Exception as _e:
     logger.warning(f"Failed to ensure hyperliquid_deposit_orders table: {_e}")
+
+try:
+    ensure_hyperliquid_transfer_jobs_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure hyperliquid_transfer_jobs table: {_e}")
 
 
 def _build_oneclick_payload_from_body(body, allow_dry=False):
