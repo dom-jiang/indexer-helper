@@ -61,6 +61,7 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
+    get_oneclick_order_by_deposit_address, \
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
@@ -662,14 +663,14 @@ def analysis_v2_pool_data():
 
 @app.route('/analysis-v2-pool-account-data', methods=['GET'])
 def analysis_v2_pool_account_data():
-    import threading
+    # import threading
     file_name = request.args.get("file_name")
-    logger.info("account file_name:{}", file_name)
-    thread = threading.Thread(
-        target=analysis_v2_pool_account_data_to_s3,
-        args=(file_name, Cfg.NETWORK_ID)
-    )
-    thread.start()
+    # logger.info("account file_name:{}", file_name)
+    # thread = threading.Thread(
+    #     target=analysis_v2_pool_account_data_to_s3,
+    #     args=(file_name, Cfg.NETWORK_ID)
+    # )
+    # thread.start()
     return file_name
 
 
@@ -1508,7 +1509,7 @@ def handel_conversion_token_record():
 
 @app.route('/get-rnear-apy', methods=['GET'])
 def handel_rnear_apy():
-    day_number = request.args.get("day_number", type=int, default=2)
+    day_number = request.args.get("day_number", type=int, default=30)
     apy = get_rnear_apy(day_number)
     if apy is None:
         price_result = get_rnear_price(day_number)
@@ -3409,7 +3410,9 @@ except Exception as _e:
 
 
 @app.route('/api/1click/create-order', methods=['POST'])
+@app.route('/api/1click/quote', methods=['POST'])
 def handle_1click_create_order():
+    """POST /api/1click/create-order and POST /api/1click/quote — same handler (1Click /v0/quote + insert oneclick_orders)."""
     try:
         body = request.get_json(force=True)
         if not body:
@@ -3493,6 +3496,24 @@ def handle_1click_create_order():
         return jsonify({"error": str(e)}), 500
 
 
+def _serialize_oneclick_order_rows(data_list):
+    """Shared list shape for /api/1click/orders."""
+    record_list = []
+    for row in (data_list or []):
+        item = dict(row)
+        for dt_key in ("created_at", "updated_at"):
+            if item.get(dt_key):
+                item[dt_key] = str(item[dt_key])
+        for json_key in ("quote_response", "status_response"):
+            if item.get(json_key):
+                try:
+                    item[json_key] = json.loads(item[json_key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        record_list.append(item)
+    return record_list
+
+
 @app.route('/api/1click/orders', methods=['GET'])
 def handle_1click_orders():
     try:
@@ -3511,19 +3532,7 @@ def handle_1click_orders():
             Cfg.NETWORK_ID, refund_to, page_number, page_size
         )
 
-        record_list = []
-        for row in (data_list or []):
-            item = dict(row)
-            for dt_key in ("created_at", "updated_at"):
-                if item.get(dt_key):
-                    item[dt_key] = str(item[dt_key])
-            for json_key in ("quote_response", "status_response"):
-                if item.get(json_key):
-                    try:
-                        item[json_key] = json.loads(item[json_key])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-            record_list.append(item)
+        record_list = _serialize_oneclick_order_rows(data_list)
 
         total_page = math.ceil(total_number / page_size) if total_number > 0 else 0
 
@@ -3537,6 +3546,29 @@ def handle_1click_orders():
 
     except Exception as e:
         logger.error(f"handle_1click_orders error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/1click/status', methods=['GET'])
+def handle_1click_status():
+    """
+    Single oneclick_order by deposit_address (latest row by id).
+    Query: deposit_address (required).
+    """
+    try:
+        dep = request.args.get("deposit_address", "").strip()
+        if not dep:
+            return jsonify({"error": "Missing required parameter: deposit_address"}), 400
+
+        row = get_oneclick_order_by_deposit_address(Cfg.NETWORK_ID, dep)
+        if not row:
+            return jsonify({"error": "not_found"}), 404
+
+        item = _serialize_oneclick_order_rows([row])[0]
+        return jsonify(item)
+
+    except Exception as e:
+        logger.error(f"handle_1click_status error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -3612,10 +3644,10 @@ except Exception as sched_err:
     logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
 
 # Start LSD bridge fee compensation scheduler
-try:
-    start_lsd_compensation_scheduler()
-except Exception as sched_err:
-    logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
+# try:
+#     start_lsd_compensation_scheduler()
+# except Exception as sched_err:
+#     logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
 
 if __name__ == '__main__':
     app.logger.setLevel(logging.INFO)
