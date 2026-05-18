@@ -1700,8 +1700,17 @@ def handel_user_swap_record():
 @app.route('/multichain_lending_requests', methods=['POST', 'PUT'])
 def handel_multichain_lending_requests():
     try:
+        from mca_relayer_payload import canonicalize_multichain_lending_requests_body
+
         multichain_lending_data = request.json
-        batch_id = add_multichain_lending_requests(Cfg.NETWORK_ID, multichain_lending_data["mca_id"], multichain_lending_data["wallet"], multichain_lending_data["request"], multichain_lending_data["page_display_data"])
+        canon = canonicalize_multichain_lending_requests_body(multichain_lending_data)
+        batch_id = add_multichain_lending_requests(
+            Cfg.NETWORK_ID,
+            canon["mca_id"],
+            canon["wallet"],
+            canon["request"],
+            canon["page_display_data"],
+        )
         ret = {
             "code": 0,
             "msg": "success",

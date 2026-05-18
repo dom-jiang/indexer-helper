@@ -1435,14 +1435,24 @@ def _near_same_chain_mca_withdraw_swap(
 def _unified_mca_relayer_submit(payload: Dict) -> Dict:
     """Forward a signed MCA relayer package to multichain_lending_requests (DB queue)."""
     try:
-        mca_id = payload.get("mcaAccountId") or payload.get("mca_id")
-        wallet = payload.get("wallet")
-        requests_list = payload.get("request")
-        page_display_data = str(payload.get("page_display_data") or payload.get("pageDisplayData") or "")
-        if not mca_id or not wallet:
-            return {"code": -1, "msg": "mcaRelayer requires mcaAccountId and wallet", "data": None}
+        from mca_relayer_payload import canonicalize_mca_relayer_block
+
+        if not payload.get("mcaAccountId") and not payload.get("mca_id"):
+            return {"code": -1, "msg": "mcaRelayer requires mcaAccountId (or mca_id)", "data": None}
+        if not payload.get("wallet"):
+            return {"code": -1, "msg": "mcaRelayer requires wallet", "data": None}
+        page_display_data = str(
+            payload.get("page_display_data") or payload.get("pageDisplayData") or ""
+        )
+        try:
+            canon = canonicalize_mca_relayer_block(payload)
+        except ValueError as ve:
+            return {"code": -1, "msg": str(ve), "data": None}
+        mca_id = canon.get("mcaAccountId") or canon.get("mca_id")
+        requests_list = canon.get("request")
         if not isinstance(requests_list, list) or not requests_list:
             return {"code": -1, "msg": "mcaRelayer.request must be a non-empty array", "data": None}
+        wallet = canon.get("wallet")
         batch_id = add_multichain_lending_requests(
             Cfg.NETWORK_ID, mca_id, wallet, requests_list, page_display_data
         )
