@@ -4,7 +4,7 @@ __author__ = 'Marco'
 
 # load private info
 try:
-    from rpc_info import TESTNET_RPC_URL, MAINNET_RPC_URL
+    from db_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
     TESTNET_RPC_URL= ["https://rpc.testnet.near.org", ]
     MAINNET_RPC_URL= ["https://rpc.mainnet.near.org", ]
@@ -110,6 +110,11 @@ except ImportError:
 
 ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
 
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
 
 class Cfg:
     NETWORK_ID = "MAINNET"
@@ -145,6 +150,7 @@ class Cfg:
     BSC_WALLET_PRIVATE_KEY = BSC_WALLET_PRIVATE_KEY
     BSC_RPC_URL = BSC_RPC_URL
     ONECLICK_BASE_URL = ONECLICK_BASE_URL
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,
