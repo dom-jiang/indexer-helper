@@ -2,11 +2,14 @@
 MCA withdraw from Burrow + NEP-141 transfer to Near Intents 1Click deposit address.
 
 Mirrors frontend `withdrawFromMca` (`src/services/lending/actions/withdraw.ts`) when:
-  - simpleWithdrawData is absent (empty simple_withdraw prefix before gas txs),
-  - Burrow oracle path disabled; **Burrow Logic uses `simple_withdraw`** here (MCA multichain
-    relayer validates this method name — it rejects `execute` with only `Withdraw`),
-  - no collateral decrease (single withdraw leg),
-  - `tansfer_txs_query`-style transfer toward `depositAddress`.
+  - Burrow oracle path disabled / no collateral decrease (single withdraw leg),
+  - `tansfer_txs_query`-style transfer toward ``depositAddress``.
+
+  Multichain relayer batches should follow App ordering: optional **small** ``simple_withdraw``
+  prepay to ``MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID``, then Logic ``execute`` with ``Withdraw``
+  (puts supplied assets onto the MCA for ``ft_transfer``). A **full-amount**
+  ``simple_withdraw`` to the relayer **without** ``Withdraw`` skips moving funds onto the MCA,
+  so the later MCA ``ft_transfer`` fails (insufficient token balance).
 
 Used for NEAR Lending -> arbitrary 1Click destination: one signature + multichain relayer.
 
@@ -21,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
+from config import Cfg
 from mca_burrow_auto import near_view_call, _burrow_logic_contract
 
 # Same semantic as TOKEN_STORAGE_DEPOSIT_READ on the frontend (`0.00125` NEAR)
@@ -38,6 +42,26 @@ def _ndeposit_yocto(near_human: str) -> str:
 def _serialize_args(params: Dict[str, Any]) -> str:
     """Match TS `serializationObj` (JSON stringify, no whitespace)."""
     return json.dumps(params or {}, separators=(",", ":"), ensure_ascii=False)
+
+
+def nep141_ft_transfer_amount_minus_one(amount_token_smallest: str) -> str:
+    """
+    Match Lending ``Action.tsx`` ``getWithdrawData``: ``new Big(amountToken).minus(1)``
+    used for intents ``ft_transfer`` only. Burrow ``Withdraw.max_amount`` / inner amount stays
+    the full withdrawn size (passed separately as ``amount_burrow_inner``).
+    """
+    s = str(amount_token_smallest or "").strip()
+    if not s:
+        raise ValueError("amount_token_smallest is required")
+    try:
+        n = int(s)
+    except ValueError as e:
+        raise ValueError(
+            f"nep141 amount must be base-10 integer string: {amount_token_smallest!r}"
+        ) from e
+    if n < 0:
+        raise ValueError(f"nep141 amount cannot be negative: {amount_token_smallest!r}")
+    return str(max(0, n - 1))
 
 
 def _near_view_optional(
@@ -152,24 +176,47 @@ def build_transfer_txs_to_intents_deposit(
     ]
 
 
+def build_execute_withdraw_tx_request(
+    logic_contract_id: str,
+    token_id: str,
+    max_amount_burrow_inner: str,
+) -> Dict[str, Any]:
+    """Burrow Logic ``execute({ actions: [Withdraw { token_id, max_amount }] })`` (see ``withdraw.ts``)."""
+    logic = str(logic_contract_id or "").strip()
+    tid = str(token_id or "").strip()
+    amt = str(max_amount_burrow_inner or "").strip()
+    if not logic or not tid or not amt:
+        raise ValueError("Burrow_execute_withdraw requires logic contract, token_id, max_amount")
+
+    wd_fn = {
+        "method_name": "execute",
+        "args": _serialize_args(
+            {"actions": [{"Withdraw": {"token_id": tid, "max_amount": amt}}]},
+        ),
+        "gas": _tgas_yocto(120),
+        "deposit": "1",
+    }
+    return {
+        "FunctionCall": {
+            "receiver_id": logic,
+            "function_calls": [wd_fn],
+        }
+    }
+
+
 def build_withdraw_simple_withdraw_tx_request(
     logic_contract_id: str,
     token_id: str,
     amount_burrow_inner: str,
     withdraw_recipient_id: str,
 ) -> Dict[str, Any]:
-    """Single-leg Burrow withdrawal nested in MCA batch: Logic `simple_withdraw`.
+    """Burrow Logic ``simple_withdraw`` (staging relayer **prepay** leg only — tiny amount).
 
-    - **near_exec** (NEAR signer): ``withdraw_recipient_id`` MUST be **mca_account_id**
-      so tokens stay on the MCA for the following ``ft_transfer`` to 1Click.
+    ``recipient_id`` must be the multichain relayer NEAR account
+    (``Cfg.MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID`` / ``mca.relayerNearRecipient``), not the MCA.
 
-    - **multichain_relayer** (EVM/etc. signer): Relayer rejects ``recipient_id=MCA``.
-      Must match frontend ``RELAYER_ID`` / chain-app ``relayerId`` — staging example
-      ``am_relayer.stg.ref-dev-team.near``. Configure ``Cfg.MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID``
-      or pass ``mca.relayerNearRecipient`` on quote.
-
-    Older relayers accepted ``execute({ actions: [Withdraw] })`` but current multichain
-    relayers expect ``simple_withdraw`` only.
+    Full withdraw liquidity is routed through ``execute(Withdraw)``, not via a large
+    ``simple_withdraw`` to the relayer.
     """
     logic = str(logic_contract_id or "").strip()
     rid = str(withdraw_recipient_id or "").strip()
@@ -206,23 +253,26 @@ def assemble_mca_withdraw_to_intents_business(
     sign_chain_is_near: bool,
     simple_withdraw_tx: Optional[List[Dict[str, Any]]] = None,
     simple_withdraw_recipient_for_relayer: Optional[str] = None,
+    relayer_prepay_simple_withdraw_inner: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns the `businessMap` equivalent (nonce, deadline, tx_requests).
 
-    When `sign_chain_is_near`, prepends NO simple_withdraw txs (frontend signs exec directly —
-    separate path).
+    When `sign_chain_is_near`, the batch avoids relayer-specific prepays: register + Withdraw + transfers.
 
     Args:
       `simple_withdraw_recipient_for_relayer`:
-        Required when ``sign_chain_is_near`` is False (multichain relayer path).
-        NEAR account id that Logic ``simple_withdraw.recipient_id`` must match
-        (e.g. ``am_relayer.stg.ref-dev-team.near``). Ignored for near_exec — MCA id is used.
-      `amount_burrow_inner`: **Required.** Burrow *internal* decimal string for
-      ``simple_withwithdraw.amount_with_inner_decimal`` — same magnitude as Lending
-      ``Withdraw.max_amount``, **not** NEP-141 ``amountIn``. Passing token smallest units
-      here triggers Relayer errors such as ``simple_withdraw amount too small``.
-      `amount_token_smallest`: NEP-141 smallest units attached to ft_transfer (`amountToken`).
+        Required when sending a prepay ``simple_withdraw`` (multichain relayer path &&
+        nonempty ``relayer_prepay_simple_withdraw_inner`` / ``MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER``).
+        NEAR account id for ``recipient_id`` (e.g. ``am_relayer.stg.ref-dev-team.near``).
+      `relayer_prepay_simple_withdraw_inner`:
+        Optional tiny Burrow-inner string for Logic ``simple_withdraw`` → relayer **before**
+        ``execute(Withdraw)``. Prefer matching ``simpleWithdrawData.amountBurrow`` from the App.
+      `amount_burrow_inner`: **Required.** Burrow *internal* decimal string matching Lending
+      ``Withdraw.max_amount`` (used for the ``execute`` leg), **not** NEP-141 ``amountIn``.
+      `amount_token_smallest`: Raw NEP-141 smallest-unit string from the quote / ``amountToken``
+      before the Lending UI adjustment. The intents ``ft_transfer`` leg uses ``max(0, amount - 1)``
+      smallest units (matches ``Action.tsx`` ``getWithdrawData``).
     """
     mca = str(mca_account_id or "").strip()
     tid = str(token_id_nep141 or "").strip()
@@ -246,31 +296,44 @@ def assemble_mca_withdraw_to_intents_business(
     amt_sw_inner = str(amount_burrow_inner or "").strip()
     if not amt_sw_inner:
         raise ValueError(
-            "Burrow simple_withwithdraw requires amount_burrow_inner (pass mca.amountBurrow): "
+            "Burrow withdraw requires amount_burrow_inner (pass mca.amountBurrow): "
             "Burrow internal decimal units, same scale as Lending Withdraw.max_amount — "
             "never substitute NEP-141 amountIn (e.g. \"199999\")."
         )
-    if sign_chain_is_near:
-        sw_recv = mca
-    else:
+
+    cfg_fee = getattr(Cfg, "MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER", None)
+    fee_raw = str(relayer_prepay_simple_withdraw_inner or "").strip() or (
+        str(cfg_fee).strip() if cfg_fee is not None and str(cfg_fee).strip() else ""
+    )
+
+    if not sign_chain_is_near and fee_raw:
         sw_recv = str(simple_withdraw_recipient_for_relayer or "").strip()
         if not sw_recv:
             raise ValueError(
                 "MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID is not configured and mca.relayerNearRecipient "
-                "was not provided — Burrow simple_withdraw must use the multichain relayer NEAR account "
-                'as recipient_id (Relayer error: expected relayer account, got MCA). '
-                'Set MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID in db_info or pass relayerNearRecipient on quote.'
+                "was not provided — prepay simple_withdraw requires the multichain relayer NEAR account "
+                'as recipient_id. Set MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID in db_info or pass relayerNearRecipient on quote.'
             )
-    tx_requests.append(
-        build_withdraw_simple_withdraw_tx_request(logic, tid, amt_sw_inner, sw_recv)
-    )
+        tx_requests.append(
+            build_withdraw_simple_withdraw_tx_request(logic, tid, fee_raw, sw_recv)
+        )
+    elif not sign_chain_is_near and not (simple_withdraw_tx or []):
+        logger.warning(
+            "mca_withdraw relayer batch: no prepay `simple_withdraw` configured "
+            "(set mca.relayerPrepayBurrowInner quote field or "
+            "Cfg.MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER / db_info — match App "
+            "simpleWithdrawData.amountBurrow). Some staging relayers require this step."
+        )
 
+    tx_requests.append(build_execute_withdraw_tx_request(logic, tid, amt_sw_inner))
+
+    amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_token_smallest))
     tx_requests.extend(
         build_transfer_txs_to_intents_deposit(
             network_id=network_id,
             token_id=tid,
             deposit_address=intents_deposit_address,
-            amount_token_smallest=str(amount_token_smallest),
+            amount_token_smallest=str(amt_ft),
             frontend_target_chain=frontend_target_chain,
         )
     )

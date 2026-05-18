@@ -101,6 +101,7 @@ from cross_chain_tx_builder import (
 from db_provider import add_multichain_lending_requests
 from near_same_chain_mca import near_same_chain_mca_applies, resolve_near_mca_deposit_receiver
 from near_mca_withdraw_tx import build_near_mca_withdraw_exec_tx_payload
+from mca_withdraw_cross_intents import nep141_ft_transfer_amount_minus_one
 
 
 def broadcast_near_signed_transaction(network_id: str, signed_tx_base64: str) -> Dict[str, Any]:
@@ -201,11 +202,12 @@ def _assemble_near_mca_withdraw_tx(
             or "could not resolve mca.amountBurrow (pass explicitly or rely on Burrow get_asset + amountIn)"
         )
 
+    amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_in))
     return build_near_mca_withdraw_exec_tx_payload(
         network_id=Cfg.NETWORK_ID,
         mca_account_id=mca_id,
         token_id=tid,
-        amount_token_smallest=str(amount_in),
+        amount_token_smallest=str(amt_ft),
         amount_burrow=amt_br,
         recipient_near=rec,
         exec_signer_near=exec_signer,
@@ -1154,6 +1156,15 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 getattr(Cfg, "MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID", "") or ""
             ).strip()
 
+        prepay_inner = ""
+        if isinstance(mca_block, dict):
+            prepay_inner = str(
+                mca_block.get("relayerPrepayBurrowInner")
+                or mca_block.get("relayer_prepay_burrow_inner")
+                or mca_block.get("relayerPrepaySimpleWithdrawInner")
+                or ""
+            ).strip()
+
         business = assemble_mca_withdraw_to_intents_business(
             network_id=nw,
             mca_account_id=mca_s,
@@ -1167,9 +1178,11 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             simple_withdraw_recipient_for_relayer=(
                 relay_near_recipient if not is_near_signer else None
             ),
+            relayer_prepay_simple_withdraw_inner=(prepay_inner or None),
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)
+        amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_in))
 
         submission_mode = "near_exec" if is_near_signer else "multichain_relayer"
         out: Dict[str, Any] = {
@@ -1181,6 +1194,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             "mcaAccountId": mca_s,
             "tokenId": tid,
             "amountIn": str(amount_in),
+            "amountFtTransferSmallest": str(amt_ft),
             "amountBurrowInner": str(amt_borrow_inner),
         }
 
@@ -1205,7 +1219,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 business=business,
                 token_id=tid,
                 intents_deposit_address=dep,
-                amount_token_smallest=str(amount_in),
+                amount_token_smallest=str(amt_ft),
                 amount_burrow_inner=str(amt_borrow_inner),
             )
             out["nearExecWalletPreview"] = preview

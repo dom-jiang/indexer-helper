@@ -28,6 +28,11 @@ except ImportError:
     MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = ""
 
 try:
+    from db_info import MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
+except ImportError:
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = None
+
+try:
     from db_info import REDIS_HOST, REDIS_PORT
 except ImportError:
     REDIS_HOST = "127.0.0.1"
@@ -205,6 +210,10 @@ class Cfg:
     MCA_INTENTS_APP_FEES = MCA_INTENTS_APP_FEES
     MCA_DEFAULT_REFERRAL = MCA_DEFAULT_REFERRAL
     MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+    # Burrow-inner amount sent via Logic `simple_withdraw` to the multichain relayer BEFORE
+    # `execute(Withdraw)` in MCA withdraw batches (staging relayers often require this leg).
+    # Override in `db_info.py` or pass `mca.relayerPrepayBurrowInner` on /quote requests.
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
     # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
     # cross-chain Solana deposit transactions on the backend. Set to a
     # paid/private RPC (Helius / QuickNode / Triton ...) in production; the
