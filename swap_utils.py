@@ -20,6 +20,12 @@ from typing import Dict, Optional
 from loguru import logger
 from bitget_utils import proxy_bitget_request, proxy_okx_request
 
+from near_smart_router_swap import (
+    ROUTER_NEAR_REF_SMARTROUTER as NEAR_REF_SMART_ROUTER_NAME,
+    near_same_chain_build_tx as _near_ref_build_tx,
+    near_same_chain_quote as _near_ref_quote,
+)
+
 
 # ============================================================
 # Chain Type Detection
@@ -1736,15 +1742,18 @@ def multi_chain_quote(
     elif ct == CHAIN_TYPE_APTOS:
         return aggregate_aptos_quote(token_in, token_out, amount_in, slippage, sender, recipient)
     elif ct == CHAIN_TYPE_NEAR:
-        # Same-chain NEAR swap (Ref Finance / etc.) is not yet integrated.
-        # Bail out explicitly instead of falling through to the EVM aggregator,
-        # which would produce confusing OKX/Bitget errors. NEAR is currently
-        # supported only as a cross-chain source/destination via 1Click.
-        return {
-            "success": False,
-            "chainType": CHAIN_TYPE_NEAR,
-            "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
-        }
+        slip = convert_slippage_to_decimal(float(slippage))
+        q = _near_ref_quote(
+            token_in,
+            token_out,
+            str(amount_in),
+            slip,
+            sender,
+            recipient,
+        )
+        if isinstance(q.get("quote"), dict) and q["success"]:
+            q["quote"].setdefault("routerName", NEAR_REF_SMART_ROUTER_NAME)
+        return q
     elif ct == CHAIN_TYPE_SUI:
         # SUI same-chain swap (Cetus / Turbos / Aftermath etc.) is not yet
         # integrated. Cross-chain via 1Click works.
@@ -1801,11 +1810,16 @@ def multi_chain_build_tx(
     elif ct == CHAIN_TYPE_APTOS:
         return build_aptos_swap_tx(token_in, token_out, amount_in, slippage, sender, recipient)
     elif ct == CHAIN_TYPE_NEAR:
-        return {
-            "success": False,
-            "chainType": CHAIN_TYPE_NEAR,
-            "error": "NEAR same-chain swap not supported yet; use cross-chain (fromChain != toChain) via 1Click.",
-        }
+        slip = convert_slippage_to_decimal(float(slippage))
+        return _near_ref_build_tx(
+            router,
+            token_in,
+            token_out,
+            str(amount_in),
+            slip,
+            sender,
+            recipient,
+        )
     elif ct == CHAIN_TYPE_SUI:
         return {
             "success": False,
@@ -1900,19 +1914,16 @@ def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
             "needsApproval": False,
         }
     elif chain_type == CHAIN_TYPE_NEAR or chain_id in NEAR_CHAIN_IDS:
-        # NEAR is only supported through cross-chain (1Click). Surface the
-        # bridge router under the "crossChainRouters" key so the frontend's
-        # supported-routers UI can show "cross-chain only".
         return {
             "chainType": CHAIN_TYPE_NEAR,
             "chainId": "near",
-            "routers": [],
+            "routers": [{"name": NEAR_REF_SMART_ROUTER_NAME, "supported": True}],
             "crossChainRouters": [
                 {"name": "nearintents", "supported": True},
             ],
             "bluechipTokens": [],
             "needsApproval": False,
-            "sameChainSupported": False,
+            "sameChainSupported": True,
         }
     elif chain_type == CHAIN_TYPE_SUI or chain_id in SUI_CHAIN_IDS:
         return {

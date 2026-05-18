@@ -2,9 +2,10 @@
 MCA withdraw from Burrow + NEP-141 transfer to Near Intents 1Click deposit address.
 
 Mirrors frontend `withdrawFromMca` (`src/services/lending/actions/withdraw.ts`) when:
-  - simpleWithdrawData is absent (empty simple_withdraw prefix),
-  - Burrow oracle path disabled (always `logic.execute`),
-  - no collateral decrease (single `Withdraw`),
+  - simpleWithdrawData is absent (empty simple_withdraw prefix before gas txs),
+  - Burrow oracle path disabled; **Burrow Logic uses `simple_withdraw`** here (MCA multichain
+    relayer validates this method name — it rejects `execute` with only `Withdraw`),
+  - no collateral decrease (single withdraw leg),
   - `tansfer_txs_query`-style transfer toward `depositAddress`.
 
 Used for NEAR Lending -> arbitrary 1Click destination: one signature + multichain relayer.
@@ -151,22 +152,44 @@ def build_transfer_txs_to_intents_deposit(
     ]
 
 
-def build_withdraw_execute_tx_request(
-    logic_contract_id: str, token_id: str, amount_burrow_inner: str
+def build_withdraw_simple_withdraw_tx_request(
+    logic_contract_id: str,
+    token_id: str,
+    amount_burrow_inner: str,
+    withdraw_recipient_id: str,
 ) -> Dict[str, Any]:
-    """Single `Withdraw` via Burrow logic `execute` (non-oracle branch)."""
+    """Single-leg Burrow withdrawal nested in MCA batch: Logic `simple_withdraw`.
+
+    - **near_exec** (NEAR signer): ``withdraw_recipient_id`` MUST be **mca_account_id**
+      so tokens stay on the MCA for the following ``ft_transfer`` to 1Click.
+
+    - **multichain_relayer** (EVM/etc. signer): Relayer rejects ``recipient_id=MCA``.
+      Must match frontend ``RELAYER_ID`` / chain-app ``relayerId`` — staging example
+      ``am_relayer.stg.ref-dev-team.near``. Configure ``Cfg.MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID``
+      or pass ``mca.relayerNearRecipient`` on quote.
+
+    Older relayers accepted ``execute({ actions: [Withdraw] })`` but current multichain
+    relayers expect ``simple_withdraw`` only.
+    """
     logic = str(logic_contract_id or "").strip()
-    withdraw_action = {"Withdraw": {"token_id": str(token_id), "max_amount": str(amount_burrow_inner)}}
-    withdraw_fn = {
-        "method_name": "execute",
-        "args": _serialize_args({"actions": [withdraw_action]}),
-        "gas": _tgas_yocto(120),
+    rid = str(withdraw_recipient_id or "").strip()
+    sw_fn = {
+        "method_name": "simple_withdraw",
+        "args": _serialize_args(
+            {
+                "token_id": str(token_id),
+                "amount_with_inner_decimal": str(amount_burrow_inner),
+                "recipient_id": rid,
+            }
+        ),
+        # Match production multichain relayer batches (frontend / Relayer expectations).
+        "gas": _tgas_yocto(100),
         "deposit": "1",
     }
     return {
         "FunctionCall": {
             "receiver_id": logic,
-            "function_calls": [withdraw_fn],
+            "function_calls": [sw_fn],
         }
     }
 
@@ -182,6 +205,7 @@ def assemble_mca_withdraw_to_intents_business(
     frontend_target_chain: str,
     sign_chain_is_near: bool,
     simple_withdraw_tx: Optional[List[Dict[str, Any]]] = None,
+    simple_withdraw_recipient_for_relayer: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns the `businessMap` equivalent (nonce, deadline, tx_requests).
@@ -190,7 +214,14 @@ def assemble_mca_withdraw_to_intents_business(
     separate path).
 
     Args:
-      `amount_burrow_inner`: Burrow `Withdraw.max_amount` (metadata / inner decimals as on TS side).
+      `simple_withdraw_recipient_for_relayer`:
+        Required when ``sign_chain_is_near`` is False (multichain relayer path).
+        NEAR account id that Logic ``simple_withdraw.recipient_id`` must match
+        (e.g. ``am_relayer.stg.ref-dev-team.near``). Ignored for near_exec — MCA id is used.
+      `amount_burrow_inner`: **Required.** Burrow *internal* decimal string for
+      ``simple_withwithdraw.amount_with_inner_decimal`` — same magnitude as Lending
+      ``Withdraw.max_amount``, **not** NEP-141 ``amountIn``. Passing token smallest units
+      here triggers Relayer errors such as ``simple_withdraw amount too small``.
       `amount_token_smallest`: NEP-141 smallest units attached to ft_transfer (`amountToken`).
     """
     mca = str(mca_account_id or "").strip()
@@ -212,8 +243,27 @@ def assemble_mca_withdraw_to_intents_business(
 
     tx_requests.extend(build_mca_register_token_tx_requests(network_id, tid, mca))
 
-    amt_br = str(amount_burrow_inner or "").strip() or str(amount_token_smallest)
-    tx_requests.append(build_withdraw_execute_tx_request(logic, tid, amt_br))
+    amt_sw_inner = str(amount_burrow_inner or "").strip()
+    if not amt_sw_inner:
+        raise ValueError(
+            "Burrow simple_withwithdraw requires amount_burrow_inner (pass mca.amountBurrow): "
+            "Burrow internal decimal units, same scale as Lending Withdraw.max_amount — "
+            "never substitute NEP-141 amountIn (e.g. \"199999\")."
+        )
+    if sign_chain_is_near:
+        sw_recv = mca
+    else:
+        sw_recv = str(simple_withdraw_recipient_for_relayer or "").strip()
+        if not sw_recv:
+            raise ValueError(
+                "MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID is not configured and mca.relayerNearRecipient "
+                "was not provided — Burrow simple_withdraw must use the multichain relayer NEAR account "
+                'as recipient_id (Relayer error: expected relayer account, got MCA). '
+                'Set MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID in db_info or pass relayerNearRecipient on quote.'
+            )
+    tx_requests.append(
+        build_withdraw_simple_withdraw_tx_request(logic, tid, amt_sw_inner, sw_recv)
+    )
 
     tx_requests.extend(
         build_transfer_txs_to_intents_deposit(

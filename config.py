@@ -23,6 +23,11 @@ except ImportError:
     MCA_DEFAULT_REFERRAL = "rhea_lending"
 
 try:
+    from db_info import MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+except ImportError:
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = ""
+
+try:
     from db_info import REDIS_HOST, REDIS_PORT
 except ImportError:
     REDIS_HOST = "127.0.0.1"
@@ -199,6 +204,7 @@ class Cfg:
     MCA_INTENTS_APP_FEES_RECIPIENT = MCA_INTENTS_APP_FEES_RECIPIENT
     MCA_INTENTS_APP_FEES = MCA_INTENTS_APP_FEES
     MCA_DEFAULT_REFERRAL = MCA_DEFAULT_REFERRAL
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
     # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
     # cross-chain Solana deposit transactions on the backend. Set to a
     # paid/private RPC (Helius / QuickNode / Triton ...) in production; the

@@ -183,16 +183,23 @@ def _assemble_near_mca_withdraw_tx(
     if not rec:
         raise ValueError("recipient is required (NEAR account that receives withdrawn tokens)")
 
-    ab = (
-        mca_block.get("amountBurrow")
-        or mca_block.get("amount_with_inner_decimal")
-        or mca_block.get("amount_burrow")
-    )
-    amt_br = str(ab).strip() if ab is not None and str(ab).strip() else str(amount_in)
-
     tid = str((token_in or {}).get("address") or "").strip()
     if not tid:
         raise ValueError("tokenIn address required")
+
+    from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
+
+    amt_br, br_err = resolve_mca_withdraw_burrow_inner_amount(
+        network_id=str(Cfg.NETWORK_ID),
+        token_id=tid,
+        amount_token_smallest=str(amount_in),
+        mca_block=mca_block,
+    )
+    if br_err or not amt_br:
+        raise ValueError(
+            br_err
+            or "could not resolve mca.amountBurrow (pass explicitly or rely on Burrow get_asset + amountIn)"
+        )
 
     return build_near_mca_withdraw_exec_tx_payload(
         network_id=Cfg.NETWORK_ID,
@@ -1075,14 +1082,24 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         if not mca_acc:
             return
 
-        amt_borrow = (
-            mca_block.get("amountBurrow")
-            or mca_block.get("amount_burrow")
-            or mca_block.get("amount_with_inner_decimal")
-            or amount_in
-        )
         tid = str((token_in or {}).get("address") or "").strip()
         if not tid:
+            return
+
+        from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
+
+        amt_borrow_inner, br_err_note = resolve_mca_withdraw_burrow_inner_amount(
+            network_id=str(Cfg.NETWORK_ID),
+            token_id=tid,
+            amount_token_smallest=str(amount_in),
+            mca_block=mca_block,
+        )
+        if not amt_borrow_inner:
+            logger.warning(
+                "mcaWithdrawToIntents: omitting attach — %s",
+                br_err_note
+                or "could not resolve Burrow inner amount (explicit mca.amountBurrow or get_asset derive)",
+            )
             return
 
         front_target = (
@@ -1124,16 +1141,32 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         nw = str(Cfg.NETWORK_ID)
         mca_s = str(mca_acc)
 
+        relay_near_recipient = ""
+        if not is_near_signer and isinstance(mca_block, dict):
+            relay_near_recipient = str(
+                mca_block.get("relayerNearRecipient")
+                or mca_block.get("relayer_near_recipient")
+                or mca_block.get("multichainRelayerNearAccount")
+                or ""
+            ).strip()
+        if not is_near_signer and not relay_near_recipient:
+            relay_near_recipient = str(
+                getattr(Cfg, "MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID", "") or ""
+            ).strip()
+
         business = assemble_mca_withdraw_to_intents_business(
             network_id=nw,
             mca_account_id=mca_s,
             token_id_nep141=tid,
             amount_token_smallest=str(amount_in),
-            amount_burrow_inner=str(amt_borrow),
+            amount_burrow_inner=str(amt_borrow_inner),
             intents_deposit_address=dep,
             frontend_target_chain=front_target,
             sign_chain_is_near=is_near_signer,
             simple_withdraw_tx=None,
+            simple_withdraw_recipient_for_relayer=(
+                relay_near_recipient if not is_near_signer else None
+            ),
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)
@@ -1148,7 +1181,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             "mcaAccountId": mca_s,
             "tokenId": tid,
             "amountIn": str(amount_in),
-            "amountBurrowInner": str(amt_borrow),
+            "amountBurrowInner": str(amt_borrow_inner),
         }
 
         if is_near_signer:
@@ -1173,7 +1206,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 token_id=tid,
                 intents_deposit_address=dep,
                 amount_token_smallest=str(amount_in),
-                amount_burrow_inner=str(amt_borrow),
+                amount_burrow_inner=str(amt_borrow_inner),
             )
             out["nearExecWalletPreview"] = preview
             out["signer"] = {"chain": sign_chain, "identityKey": exec_signer_near}

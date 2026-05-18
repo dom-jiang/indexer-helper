@@ -88,7 +88,12 @@ def build_near_mca_withdraw_exec_tx_payload(
         raise RuntimeError("Burrow logic contract id not configured (MCA_BURROW_LOGIC / BURROW_CONTRACT)")
 
     amt_tok = str(amount_token_smallest).strip()
-    amt_br = str(amount_burrow or amt_tok).strip()
+    amt_br = str(amount_burrow or "").strip()
+    if not amt_br:
+        raise ValueError(
+            "amountBurrow is required: Burrow Withdraw.max_amount uses internal decimal units, "
+            "not NEP-141 smallest-unit amountIn."
+        )
     withdraw_action = {"Withdraw": {"token_id": tid, "max_amount": amt_br}}
 
     withdraw_fn = {
