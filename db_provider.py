@@ -1239,10 +1239,10 @@ def query_recent_transaction_swap(network_id, pool_id):
 def query_recent_transaction_dcl_swap(network_id, pool_id):
     db_conn = get_db_connect(network_id)
     sql = "select token_in, token_out, amount_in, amount_out,`timestamp`, '' as tx_id,tx_id as receipt_id from " \
-          "t_swap where amount_in > '0' and pool_id like '%"+pool_id+"%' order by `timestamp` desc limit 50"
+          "t_swap where amount_in > '0' and pool_id = %s order by `timestamp` desc limit 50"
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
-        cursor.execute(sql)
+        cursor.execute(sql, pool_id)
         recent_transaction_data = cursor.fetchall()
         return recent_transaction_data
     except Exception as e:
@@ -3059,6 +3059,23 @@ def query_oneclick_orders(network_id, refund_to, page_number, page_size):
     except Exception as e:
         print("query_oneclick_orders error:", e)
         return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_oneclick_order_by_deposit_address(network_id, deposit_address):
+    """Latest oneclick_orders row for this deposit_address (ORDER BY id DESC LIMIT 1)."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT * FROM oneclick_orders
+             WHERE deposit_address = %s ORDER BY id DESC LIMIT 1"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (deposit_address,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_oneclick_order_by_deposit_address error:", e)
+        return None
     finally:
         cursor.close()
         db_conn.close()
