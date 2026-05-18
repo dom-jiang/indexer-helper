@@ -1456,13 +1456,26 @@ def _unified_mca_relayer_submit(payload: Dict) -> Dict:
         batch_id = add_multichain_lending_requests(
             Cfg.NETWORK_ID, mca_id, wallet, requests_list, page_display_data
         )
+        bid_str = str(batch_id)
+        deposit_hint = ""
+        try:
+            from mca_relayer_payload import extract_intents_deposit_from_relayer_payload
+
+            deposit_hint = extract_intents_deposit_from_relayer_payload(dict(payload)) or ""
+        except Exception:
+            deposit_hint = ""
+        data_out: Dict[str, Any] = {
+            "batchId": bid_str,
+            "orderId": bid_str,
+            "statusRouter": "mca_relayer",
+            "submissionType": "mca_relayer",
+        }
+        if deposit_hint:
+            data_out["intentsDepositAddress"] = deposit_hint
         return {
             "code": 0,
             "msg": "success",
-            "data": {
-                "batchId": str(batch_id),
-                "submissionType": "mca_relayer",
-            },
+            "data": data_out,
         }
     except Exception as e:
         logger.exception(f"_unified_mca_relayer_submit error: {e}")

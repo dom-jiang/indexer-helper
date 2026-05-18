@@ -2721,17 +2721,29 @@ def api_swap_mca_withdraw_jobs():
 @app.route('/api/swap/order-status', methods=['GET'])
 def api_swap_order_status():
     """
-    Unified cross-chain order status query.
-    Params: orderId, router (omnibridge / nearintents)
+    Unified cross-chain / relayer-adjacent order status.
+
+    Query params:
+      - orderId (required)
+      - router (required):
+          * omnibridge
+          * nearintents | preswap-nearintents  (orderId = 1Click depositAddress)
+          * mca_relayer | mca-withdraw-intents (orderId = multichain_lending batch_id,
+            same as swap `data.orderId` / `data.batchId`; includes Relayer batch + 1Click when parsable)
     """
     try:
         order_id = request.args.get("orderId", "")
-        router = request.args.get("router", "")
+        router = request.args.get("router", "").strip().lower()
 
         if not order_id:
             return jsonify({"code": -1, "msg": "orderId is required"})
         if not router:
-            return jsonify({"code": -1, "msg": "router is required (omnibridge or nearintents)"})
+            return jsonify(
+                {
+                    "code": -1,
+                    "msg": "router is required (omnibridge, nearintents, preswap-nearintents, mca_relayer)",
+                }
+            )
 
         if router == "omnibridge":
             from omnibridge_utils import omni_get_order_status
@@ -2742,8 +2754,78 @@ def api_swap_order_status():
             # 1Click depositAddress, so status query goes through the same path.
             from nearintents_utils import nearintents_order_status
             result = nearintents_order_status(order_id)
+        elif router in ("mca_relayer", "mca-withdraw-intents"):
+            from mca_relayer_payload import (
+                extract_intents_deposit_address_from_business,
+                summarize_multichain_lending_batch,
+            )
+            from nearintents_utils import nearintents_order_status
+
+            bid = order_id.strip()
+            rows = query_multichain_lending_data(Cfg.NETWORK_ID, bid)
+            if rows is None:
+                rows = []
+            s = summarize_multichain_lending_batch(rows)
+
+            deposit_addr = ""
+            for r in rows:
+                rq = r.get("request")
+                if not rq:
+                    continue
+                try:
+                    obj = json.loads(rq) if isinstance(rq, str) else rq
+                    b = obj.get("business") if isinstance(obj, dict) else None
+                    if isinstance(b, dict):
+                        dep = extract_intents_deposit_address_from_business(b)
+                        if dep:
+                            deposit_addr = dep
+                except Exception:
+                    continue
+
+            intents_payload = None
+            intents_err = None
+            if deposit_addr:
+                ns = nearintents_order_status(deposit_addr)
+                if ns.get("success"):
+                    intents_payload = ns.get("data")
+                else:
+                    intents_err = ns.get("error", "NearIntents status query failed")
+
+            return jsonify(
+                {
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "orderId": bid,
+                        "batchId": bid,
+                        "relayer": {
+                            "pending": bool(s.get("pending")),
+                            "complete": bool(s.get("complete")),
+                            "success": bool(s.get("success")),
+                            "txHashes": s.get("tx_hashes") or [],
+                            "error": s.get("error") or "",
+                            "rowCount": len(rows),
+                        },
+                        "intentsDepositAddress": deposit_addr or None,
+                        "intentsStatus": intents_payload,
+                        **(
+                            {"intentsStatusError": intents_err}
+                            if intents_err and not intents_payload
+                            else {}
+                        ),
+                    },
+                }
+            )
         else:
-            return jsonify({"code": -1, "msg": f"Unknown router: {router}. Supported: omnibridge, nearintents, preswap-nearintents"})
+            return jsonify(
+                {
+                    "code": -1,
+                    "msg": (
+                        f"Unknown router: {router}. Supported: omnibridge, nearintents, "
+                        "preswap-nearintents, mca_relayer"
+                    ),
+                }
+            )
 
         if result.get("success"):
             return jsonify({"code": 0, "msg": "success", "data": result.get("data", {})})

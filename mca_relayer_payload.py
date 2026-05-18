@@ -13,7 +13,7 @@ serialized with compact JSON (same separators as frontend JSON.stringify for sig
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _row_compact(obj: Dict[str, Any]) -> str:
@@ -170,4 +170,151 @@ def canonicalize_multichain_lending_requests_body(body: Dict[str, Any]) -> Dict[
         "wallet": ws,
         "request": reqs,
         "page_display_data": page,
+    }
+
+
+def extract_intents_deposit_address_from_business(business: Any) -> str:
+    """
+    Best-effort: last `ft_transfer` receiver_id inside `business.tx_requests`
+    (MCA withdraw → Near Intents deposit).
+    """
+    if not isinstance(business, dict):
+        return ""
+    txs = business.get("tx_requests")
+    if not isinstance(txs, list):
+        return ""
+    last_recv = ""
+    for tr in txs:
+        if not isinstance(tr, dict):
+            continue
+        fc = tr.get("FunctionCall")
+        if not isinstance(fc, dict):
+            continue
+        for call in fc.get("function_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            if call.get("method_name") != "ft_transfer":
+                continue
+            args_raw = call.get("args")
+            try:
+                if isinstance(args_raw, str):
+                    ad = json.loads(args_raw)
+                elif isinstance(args_raw, dict):
+                    ad = args_raw
+                else:
+                    continue
+                rid = str(ad.get("receiver_id") or "").strip()
+                if rid:
+                    last_recv = rid
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+    return last_recv
+
+
+def extract_intents_deposit_from_relayer_payload(payload: Dict[str, Any]) -> str:
+    """Structured (`business` / `signedPackages`) or legacy `request[]` rows."""
+    if not isinstance(payload, dict):
+        return ""
+    biz = payload.get("business")
+    if isinstance(biz, dict):
+        dep = extract_intents_deposit_address_from_business(biz)
+        if dep:
+            return dep
+    pkgs = payload.get("signedPackages")
+    if isinstance(pkgs, list):
+        for p in pkgs:
+            if isinstance(p, dict) and isinstance(p.get("business"), dict):
+                dep = extract_intents_deposit_address_from_business(p["business"])
+                if dep:
+                    return dep
+    legacy = payload.get("request")
+    if isinstance(legacy, list):
+        for item in legacy:
+            try:
+                if isinstance(item, str):
+                    obj = json.loads(item)
+                elif isinstance(item, dict):
+                    obj = item
+                else:
+                    continue
+                b = obj.get("business") if isinstance(obj, dict) else None
+                if isinstance(b, dict):
+                    dep = extract_intents_deposit_address_from_business(b)
+                    if dep:
+                        return dep
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+    return ""
+
+
+def summarize_multichain_lending_batch(rows: Optional[List[Any]]) -> Dict[str, Any]:
+    """
+    Interpret `multichain_lending_requests` (+ history union) rows for API / worker.
+
+    Returns keys: pending, complete, success, tx_hashes, error
+    """
+    empty_hashes: List[str] = []
+
+    if not rows:
+        return {
+            "pending": False,
+            "complete": False,
+            "success": False,
+            "tx_hashes": empty_hashes,
+            "error": "no multichain_lending rows yet",
+        }
+
+    try:
+        complete = all(int(r.get("batch_status") or 0) == 2 for r in rows)
+    except Exception:
+        complete = False
+
+    if not complete:
+        return {
+            "pending": True,
+            "complete": False,
+            "success": False,
+            "tx_hashes": empty_hashes,
+            "error": "",
+        }
+
+    errors: List[str] = []
+    tx_hashes: List[str] = []
+    for row in rows:
+        rr = row.get("request_result")
+        if rr is None:
+            continue
+        if isinstance(rr, str):
+            try:
+                obj = json.loads(rr)
+            except Exception:
+                obj = {}
+        elif isinstance(rr, dict):
+            obj = rr
+        else:
+            obj = {}
+        if isinstance(obj, dict):
+            if obj.get("other_err_msg") or obj.get("tx_err_msg"):
+                errors.append(
+                    str(obj.get("other_err_msg") or obj.get("tx_err_msg") or "")[:512]
+                )
+            if obj.get("tx_hash"):
+                tx_hashes.append(str(obj["tx_hash"]))
+        else:
+            errors.append(str(obj)[:512])
+
+    if errors:
+        return {
+            "pending": False,
+            "complete": True,
+            "success": False,
+            "tx_hashes": tx_hashes,
+            "error": "; ".join(errors)[:2000],
+        }
+    return {
+        "pending": False,
+        "complete": True,
+        "success": True,
+        "tx_hashes": tx_hashes,
+        "error": "",
     }
