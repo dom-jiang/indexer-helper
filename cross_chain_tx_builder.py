@@ -98,6 +98,43 @@ _NEAR_GAS_NEAR_DEPOSIT = "30000000000000"       # 30 Tgas
 _NEAR_ATTACHED_YOCTO = "1"                       # NEP-141 spec requires 1 yoctoNEAR on transfer calls
 _NEAR_GAS_STORAGE_DEPOSIT = "10000000000000"    # 10 Tgas — match Lending `commonTx.ts` / Meteor preview
 _NEAR_TOKEN_STORAGE_READ_NEAR_HUMAN = Decimal("0.00125")
+# NEAR implicit accounts only “exist” after the first transfer of NEAR to that id.
+# Intents 64-hex deposit receivers often need this bootstrap before NEP-141 can
+# run storage_deposit(receiver) in the follow-up tx (single receiverId = FT contract).
+_NEAR_IMPLICIT_BOOTSTRAP_NEAR_HUMAN = Decimal("0.005")
+
+
+def _near_transfer_bootstrap_implicit_account_action() -> Dict[str, Any]:
+    yocto = str(int(_NEAR_IMPLICIT_BOOTSTRAP_NEAR_HUMAN * (Decimal(10) ** 24)))
+    return {"type": "Transfer", "params": {"deposit": yocto}}
+
+
+def _near_implicit_bootstrap_transaction_if_needed(
+    network_id: Optional[str],
+    sender: str,
+    deposit_address: str,
+    *,
+    needs_fungible_ledger_registration: bool,
+) -> Optional[Dict[str, Any]]:
+    """
+    Second NEAR tx needs ``storage_deposit(account_id=deposit)`` on the NEP-141 /
+    wrap ledger. That call requires ``deposit`` to already exist as a NEAR
+    protocol account. Intents ``depositAddress`` values are often 64-hex implicits
+    that do not exist until funded — prepend **this** tx (native NEAR Transfer)
+    so the wallet signs bootstrap first, then the token leg from ``build_near_deposit_tx``.
+    """
+    if not needs_fungible_ledger_registration:
+        return None
+    if not _looks_like_implicit_near_account_id(deposit_address):
+        return None
+    existed = _near_protocol_account_exists(network_id, deposit_address)
+    if existed is True:
+        return None
+    return {
+        "signerId": sender,
+        "receiverId": deposit_address,
+        "actions": [_near_transfer_bootstrap_implicit_account_action()],
+    }
 
 
 def _cfg_near_rpc_urls(network_id: Optional[str]) -> List[str]:
@@ -229,36 +266,6 @@ def _looks_like_implicit_near_account_id(account_id: str) -> bool:
     if len(a) != 64:
         return False
     return all(("0" <= c <= "9") or ("a" <= c <= "f") for c in a)
-
-
-def _prepend_near_token_storage_for_deposit(
-    network_id: Optional[str],
-    token_contract: str,
-    deposit_account_id: str,
-) -> bool:
-    """
-    Only prepend wallet ``storage_deposit`` when the deposit receiver both
-    (1) has no fungible-token ledger registration yet, and (2) already exists as
-    a NEAR protocol account — otherwise FT ``storage_deposit`` reverts before
-    the bridge ``ft_transfer_call`` runs.
-    """
-    if not _near_deposit_account_needs_registration(
-        network_id, token_contract, deposit_account_id
-    ):
-        return False
-    existed = _near_protocol_account_exists(network_id, deposit_account_id)
-    if existed is False:
-        return False
-    if existed is True:
-        return True
-    # RPC inconclusive — avoid deterministic failure on Intents-style implicit deps.
-    if _looks_like_implicit_near_account_id(deposit_account_id):
-        logger.warning(
-            f"skip optional storage_deposit for implicit-shaped deposit receiver {deposit_account_id!r} "
-            f"(near view_account unavailable); relying on ft_transfer_call path"
-        )
-        return False
-    return True
 
 
 def _near_deposit_account_needs_registration(
@@ -464,8 +471,8 @@ def build_near_deposit_tx(
     Build a NEAR transaction payload that deposits `amount_smallest` of the
     NEP-141 token `token_address` to a 1Click `depositAddress`.
 
-    1Click on NEAR expects funds to arrive via `ft_transfer_call` on the
-    target NEP-141 contract, with the deposit address as `receiver_id`. The
+    1Click on NEAR: token leg uses ``ft_transfer`` (same payload shape as the
+    previous ``ft_transfer_call`` branch, ``methodName`` only differs). The
     NEAR native token is NOT a NEP-141; the canonical bridge form is wNEAR
     (`wrap.near`). We collapse the empty string and the symbolic aliases in
     `NEAR_NATIVE_ALIASES` onto the wrap.near flow, so the frontend can pass
@@ -474,24 +481,26 @@ def build_near_deposit_tx(
     When ``network_id`` is supplied (recommended: ``Cfg.NETWORK_ID``), we RPC
     query ``storage_balance_of`` on the relevant token ledger (``wrap.near`` or
     NEP-141). If ``depositAddress`` lacks FT registration we prepend
-    ``storage_deposit`` with ``registration_only: true``, **10 Tgas**, and
-    **0.00125 NEAR** — matching Lending ``tansfer_txs_query`` — **but only when
-    that address already exists as a NEAR protocol account**
-    (`view_account`). Implicit Intents receivers that do not yet exist skip this
-    action (calling ``storage_deposit`` first would revert with ``account …
-    doesn't exist``). When ``storage_balance_of`` is unreachable we retain the old
-    “assume needs registration” rule, then gate again on protocol account existence /
-    implicit-hex heuristics.
+    ``storage_deposit`` (0.00125 NEAR, 10 Tgas, ``registration_only``),
+    matching Lending ``tansfer_txs_query`` / ``near.transfer_near``.
 
+    Intents ``depositAddress`` values are often **64-char hex implicits** that do
+    not exist on the NEAR protocol until they receive NEAR. In that case
+    ``storage_deposit(account_id=deposit)`` fails (``account … doesn't exist``).
+    We then attach ``depositSetupTransaction``: a simple native NEAR
+    **Transfer** (0.005 NEAR) whose ``receiverId`` is ``depositAddress``. The
+    wallet must **sign and submit that tx first**, then sign the main token
+    transaction (``storage_deposit`` + … + ``ft_transfer``) — mirroring the
+    fact that one NEAR tx only has a single ``receiverId``.
     Two transaction shapes:
 
     1) NEAR-native source (`token_address` in `NEAR_NATIVE_ALIASES`):
        Actions on ``wrap.near``: optional ``storage_deposit``,
        ``near_deposit`` (`amount_smallest` yoctoNEAR -> wraps), then
-       ``ft_transfer_call`` (fresh wNEAR -> depositAddress).
+       ``ft_transfer`` (fresh wNEAR -> depositAddress).
 
     2) NEP-141 source (any other `token_address`):
-       Optional ``storage_deposit``, then ``ft_transfer_call``.
+       Optional ``storage_deposit``, then ``ft_transfer``.
        User must already hold the NEP-141 token in their NEAR wallet.
 
     Returned shape follows the NEAR `wallet-selector` / near-api-js
@@ -505,7 +514,9 @@ def build_near_deposit_tx(
         "tokenAddress":   "<NEP-141 contract>",
         "depositAddress": "<1Click depositAddress>",
         "amount":         "<smallest unit>",
-        "actions":        [ { "type": "FunctionCall", "params": {...} }, ... ]
+        "actions":        [ { "type": "FunctionCall" | "Transfer", "params": {...} }, ... ],
+        "depositSetupTransaction" (optional): tx to submit **before** the main payload
+          when Intents implicit ``depositAddress`` must be bootstrapped on-chain.
       }
     """
     addr_raw = (token_address or "").strip()
@@ -513,10 +524,11 @@ def build_near_deposit_tx(
     memo = deposit_memo or ""
     amount_str = str(amount_smallest)
 
-    ft_transfer_call_action = {
+    # Same JSON shape as before; only ``methodName`` uses ``ft_transfer``.
+    ft_deposit_final_action = {
         "type": "FunctionCall",
         "params": {
-            "methodName": "ft_transfer_call",
+            "methodName": "ft_transfer",
             "args": {
                 "receiver_id": deposit_address,
                 "amount": amount_str,
@@ -538,13 +550,20 @@ def build_near_deposit_tx(
             },
         }
         acts: List[Dict[str, Any]] = []
-        if _prepend_near_token_storage_for_deposit(
+        needs_wr = _near_deposit_account_needs_registration(
             network_id, "wrap.near", deposit_address
-        ):
+        )
+        setup_tx = _near_implicit_bootstrap_transaction_if_needed(
+            network_id,
+            sender,
+            deposit_address,
+            needs_fungible_ledger_registration=needs_wr,
+        )
+        if needs_wr:
             acts.append(_near_wallet_storage_deposit_action(deposit_address))
         acts.append(near_deposit_action)
-        acts.append(ft_transfer_call_action)
-        return {
+        acts.append(ft_deposit_final_action)
+        out_native: Dict[str, Any] = {
             "chainId": "near",
             "signerId": sender,
             "receiverId": "wrap.near",
@@ -554,12 +573,22 @@ def build_near_deposit_tx(
             "amount": amount_str,
             "actions": acts,
         }
+        if setup_tx:
+            out_native["depositSetupTransaction"] = setup_tx
+        return out_native
 
     nep141_actions: List[Dict[str, Any]] = []
-    if _prepend_near_token_storage_for_deposit(network_id, addr_raw, deposit_address):
+    needs_reg = _near_deposit_account_needs_registration(network_id, addr_raw, deposit_address)
+    setup_tx_nep = _near_implicit_bootstrap_transaction_if_needed(
+        network_id,
+        sender,
+        deposit_address,
+        needs_fungible_ledger_registration=needs_reg,
+    )
+    if needs_reg:
         nep141_actions.append(_near_wallet_storage_deposit_action(deposit_address))
-    nep141_actions.append(ft_transfer_call_action)
-    return {
+    nep141_actions.append(ft_deposit_final_action)
+    out_nep: Dict[str, Any] = {
         "chainId": "near",
         "signerId": sender,
         "receiverId": addr_raw,
@@ -569,6 +598,9 @@ def build_near_deposit_tx(
         "amount": amount_str,
         "actions": nep141_actions,
     }
+    if setup_tx_nep:
+        out_nep["depositSetupTransaction"] = setup_tx_nep
+    return out_nep
 
 
 # ============================================================================
