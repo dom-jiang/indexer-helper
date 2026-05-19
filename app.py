@@ -3485,14 +3485,18 @@ def handle_1click_create_order():
         )
 
         if resp.status_code >= 300:
-            return _1click_quote_cors_response((
-                jsonify({
-                    "error": "1Click API error",
-                    "status_code": resp.status_code,
-                    "detail": resp.text
-                }),
-                resp.status_code,
-            ))
+            # Match 1Click error JSON body (message, correlationId, …); avoid double-encoding in "detail".
+            try:
+                payload = resp.json()
+            except (ValueError, json.JSONDecodeError, TypeError):
+                payload = None
+            if not isinstance(payload, dict):
+                text = (resp.text or "").strip()
+                payload = {
+                    "message": text or "1Click API error",
+                    "path": "/v0/quote",
+                }
+            return _1click_quote_cors_response((jsonify(payload), resp.status_code))
 
         quote_data = resp.json()
         deposit_address = None
