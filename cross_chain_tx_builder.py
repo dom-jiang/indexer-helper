@@ -33,7 +33,8 @@ Solana additional response fields:
 import base64
 import json
 import time
-from typing import Dict, Optional, Tuple
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from loguru import logger
@@ -95,6 +96,210 @@ UTXO_CHAIN_IDS = {
 _NEAR_GAS_FT_TRANSFER_CALL = "100000000000000"  # 100 Tgas
 _NEAR_GAS_NEAR_DEPOSIT = "30000000000000"       # 30 Tgas
 _NEAR_ATTACHED_YOCTO = "1"                       # NEP-141 spec requires 1 yoctoNEAR on transfer calls
+_NEAR_GAS_STORAGE_DEPOSIT = "10000000000000"    # 10 Tgas — match Lending `commonTx.ts` / Meteor preview
+_NEAR_TOKEN_STORAGE_READ_NEAR_HUMAN = Decimal("0.00125")
+
+
+def _cfg_near_rpc_urls(network_id: Optional[str]) -> List[str]:
+    if _Cfg is None:
+        return ["https://rpc.mainnet.near.org"]
+    oid = str(
+        network_id or getattr(_Cfg, "NETWORK_ID", None) or "MAINNET"
+    ).upper()
+    raw = (getattr(_Cfg, "NETWORK", {}) or {}).get(oid, {}).get("NEAR_RPC_URL") or []
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    urls = [str(u) for u in raw if u]
+    return urls if urls else ["https://rpc.mainnet.near.org"]
+
+
+def _near_yocto_from_near_human(amount_near: str) -> str:
+    return str(int(Decimal(str(amount_near)) * Decimal(10**24)))
+
+
+def _near_view_call(
+    network_id: Optional[str],
+    *,
+    contract_id: str,
+    method_name: str,
+    args: Dict[str, Any],
+    timeout_sec: float = 8.0,
+) -> Any:
+    """
+    Lightweight NEAR RPC view helper (no indexer-helper NEAR deps).
+    Raises on exhausted RPC failures so callers can assume deposit is unknown.
+    """
+    ctr = str(contract_id or "").strip()
+    if not ctr:
+        raise ValueError("empty NEAR contract id for view")
+
+    payload_bin = json.dumps(args or {}, separators=(",", ":")).encode("utf-8")
+    body = {
+        "jsonrpc": "2.0",
+        "id": "cross-chain-tx-builder",
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "finality": "final",
+            "account_id": ctr,
+            "method_name": method_name,
+            "args_base64": base64.b64encode(payload_bin).decode("ascii"),
+        },
+    }
+    last_err: Optional[str] = None
+    for url in _cfg_near_rpc_urls(network_id):
+        try:
+            r = requests.post(str(url).strip(), json=body, timeout=timeout_sec)
+            r.raise_for_status()
+            data = r.json()
+            if "error" in data:
+                raise RuntimeError(str(data["error"]))
+            res = data.get("result") or {}
+            blobs = res.get("result")
+            if isinstance(blobs, list) and not blobs:
+                return None
+            if blobs is None:
+                return None
+            s = "".join(chr(int(b)) for b in blobs)
+            return json.loads(s)
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"NEAR RPC view {ctr}.{method_name} via {url}: {e}")
+            continue
+    raise RuntimeError(f"NEAR view failed for {ctr}.{method_name}: {last_err}")
+
+
+def _near_protocol_account_exists(
+    network_id: Optional[str], account_id: str, *, timeout_sec: float = 8.0
+) -> Optional[bool]:
+    """
+    True iff ``account_id`` exists on the NEAR protocol (view_account succeeds).
+
+    NEP-141 ``storage_deposit(account_id=X)`` requires ``X`` to already be a NEAR
+    account. Near Intents often returns implicit-style 64-hex deposit targets that
+    are not spun up until funds arrive — prepending ``storage_deposit`` for those
+    fails with ``account … doesn't exist`` (not a signature issue).
+    """
+    aid = str(account_id or "").strip()
+    if not aid:
+        return None
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": "near-protocol-account-check",
+        "method": "query",
+        "params": {"request_type": "view_account", "account_id": aid, "finality": "final"},
+    }
+    last_err = None
+    for url in _cfg_near_rpc_urls(network_id):
+        try:
+            r = requests.post(str(url).strip(), json=body, timeout=timeout_sec)
+            r.raise_for_status()
+            data = r.json() or {}
+            if isinstance(data.get("result"), dict) and data["result"]:
+                return True
+            err = data.get("error") or {}
+            msg = ""
+            err_name = ""
+            cause = err.get("cause") if isinstance(err.get("cause"), dict) else None
+            if isinstance(cause, dict):
+                msg = str(cause.get("info", {}).get("error_message") or "")
+                err_name = str(cause.get("name") or "")
+                nm_norm = err_name.upper().replace("-", "").replace("_", "")
+                if nm_norm in ("UNKNOWNACCOUNT", "ACCOUNTDOESNOTEXIST"):
+                    return False
+            combined = msg + str(err.get("message", "")) + err_name
+            if isinstance(combined, str) and combined:
+                lc = combined.lower()
+                if "does not exist" in lc or "doesn't exist" in lc:
+                    return False
+            logger.warning(f"near view_account ambiguous for {aid!r}: {data}")
+            return None
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"near view_account via {url} err: {e}")
+            continue
+    logger.warning(f"near view_account failed for {aid!r}: {last_err}")
+    return None
+
+
+def _looks_like_implicit_near_account_id(account_id: str) -> bool:
+    """Implicit NEAR ids are lowercase hex encoding of a pubkey, 64 chars."""
+    a = str(account_id or "").strip().lower()
+    if len(a) != 64:
+        return False
+    return all(("0" <= c <= "9") or ("a" <= c <= "f") for c in a)
+
+
+def _prepend_near_token_storage_for_deposit(
+    network_id: Optional[str],
+    token_contract: str,
+    deposit_account_id: str,
+) -> bool:
+    """
+    Only prepend wallet ``storage_deposit`` when the deposit receiver both
+    (1) has no fungible-token ledger registration yet, and (2) already exists as
+    a NEAR protocol account — otherwise FT ``storage_deposit`` reverts before
+    the bridge ``ft_transfer_call`` runs.
+    """
+    if not _near_deposit_account_needs_registration(
+        network_id, token_contract, deposit_account_id
+    ):
+        return False
+    existed = _near_protocol_account_exists(network_id, deposit_account_id)
+    if existed is False:
+        return False
+    if existed is True:
+        return True
+    # RPC inconclusive — avoid deterministic failure on Intents-style implicit deps.
+    if _looks_like_implicit_near_account_id(deposit_account_id):
+        logger.warning(
+            f"skip optional storage_deposit for implicit-shaped deposit receiver {deposit_account_id!r} "
+            f"(near view_account unavailable); relying on ft_transfer_call path"
+        )
+        return False
+    return True
+
+
+def _near_deposit_account_needs_registration(
+    network_id: Optional[str],
+    token_contract: str,
+    deposit_account_id: str,
+) -> bool:
+    """True iff we should prepend ``storage_deposit`` for ``deposit_account_id`` on ``token_contract``."""
+    tid = str(token_contract or "").strip()
+    dep = str(deposit_account_id or "").strip()
+    if not tid or not dep:
+        return True
+    try:
+        bal = _near_view_call(
+            network_id,
+            contract_id=tid,
+            method_name="storage_balance_of",
+            args={"account_id": dep},
+        )
+        # NEAR FT: registered accounts return a dict; absent registration is null-ish.
+        return not bool(bal)
+    except Exception as e:
+        logger.warning(f"storage_balance_of check skipped (assume deposit needed): {e}")
+        return True
+
+
+def _near_wallet_storage_deposit_action(deposit_account_id: str) -> Dict:
+    """Wallet-selector shaped action; matches Lending ``tansfer_txs_query`` / ``near.transfer_near``."""
+    dep_yocto = _near_yocto_from_near_human(str(_NEAR_TOKEN_STORAGE_READ_NEAR_HUMAN))
+    return {
+        "type": "FunctionCall",
+        "params": {
+            "methodName": "storage_deposit",
+            "args": {
+                "account_id": str(deposit_account_id),
+                "registration_only": True,
+            },
+            "gas": _NEAR_GAS_STORAGE_DEPOSIT,
+            "deposit": dep_yocto,
+        },
+    }
 
 
 class SolanaDepositTxBuildError(RuntimeError):
@@ -252,6 +457,8 @@ def build_near_deposit_tx(
     amount_smallest: str,
     sender: str,
     deposit_memo: str = "",
+    *,
+    network_id: Optional[str] = None,
 ) -> Dict:
     """
     Build a NEAR transaction payload that deposits `amount_smallest` of the
@@ -264,23 +471,27 @@ def build_near_deposit_tx(
     `NEAR_NATIVE_ALIASES` onto the wrap.near flow, so the frontend can pass
     whatever the user picks.
 
+    When ``network_id`` is supplied (recommended: ``Cfg.NETWORK_ID``), we RPC
+    query ``storage_balance_of`` on the relevant token ledger (``wrap.near`` or
+    NEP-141). If ``depositAddress`` lacks FT registration we prepend
+    ``storage_deposit`` with ``registration_only: true``, **10 Tgas**, and
+    **0.00125 NEAR** — matching Lending ``tansfer_txs_query`` — **but only when
+    that address already exists as a NEAR protocol account**
+    (`view_account`). Implicit Intents receivers that do not yet exist skip this
+    action (calling ``storage_deposit`` first would revert with ``account …
+    doesn't exist``). When ``storage_balance_of`` is unreachable we retain the old
+    “assume needs registration” rule, then gate again on protocol account existence /
+    implicit-hex heuristics.
+
     Two transaction shapes:
 
     1) NEAR-native source (`token_address` in `NEAR_NATIVE_ALIASES`):
-       Single signed tx with TWO actions on `wrap.near`:
-         a. near_deposit       (attaches `amount_smallest` yoctoNEAR -> wraps)
-         b. ft_transfer_call   (sends the freshly-minted wNEAR to depositAddress)
-       Net effect: user's native NEAR is wrapped and bridged cross-chain in
-       one signed transaction. Costs `amount_smallest` NEAR + 1 yoctoNEAR
-       storage attached on the ft_transfer_call (NEP-141 spec) + gas.
-       Caveat: users whose wallet has ONLY wNEAR (no native NEAR) will see
-       the `near_deposit` call fail; they should unwrap a small balance to
-       native NEAR first. This is a deliberate trade-off (B-plan over the
-       more involved dual-shape C-plan).
+       Actions on ``wrap.near``: optional ``storage_deposit``,
+       ``near_deposit`` (`amount_smallest` yoctoNEAR -> wraps), then
+       ``ft_transfer_call`` (fresh wNEAR -> depositAddress).
 
     2) NEP-141 source (any other `token_address`):
-       Single signed tx with ONE action on the NEP-141 contract:
-         a. ft_transfer_call   (-> depositAddress)
+       Optional ``storage_deposit``, then ``ft_transfer_call``.
        User must already hold the NEP-141 token in their NEAR wallet.
 
     Returned shape follows the NEAR `wallet-selector` / near-api-js
@@ -326,6 +537,13 @@ def build_near_deposit_tx(
                 "deposit": amount_str,
             },
         }
+        acts: List[Dict[str, Any]] = []
+        if _prepend_near_token_storage_for_deposit(
+            network_id, "wrap.near", deposit_address
+        ):
+            acts.append(_near_wallet_storage_deposit_action(deposit_address))
+        acts.append(near_deposit_action)
+        acts.append(ft_transfer_call_action)
         return {
             "chainId": "near",
             "signerId": sender,
@@ -334,9 +552,13 @@ def build_near_deposit_tx(
             "tokenAddress": "wrap.near",
             "depositAddress": deposit_address,
             "amount": amount_str,
-            "actions": [near_deposit_action, ft_transfer_call_action],
+            "actions": acts,
         }
 
+    nep141_actions: List[Dict[str, Any]] = []
+    if _prepend_near_token_storage_for_deposit(network_id, addr_raw, deposit_address):
+        nep141_actions.append(_near_wallet_storage_deposit_action(deposit_address))
+    nep141_actions.append(ft_transfer_call_action)
     return {
         "chainId": "near",
         "signerId": sender,
@@ -345,7 +567,7 @@ def build_near_deposit_tx(
         "tokenAddress": addr_raw,
         "depositAddress": deposit_address,
         "amount": amount_str,
-        "actions": [ft_transfer_call_action],
+        "actions": nep141_actions,
     }
 
 

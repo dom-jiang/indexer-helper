@@ -4,6 +4,10 @@ Server-side assembly of Burrow / Intents `customRecipientMsg` defaults for MCA d
 Aligns with frontend `format_wallet` + `storage_balance_of` logic in
 `src/hooks/useChainsSwapQuote.ts` and `src/services/lending/actions/commonAction.ts`.
 
+`mca.useAsCollateral` (or `use_as_collateral`) selects Collateral vs Supply for
+auto CRM and for `burrowAction=SupplyCreate` (not for `Create`, which matches
+the app: always `BurrowRegisterAndSupply`).
+
 Callers: `unified_quote` / `unified_swap` when `m.flow == "deposit"` and
 `customRecipientMsg` is omitted.
 """
@@ -233,7 +237,16 @@ def enrich_mca_deposit_block(mca: Dict[str, Any], network_id: str) -> Tuple[Dict
                 "burrowAction SupplyCreate/Create needs mca.recipientMsgSignatures: "
                 "sign JSON.stringify([w]) with the wallet on mca.signer.chain, then pass each signature string.",
             )
-        msg_obj_early = {"w": [wobj], "b": {"r": "BurrowRegisterAndSupply"}, "s": sig_list_early}
+        # Mirror lending `commonAction.ts`: SupplyCreate respects `useAsCollateral`;
+        # Create always uses BurrowRegisterAndSupply.
+        if explicit_upper == "SUPPLYCREATE":
+            use_coll_early = bool(out.get("useAsCollateral") or out.get("use_as_collateral"))
+            r_early = (
+                "BurrowRegisterAndCollateral" if use_coll_early else "BurrowRegisterAndSupply"
+            )
+        else:
+            r_early = "BurrowRegisterAndSupply"
+        msg_obj_early = {"w": [wobj], "b": {"r": r_early}, "s": sig_list_early}
         out["customRecipientMsg"] = json.dumps(msg_obj_early, separators=(",", ":"), ensure_ascii=False)
         out["depositCrmAutoFilled"] = True
         for k in _INTERNAL_MCA_KEYS:
@@ -247,7 +260,7 @@ def enrich_mca_deposit_block(mca: Dict[str, Any], network_id: str) -> Tuple[Dict
     if explicit_upper != "BURROWREPAY" and mca_acc and logic:
         registered = _registered_on_burrow_logic(network_id, logic, str(mca_acc))
 
-    use_coll = bool(out.get("useAsCollateral"))
+    use_coll = bool(out.get("useAsCollateral") or out.get("use_as_collateral"))
     try:
         r_action = _resolve_burrow_action(
             explicit=explicit_action,

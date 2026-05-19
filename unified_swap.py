@@ -1317,6 +1317,7 @@ def _synthetic_near_same_chain_mca_quote(
                     amount_smallest=str(amount_in),
                     sender=str(sender).strip(),
                     deposit_memo=crm,
+                    network_id=str(Cfg.NETWORK_ID),
                 )
                 bq["txPreviewAvailable"] = True
             except Exception as e:
@@ -1392,6 +1393,7 @@ def _near_same_chain_mca_deposit_swap(
         amount_smallest=str(amount_in),
         sender=sender,
         deposit_memo=crm,
+        network_id=str(Cfg.NETWORK_ID),
     )
     response_data = _build_common_response_data(
         is_cross_chain=False,
@@ -2579,6 +2581,7 @@ def _cross_chain_swap(
                 amount_smallest=amount_in,
                 sender=sender,
                 deposit_memo=deposit_memo,
+                network_id=str(Cfg.NETWORK_ID),
             )
             response_data["approve"] = None
         elif source_chain_type == CHAIN_TYPE_SOLANA:
