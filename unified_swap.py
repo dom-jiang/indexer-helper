@@ -1051,6 +1051,10 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
     """
     MCA Burrow withdraw on NEAR + ft_transfer to 1Click `depositAddress` (matches `withdrawFromMca` without simpleWithdrawData).
 
+    NearIntents quote / `minAmountIn` must use the same NEP-141 smallest-unit amount as the MCA
+    ``ft_transfer`` leg (Lending ``amountToken`` = ``max(0, amountIn - 1)``); otherwise the relay
+    succeeds but 1Click stays ``INCOMPLETE_DEPOSIT`` while ``depositedAmount < minAmountIn``.
+
     - `mca.signer.chain` in (`near`, `near-mainnet`): `submissionMode=near_exec`, `nearExecWalletPreview` for MCA `exec`.
     - Otherwise: `submissionMode=multichain_relayer`, `messageToSign` + `mcaRelayer` fields.
 
@@ -1104,6 +1108,10 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             )
             return
 
+        # Must match `assemble_mca_withdraw_to_intents_business` ft_transfer amount (Lending UI minus 1).
+        # If we quote 1Click with full `amount_in` but only transfer `amount_in - 1`, status stays INCOMPLETE_DEPOSIT.
+        amt_ft_for_intents = nep141_ft_transfer_amount_minus_one(str(amount_in))
+
         front_target = (
             "near"
             if _unified_chain_to_oneclick_slug(to_chain) == "near"
@@ -1115,7 +1123,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             to_chain=to_chain,
             token_in=token_in,
             token_out=token_out,
-            amount_in=str(amount_in),
+            amount_in=str(amt_ft_for_intents),
             sender=sender,
             recipient=recipient,
             slippage=slippage,
@@ -1182,7 +1190,6 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)
-        amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_in))
 
         submission_mode = "near_exec" if is_near_signer else "multichain_relayer"
         out: Dict[str, Any] = {
@@ -1194,7 +1201,8 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             "mcaAccountId": mca_s,
             "tokenId": tid,
             "amountIn": str(amount_in),
-            "amountFtTransferSmallest": str(amt_ft),
+            # Same string passed to NearIntents build + ft_transfer (`max(0, amountIn - 1)` smallest units).
+            "amountFtTransferSmallest": str(amt_ft_for_intents),
             "amountBurrowInner": str(amt_borrow_inner),
         }
 
@@ -1219,7 +1227,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 business=business,
                 token_id=tid,
                 intents_deposit_address=dep,
-                amount_token_smallest=str(amt_ft),
+                amount_token_smallest=str(amt_ft_for_intents),
                 amount_burrow_inner=str(amt_borrow_inner),
             )
             out["nearExecWalletPreview"] = preview
