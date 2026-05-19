@@ -6,6 +6,7 @@ from flask import Flask
 from flask import request
 from flask import jsonify
 from flask import Response
+from flask import make_response
 import json
 import math
 import logging
@@ -65,9 +66,13 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
 
-service_version = "20260318.01"
+service_version = "20260519.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
+
+# Scoped CORS: only /api/1click/quote and /api/1click/create-order (same handler).
+_ONECLICK_QUOTE_CORS_PATHS = frozenset({"/api/1click/quote", "/api/1click/create-order"})
+
 # Instantiation, which can be regarded as fixed format
 app = Flask(__name__)
 # limiter = Limiter(
@@ -83,6 +88,9 @@ app = Flask(__name__)
 def before_request():
     # Processing get requests
     path = request.path
+    # CORS preflight has no Authentication header; let the route answer OPTIONS.
+    if request.method == "OPTIONS" and path in _ONECLICK_QUOTE_CORS_PATHS:
+        return None
     if Cfg.NETWORK[Cfg.NETWORK_ID]["AUTH_SWITCH"] and path not in Cfg.NETWORK[Cfg.NETWORK_ID]["NOT_AUTH_LIST"]:
         try:
             headers_authentication = request.headers.get("Authentication")
@@ -3409,19 +3417,37 @@ except Exception as _e:
     logger.warning(f"Failed to ensure oneclick_orders table: {_e}")
 
 
-@app.route('/api/1click/create-order', methods=['POST'])
-@app.route('/api/1click/quote', methods=['POST'])
+def _1click_quote_cors_response(rv):
+    """Add Access-Control-Allow-Origin only for 1click quote/create-order responses."""
+    resp = make_response(rv)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+
+def _1click_quote_cors_preflight_response():
+    resp = Response(status=204)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    req_h = request.headers.get("Access-Control-Request-Headers")
+    resp.headers["Access-Control-Allow-Headers"] = req_h or "Content-Type, Authentication"
+    return resp
+
+
+@app.route('/api/1click/create-order', methods=['POST', 'OPTIONS'])
+@app.route('/api/1click/quote', methods=['POST', 'OPTIONS'])
 def handle_1click_create_order():
     """POST /api/1click/create-order and POST /api/1click/quote — same handler (1Click /v0/quote + insert oneclick_orders)."""
+    if request.method == "OPTIONS":
+        return _1click_quote_cors_preflight_response()
     try:
         body = request.get_json(force=True)
         if not body:
-            return jsonify({"error": "Request body is required"}), 400
+            return _1click_quote_cors_response((jsonify({"error": "Request body is required"}), 400))
 
         required_fields = ["originAsset", "destinationAsset", "amount", "refundTo", "recipient"]
         for field in required_fields:
             if not body.get(field):
-                return jsonify({"error": f"Missing required field: {field}"}), 400
+                return _1click_quote_cors_response((jsonify({"error": f"Missing required field: {field}"}), 400))
 
         oneclick_payload = {
             "dry": False,
@@ -3459,11 +3485,18 @@ def handle_1click_create_order():
         )
 
         if resp.status_code >= 300:
-            return jsonify({
-                "error": "1Click API error",
-                "status_code": resp.status_code,
-                "detail": resp.text
-            }), resp.status_code
+            # Match 1Click error JSON body (message, correlationId, …); avoid double-encoding in "detail".
+            try:
+                payload = resp.json()
+            except (ValueError, json.JSONDecodeError, TypeError):
+                payload = None
+            if not isinstance(payload, dict):
+                text = (resp.text or "").strip()
+                payload = {
+                    "message": text or "1Click API error",
+                    "path": "/v0/quote",
+                }
+            return _1click_quote_cors_response((jsonify(payload), resp.status_code))
 
         quote_data = resp.json()
         deposit_address = None
@@ -3489,11 +3522,11 @@ def handle_1click_create_order():
             quote_response=json.dumps(quote_data)
         )
 
-        return jsonify(quote_data)
+        return _1click_quote_cors_response(jsonify(quote_data))
 
     except Exception as e:
         logger.error(f"handle_1click_create_order error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return _1click_quote_cors_response((jsonify({"error": str(e)}), 500))
 
 
 def _serialize_oneclick_order_rows(data_list):
