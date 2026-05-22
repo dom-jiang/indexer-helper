@@ -3731,7 +3731,7 @@ def list_hyperliquid_transfer_history(
     list_sql = (
         "SELECT id, job_id, transfer_type, account_mode, hyperliquid_user_address, "
         "destination_address, status, message, progress, created_at, updated_at, finished_at, "
-        "last_error, tx_hashes_json, permit_id "
+        "last_error, tx_hashes_json, permit_id, external_status_json "
         "FROM hyperliquid_transfer_jobs WHERE LOWER(hyperliquid_user_address) = %s "
         "ORDER BY id DESC LIMIT %s, %s"
     )

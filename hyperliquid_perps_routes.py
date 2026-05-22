@@ -92,6 +92,16 @@ def _external_from_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _hashes_from_row(row: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    tx_list = _tx_list_from_row(row)
+    ext = _external_from_row(row) or {}
+    return {
+        "transferHash": tx_list[0] if tx_list else None,
+        "depositHash": ext.get("depositHash") or None,
+        "withdrawHash": ext.get("withdrawHash") or None,
+    }
+
+
 def _message_for_status(transfer_type: str, status: str, last_error: Optional[str]) -> str:
     if status == "FAILED":
         return (last_error or "").strip() or "Failed"
@@ -130,6 +140,7 @@ def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
         "message": _message_for_status(t, st, row.get("last_error")),
         "progress": int(row.get("progress") or 0),
         "txHashes": _tx_list_from_row(row),
+        "hashes": _hashes_from_row(row),
         "externalStatus": _external_from_row(row),
         "permitId": row.get("permit_id"),
         "createdAt": _dt_ms(row.get("created_at")),
@@ -188,8 +199,19 @@ def _validate_deposit(body: Dict[str, Any]) -> Optional[str]:
     if am == "mca":
         if (stask.get("type") or "").strip() != "mca_relayer":
             return "signatureTask.type must be mca_relayer for accountMode mca"
-        if not stask.get("batchId"):
-            return "signatureTask.batchId is required for accountMode mca"
+        if not stask.get("batchId") and not stask.get("txHash"):
+            return "signatureTask.batchId or signatureTask.txHash is required for accountMode mca"
+        pr = body.get("permitRequest")
+        if not isinstance(pr, dict):
+            return "permitRequest object is required for accountMode mca"
+        for k in ("spender", "token", "value", "nonce", "deadline"):
+            val = pr.get(k)
+            if val is None or (isinstance(val, str) and not str(val).strip()):
+                return f"permitRequest.{k} is required for accountMode mca"
+        owner = _norm_addr(pr.get("owner") or body.get("hyperliquidUserAddress"))
+        exp = _norm_addr(body.get("hyperliquidUserAddress"))
+        if owner != exp:
+            return "permitRequest.owner must match hyperliquidUserAddress"
     if am == "evm":
         if not isinstance(ps, dict):
             return "permitSignature object is required for accountMode evm"
@@ -226,8 +248,6 @@ def _validate_withdraw(body: Dict[str, Any]) -> Optional[str]:
     whl_dest = _norm_addr(wa.get("destination"))
     if needs_bridge:
         da = _norm_addr(q.get("depositAddress"))
-        if dest_user != da:
-            return "destinationAddress must match quote.depositAddress when quote.needsBridge is true"
         if whl_dest != da:
             return "withdrawAction.destination must match quote.depositAddress when quote.needsBridge is true"
     else:
@@ -239,8 +259,8 @@ def _validate_withdraw(body: Dict[str, Any]) -> Optional[str]:
     if am == "mca":
         if (stask.get("type") or "").strip() != "mca_relayer":
             return "signatureTask.type must be mca_relayer for accountMode mca"
-        if not stask.get("batchId"):
-            return "signatureTask.batchId is required for accountMode mca"
+        if not stask.get("batchId") and not stask.get("txHash"):
+            return "signatureTask.batchId or signatureTask.txHash is required for accountMode mca"
     else:
         if not isinstance(sig, dict):
             return "signature {r,s,v} is required for accountMode evm"
@@ -425,6 +445,7 @@ def perps_hl_transfer_history():
                 "progress": int(r.get("progress") or 0),
                 "permitId": r.get("permit_id"),
                 "txHashes": _tx_list_from_row(r),
+                "hashes": _hashes_from_row(r),
                 "createdAt": _dt_ms(r.get("created_at")),
                 "updatedAt": _dt_ms(r.get("updated_at")),
                 "finishedAt": _dt_ms(r.get("finished_at")),
