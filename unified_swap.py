@@ -2441,11 +2441,21 @@ def _stage_a_build_evm(
         }
 
     builders: Dict[str, Any] = {"okx": _build_okx}
-    if chain_int in BITGET_CHAIN_MAP:
-        builders["bitget"] = _build_bitget
+    # ===== TEMP TEST START: EVM OKX-only — skip Bitget stage-A build =====
+    from swap_utils import _evm_test_okx_only
+    if not _evm_test_okx_only():
+        if chain_int in BITGET_CHAIN_MAP:
+            builders["bitget"] = _build_bitget
+    # Original (restore when reverting EVM_TEST_OKX_ONLY):
+    # if chain_int in BITGET_CHAIN_MAP:
+    #     builders["bitget"] = _build_bitget
+    # ===== TEMP TEST END =====
 
     router_order = [preferred_router] if preferred_router in builders else []
-    router_order.extend(r for r in ("bitget", "okx") if r in builders and r not in router_order)
+    if _evm_test_okx_only():
+        router_order = ["okx"]
+    else:
+        router_order.extend(r for r in ("bitget", "okx") if r in builders and r not in router_order)
 
     best = None
     best_min = Decimal("-1")

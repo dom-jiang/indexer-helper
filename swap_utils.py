@@ -185,6 +185,15 @@ def get_bitget_chain_name(chain_id: int) -> str:
     return BITGET_CHAIN_MAP.get(chain_id, "eth")
 
 
+def _evm_test_okx_only() -> bool:
+    """Return True when EVM_TEST_OKX_ONLY temp flag is enabled (db_info/config)."""
+    try:
+        from config import Cfg
+        return bool(getattr(Cfg, "EVM_TEST_OKX_ONLY", False))
+    except Exception:
+        return False
+
+
 def shrink_token(amount: str, decimals: int) -> str:
     """Convert smallest-unit amount to human-readable decimal string"""
     try:
@@ -625,8 +634,14 @@ def aggregate_quote(
 
     # Determine which routers to query based on chain support
     routers_to_query = []
-    if chain_id in BITGET_CHAIN_MAP:
-        routers_to_query.append(("bitget", bitget_quote))
+    # ===== TEMP TEST START: EVM OKX-only — skip Bitget parallel quote =====
+    if not _evm_test_okx_only():
+        if chain_id in BITGET_CHAIN_MAP:
+            routers_to_query.append(("bitget", bitget_quote))
+    # Original (restore when reverting EVM_TEST_OKX_ONLY):
+    # if chain_id in BITGET_CHAIN_MAP:
+    #     routers_to_query.append(("bitget", bitget_quote))
+    # ===== TEMP TEST END =====
     # OKX supports many chains, always try
     routers_to_query.append(("okx", okx_quote))
 
@@ -758,6 +773,10 @@ def build_swap_tx(
     slippage_decimal = convert_slippage_to_decimal(slippage)
 
     if router == "bitget":
+        # ===== TEMP TEST START: EVM OKX-only — reject explicit Bitget build =====
+        if _evm_test_okx_only():
+            return {"success": False, "error": "Bitget disabled (EVM_TEST_OKX_ONLY test flag)"}
+        # ===== TEMP TEST END =====
         return _build_bitget_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient, market)
     elif router == "okx":
         return _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient)
@@ -1183,6 +1202,10 @@ def build_approve_tx(
     if router == "okx":
         return _build_okx_approve_tx(chain_id, token_address, approve_amount)
     elif router == "bitget":
+        # ===== TEMP TEST START: EVM OKX-only — reject Bitget approve =====
+        if _evm_test_okx_only():
+            return {"success": False, "error": "Bitget disabled (EVM_TEST_OKX_ONLY test flag)"}
+        # ===== TEMP TEST END =====
         return _build_bitget_approve_tx(chain_id, token_address, approve_amount, spender)
     else:
         return {"success": False, "error": f"Unknown router: {router}"}
@@ -1273,12 +1296,22 @@ def get_supported_routers(chain_id: int = None) -> Dict:
     """
     if chain_id is not None:
         routers = []
-        if chain_id in BITGET_CHAIN_MAP:
-            routers.append({
-                "name": "bitget",
-                "chainName": get_bitget_chain_name(chain_id),
-                "supported": True,
-            })
+        # ===== TEMP TEST START: EVM OKX-only — hide Bitget from router list =====
+        if not _evm_test_okx_only():
+            if chain_id in BITGET_CHAIN_MAP:
+                routers.append({
+                    "name": "bitget",
+                    "chainName": get_bitget_chain_name(chain_id),
+                    "supported": True,
+                })
+        # Original (restore when reverting EVM_TEST_OKX_ONLY):
+        # if chain_id in BITGET_CHAIN_MAP:
+        #     routers.append({
+        #         "name": "bitget",
+        #         "chainName": get_bitget_chain_name(chain_id),
+        #         "supported": True,
+        #     })
+        # ===== TEMP TEST END =====
         routers.append({
             "name": "okx",
             "chainId": str(chain_id),
@@ -1302,10 +1335,18 @@ def get_supported_routers(chain_id: int = None) -> Dict:
         all_chains = {}
 
         # Bitget chains
-        for cid, cname in BITGET_CHAIN_MAP.items():
-            if cid not in all_chains:
-                all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
-            all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
+        # ===== TEMP TEST START: EVM OKX-only — hide Bitget from all-chains list =====
+        if not _evm_test_okx_only():
+            for cid, cname in BITGET_CHAIN_MAP.items():
+                if cid not in all_chains:
+                    all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
+                all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
+        # Original (restore when reverting EVM_TEST_OKX_ONLY):
+        # for cid, cname in BITGET_CHAIN_MAP.items():
+        #     if cid not in all_chains:
+        #         all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
+        #     all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
+        # ===== TEMP TEST END =====
 
         # OKX supports many chains, add some common ones
         okx_chains = [1, 56, 137, 8453, 42161, 10, 250, 43114, 324, 59144, 5000, 534352, 146, 130, 143]
