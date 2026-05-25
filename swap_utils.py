@@ -1368,9 +1368,36 @@ def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> 
     }
 
 
+# Jupiter /swap/v2/order may include non-fatal `error` strings (e.g. taker
+# balance checks) while still returning a usable `outAmount` for quoting.
+_JUPITER_NON_FATAL_QUOTE_ERRORS = frozenset({
+    "insufficient funds",
+    "insufficient balance",
+})
+
+
+def _jupiter_quote_error_blocks_parse(data: Dict) -> bool:
+    """Return True when Jupiter's `error` field should reject quote parsing."""
+    if not data:
+        return True
+    err = data.get("error")
+    if err is None or err == "":
+        return False
+    if isinstance(err, dict):
+        # Structured errors without outAmount are blocking.
+        return not (data.get("outAmount") or data.get("outputAmount"))
+    err_str = str(err).strip()
+    if not err_str:
+        return False
+    if (data.get("outAmount") or data.get("outputAmount")) and err_str.lower() in _JUPITER_NON_FATAL_QUOTE_ERRORS:
+        return False
+    # Unknown error text: block only when there is no output amount to use.
+    return not (data.get("outAmount") or data.get("outputAmount"))
+
+
 def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
     """Parse Jupiter /swap/v2/order response into unified format."""
-    if not data or "error" in data:
+    if _jupiter_quote_error_blocks_parse(data):
         return None
 
     out_amount = data.get("outAmount") or data.get("outputAmount")
