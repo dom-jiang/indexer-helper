@@ -412,6 +412,7 @@ def nearintents_quote(
     recipient: str = "",
     slippage: float = 0.5,
     oneclick_extensions: Optional[Dict[str, Any]] = None,
+    swap_type: Optional[str] = None,
 ) -> Dict:
     """
     Get cross-chain quote from NearIntents 1Click API (dry run).
@@ -433,7 +434,7 @@ def nearintents_quote(
 
     body = {
         "dry": True,
-        "swapType": "EXACT_INPUT",
+        "swapType": (swap_type or "EXACT_INPUT").strip().upper(),
         "slippageTolerance": slippage_bps,
         "originAsset": origin_asset,
         "depositType": "ORIGIN_CHAIN",

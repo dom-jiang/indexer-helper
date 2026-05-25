@@ -909,7 +909,7 @@ def _stage_a_quote_near(
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
     """Run Ref SmartRouter Stage-A quote for the NEAR leg."""
-    from near_smart_router_swap import near_same_chain_quote, ROUTER_NEAR_REF_SMARTROUTER
+    from near_smart_router_swap import near_same_chain_quote
 
     res = near_same_chain_quote(
         token_in=token_in,
@@ -925,8 +925,9 @@ def _stage_a_quote_near(
     out_str = str(quote.get("amountOut") or "")
     if not out_str:
         return None, None, "NEAR SmartRouter quote missing amountOut", None
+    stage_router = str(quote.get("router") or "near-ref-smart")
     try:
-        return Decimal(out_str), ROUTER_NEAR_REF_SMARTROUTER, None, None
+        return Decimal(out_str), stage_router, None, None
     except (InvalidOperation, ValueError) as e:
         return None, None, f"NEAR amountOut invalid: {e}", None
 
@@ -1031,17 +1032,20 @@ def _preswap_cross_chain_quote(
                 errors.append(f"{inter['symbol']}: mid target <= 0")
                 continue
 
-            # Stage B: NearIntents 1Click quote (dry) with the target mid amount.
+            # Stage B: NearIntents 1Click quote (dry). Frontend SDK uses preswap
+            # amountOut with FLEX_INPUT; we quote with the raw stage-A estimate
+            # but keep amountOutTarget (buffered) locked for /swap build.
             near_res = nearintents_quote(
                 from_chain=from_chain,
                 to_chain=to_chain,
                 token_in=inter,
                 token_out=token_out,
-                amount_in=str(mid_amount_target),
+                amount_in=str(int(mid_amount_raw)),
                 sender=sender,
                 recipient=recipient,
                 slippage=slippage,
                 oneclick_extensions=oneclick_extensions,
+                swap_type="FLEX_INPUT",
             )
             if not near_res.get("success"):
                 errors.append(f"{inter['symbol']}: 1Click quote failed: {near_res.get('error')}")
@@ -2193,6 +2197,23 @@ def unified_swap(
         )
 
 
+def _attach_near_sign_transactions(
+    response_data: Dict[str, Any],
+    tx: Optional[Dict],
+    sender: str,
+) -> None:
+    """Attach ordered NEAR wallet batch to unified swap API responses."""
+    if not isinstance(response_data, dict) or not isinstance(tx, dict):
+        return
+    from near_smart_router_swap import near_tx_to_sign_transactions
+
+    sign_txs = near_tx_to_sign_transactions(tx, sender)
+    if not sign_txs:
+        return
+    response_data["nearSignTransactions"] = sign_txs
+    response_data["nearSignMode"] = "batch" if len(sign_txs) > 1 else "single"
+
+
 def _build_common_response_data(
     is_cross_chain: bool,
     source_chain_type: str,
@@ -2274,6 +2295,8 @@ def _same_chain_swap(
         response_data["tx"] = build_result.get("tx", {})
         response_data["estimatedOut"] = build_result.get("estimatedOut", "")
         response_data["minAmountOut"] = build_result.get("minAmountOut", "")
+        if source_chain_type == CHAIN_TYPE_NEAR:
+            _attach_near_sign_transactions(response_data, response_data.get("tx"), sender)
 
         # Deviation check: if caller passes /quote results, ensure current build is not worse than quote's minAmountOut.
         # This prevents "quote shows 1U but swap silently builds for 0.81U" type confusion.
@@ -2642,9 +2665,15 @@ def _stage_a_build_near(
     preferred_router: str = "",
 ) -> Dict:
     """Build the NEAR Stage-A Ref SmartRouter tx delivering output to 1Click deposit."""
-    from near_smart_router_swap import near_same_chain_build_tx, ROUTER_NEAR_REF_SMARTROUTER
+    from near_smart_router_swap import (
+        near_same_chain_build_tx,
+        ROUTER_NEAR_REF_SMARTROUTER,
+        ROUTER_NEAR_SMARTX,
+    )
 
     router = (preferred_router or ROUTER_NEAR_REF_SMARTROUTER).strip()
+    if router not in (ROUTER_NEAR_REF_SMARTROUTER, ROUTER_NEAR_SMARTX):
+        router = ROUTER_NEAR_REF_SMARTROUTER
     slippage_decimal = convert_slippage_to_decimal(slippage)
     res = near_same_chain_build_tx(
         router=router,
@@ -2887,6 +2916,7 @@ def _preswap_cross_chain_swap(
         )
         # Top-level `tx` is the user-signed stage-A tx (it alone triggers both stages).
         response_data["tx"] = stage_a_tx
+        _attach_near_sign_transactions(response_data, stage_a_tx, sender)
         response_data["estimatedOut"] = str(bridge_estimated_out or "")
         response_data["minAmountOut"] = str(bridge_min_out or "")
         response_data["deposit"] = {
