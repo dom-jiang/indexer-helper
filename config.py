@@ -217,6 +217,11 @@ class Cfg:
     # https://app.panora.exchange/developer — the `/swap` endpoint is gated
     # and returns 401 without a key. Override in `db_info.py` for production.
     PANORA_API_KEY = PANORA_API_KEY
+    # Hyperion CLMM for Aptos same-chain / preswap (mirrors frontend @hyperionxyz/sdk).
+    HYPERION_API_HOST = "https://api.hyperion.xyz"
+    HYPERION_CONTRACT = (
+        "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
+    )
     # Titan Direct WebSocket for Solana same-chain / preswap aggregation.
     TITAN_WS_ENDPOINT = TITAN_WS_ENDPOINT
     TITAN_API_JWT = TITAN_API_JWT

@@ -23,7 +23,7 @@ from swap_utils import (
     SUI_CHAIN_IDS, TRON_CHAIN_IDS, UTXO_CHAIN_IDS,
     CHAIN_TYPE_EVM, CHAIN_TYPE_SOLANA, CHAIN_TYPE_APTOS, CHAIN_TYPE_NEAR,
     CHAIN_TYPE_SUI, CHAIN_TYPE_TRON, CHAIN_TYPE_UTXO,
-    BLUECHIP_TOKENS, SOLANA_BLUECHIP_TOKENS,
+    BLUECHIP_TOKENS, SOLANA_BLUECHIP_TOKENS, APTOS_BLUECHIP_TOKENS,
     is_native_token, normalize_evm_address,
     okx_quote_exact_out, build_okx_exact_out_swap_tx,
     build_swap_tx as build_same_chain_swap_tx,
@@ -566,6 +566,9 @@ _PRESWAP_SOLANA_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "SOL")
 # USDC/USDT first (best 1Click liquidity), wNEAR last (native wrap.near).
 _PRESWAP_NEAR_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "NEAR", "ETH", "BTC")
 _NEAR_NATIVE_ALIASES = frozenset({"", "near", "wnear", "wrap.near"})
+# USDT first (matches frontend APTOS_MID_TOKENS order), then USDC.
+_PRESWAP_APTOS_INTERMEDIATE_SYMBOLS = ("USDT", "USDC")
+_APTOS_NATIVE_ALIASES = frozenset({"", "0xa", "apt", "aptos", "0x1::aptos_coin::aptoscoin"})
 
 
 def _chain_id_int(chain) -> Optional[int]:
@@ -591,12 +594,28 @@ def _is_near_chain(chain) -> bool:
     return str(chain).lower() in {str(x).lower() for x in NEAR_CHAIN_IDS}
 
 
+def _is_aptos_chain(chain) -> bool:
+    if chain is None:
+        return False
+    if chain in APTOS_CHAIN_IDS:
+        return True
+    return str(chain).lower() in {str(x).lower() for x in APTOS_CHAIN_IDS}
+
+
 def _near_token_addr_eq(a: str, b: str) -> bool:
     a_l = (a or "").strip().lower()
     b_l = (b or "").strip().lower()
     if a_l == b_l:
         return True
     return a_l in _NEAR_NATIVE_ALIASES and b_l in _NEAR_NATIVE_ALIASES
+
+
+def _aptos_token_addr_eq(a: str, b: str) -> bool:
+    a_l = (a or "").strip().lower()
+    b_l = (b or "").strip().lower()
+    if a_l == b_l:
+        return True
+    return a_l in _APTOS_NATIVE_ALIASES and b_l in _APTOS_NATIVE_ALIASES
 
 
 def _token_addr_eq(a: str, b: str) -> bool:
@@ -623,8 +642,8 @@ def _preswap_intermediate_candidates(
     carries a human-readable explanation so the caller can surface it verbatim
     instead of reporting a generic "no intermediate" message.
 
-    Supports EVM, Solana, and NEAR fromChain. Aptos / other non-EVM chains fall
-    through to a "not yet supported" message — extend here when adding more.
+    Supports EVM, Solana, NEAR, and Aptos fromChain. Aptos / other non-EVM chains
+    without preswap handlers fall through to a "not yet supported" message.
     """
     # Destination must be supported by 1Click, otherwise the bridge stage cannot succeed.
     dest_asset = resolve_1click_asset_id(to_chain, token_out.get("address", ""))
@@ -639,6 +658,9 @@ def _preswap_intermediate_candidates(
 
     if _is_near_chain(from_chain):
         return _near_intermediate_candidates(from_chain, token_in)
+
+    if _is_aptos_chain(from_chain):
+        return _aptos_intermediate_candidates(from_chain, token_in)
 
     chain_int = _chain_id_int(from_chain)
     if chain_int is None:
@@ -747,6 +769,36 @@ def _near_intermediate_candidates(
     return candidates, None
 
 
+def _aptos_intermediate_candidates(
+    from_chain: str,
+    token_in: Dict,
+) -> Tuple[list, Optional[str]]:
+    """Build ordered Aptos intermediate list (Hyperion preswap → 1Click)."""
+    token_in_addr = token_in.get("address", "")
+    candidates: list = []
+    for sym in _PRESWAP_APTOS_INTERMEDIATE_SYMBOLS:
+        cfg = APTOS_BLUECHIP_TOKENS.get(sym)
+        if not cfg:
+            continue
+        addr = cfg.get("address", "")
+        if not addr:
+            continue
+        if _aptos_token_addr_eq(addr, token_in_addr):
+            continue
+        asset_id = resolve_1click_asset_id(from_chain, addr)
+        if not asset_id:
+            continue
+        candidates.append({
+            "address": addr,
+            "symbol": cfg.get("symbol", sym),
+            "decimals": int(cfg.get("decimals", 6)),
+            "oneClickAssetId": asset_id,
+        })
+    if not candidates:
+        return [], "no 1Click-supported intermediate (USDC/USDT) on chain aptos"
+    return candidates, None
+
+
 def _stage_a_quote_evm(
     chain_int: int,
     token_in: Dict,
@@ -852,6 +904,36 @@ def _stage_a_quote_near(
         return None, None, f"NEAR amountOut invalid: {e}", None
 
 
+def _stage_a_quote_aptos(
+    token_in: Dict,
+    intermediate: Dict,
+    amount_in: str,
+    slippage_decimal: float,
+    sender: str,
+) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
+    """Run Hyperion CLMM Stage-A quote for Aptos preswap leg."""
+    from swap_utils import aggregate_aptos_quote
+
+    res = aggregate_aptos_quote(
+        token_in=token_in,
+        token_out=intermediate,
+        amount_in=str(amount_in),
+        slippage=slippage_decimal,
+        sender=sender,
+        recipient=sender,
+    )
+    if not res.get("success"):
+        return None, None, f"Aptos aggregate quote failed: {res.get('error')}"
+    quote = res.get("quote") or {}
+    out_str = str(quote.get("amountOut") or "")
+    if not out_str:
+        return None, None, "Aptos aggregate quote missing amountOut"
+    try:
+        return Decimal(out_str), str(quote.get("router") or "hyperion"), None
+    except (InvalidOperation, ValueError) as e:
+        return None, None, f"Aptos amountOut invalid: {e}"
+
+
 def _preswap_cross_chain_quote(
     from_chain: str,
     to_chain: str,
@@ -867,14 +949,15 @@ def _preswap_cross_chain_quote(
     ({"success": True/False, ...}) shaped like a cross-chain quote, with added
     `preSwap` / `bridge` sub-objects describing each stage.
 
-    Supports EVM, Solana, and NEAR fromChain. Stage-A uses chain-appropriate
+    Supports EVM, Solana, NEAR, and Aptos fromChain. Stage-A uses chain-appropriate
     aggregators (Bitget+OKX for EVM, Jupiter+Titan+OKX for Solana, Ref
-    SmartRouter for NEAR); Stage-B is always NearIntents 1Click.
+    SmartRouter for NEAR, Hyperion+Panora for Aptos); Stage-B is always NearIntents 1Click.
     """
     is_solana_src = _is_solana_chain(from_chain)
     is_near_src = _is_near_chain(from_chain)
-    chain_int = None if (is_solana_src or is_near_src) else _chain_id_int(from_chain)
-    if not is_solana_src and not is_near_src and chain_int is None:
+    is_aptos_src = _is_aptos_chain(from_chain)
+    chain_int = None if (is_solana_src or is_near_src or is_aptos_src) else _chain_id_int(from_chain)
+    if not is_solana_src and not is_near_src and not is_aptos_src and chain_int is None:
         return {"success": False, "error": f"pre-swap route does not yet support fromChain={from_chain}"}
 
     candidates, reason = _preswap_intermediate_candidates(from_chain, to_chain, token_in, token_out)
@@ -901,6 +984,10 @@ def _preswap_cross_chain_quote(
                 )
             elif is_near_src:
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_near(
+                    token_in, inter, str(amount_in), slippage_decimal, sender,
+                )
+            elif is_aptos_src:
+                mid_amount_raw, stage_a_router, err = _stage_a_quote_aptos(
                     token_in, inter, str(amount_in), slippage_decimal, sender,
                 )
             else:
@@ -962,11 +1049,13 @@ def _preswap_cross_chain_quote(
                     # Ref SmartRouter on NEAR).
                     "router": stage_a_router or (
                         "solana-aggregate" if is_solana_src
-                        else ("near-ref-smart" if is_near_src else "evm-aggregate")
+                        else ("near-ref-smart" if is_near_src
+                              else ("aptos-aggregate" if is_aptos_src else "evm-aggregate"))
                     ),
                     "chainType": (
                         CHAIN_TYPE_SOLANA if is_solana_src
-                        else (CHAIN_TYPE_NEAR if is_near_src else CHAIN_TYPE_EVM)
+                        else (CHAIN_TYPE_NEAR if is_near_src
+                              else (CHAIN_TYPE_APTOS if is_aptos_src else CHAIN_TYPE_EVM))
                     ),
                     "chainId": str(from_chain),
                     "tokenIn": token_in,
@@ -2551,6 +2640,61 @@ def _stage_a_build_near(
     }
 
 
+def _stage_a_build_aptos(
+    token_in: Dict,
+    intermediate: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    deposit_address: str,
+    preferred_router: str = "",
+) -> Dict:
+    """Build Aptos Stage-A Hyperion/Panora swap tx with output to 1Click deposit."""
+    from hyperion_utils import hyperion_build_swap_tx, HYPERION_ROUTER_NAME
+    from swap_utils import build_aptos_swap_tx, convert_slippage_to_decimal
+
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    router = (preferred_router or HYPERION_ROUTER_NAME).strip().lower()
+
+    if router == "hyperion":
+        res = hyperion_build_swap_tx(
+            token_in=token_in.get("address", ""),
+            token_out=intermediate.get("address", ""),
+            amount_in=str(amount_in),
+            slippage_decimal=float(slippage_decimal),
+            recipient=deposit_address,
+            safe_mode=False,
+        )
+    else:
+        res = build_aptos_swap_tx(
+            router=router or "panora",
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage,
+            sender=sender,
+            recipient=deposit_address,
+        )
+
+    if not res.get("success"):
+        return {"success": False, "error": res.get("error"), "router": router}
+
+    tx = res.get("tx") or {}
+    # Frontend patches functionArguments[5] = depositAddress; ensure recipient slot.
+    args = tx.get("arguments")
+    if isinstance(args, list) and len(args) >= 6:
+        args[5] = deposit_address
+
+    return {
+        "success": True,
+        "router": res.get("router") or router,
+        "tx": tx,
+        "estimatedOut": str(res.get("estimatedOut") or ""),
+        "minAmountOut": str(res.get("minAmountOut") or ""),
+        "spender": "",
+    }
+
+
 def _preswap_cross_chain_swap(
     from_chain: str,
     to_chain: str,
@@ -2573,7 +2717,7 @@ def _preswap_cross_chain_swap(
     tx (Stage A delivered to the 1Click depositAddress) plus one optional approve
     (EVM only — Solana has no ERC-20-style approve).
 
-    Supports EVM, Solana, and NEAR fromChain. Stage-A uses chain-appropriate
+    Supports EVM, Solana, NEAR, and Aptos fromChain. Stage-A uses chain-appropriate
     aggregators; the user signs ONE swap tx delivering intermediate tokens to
     the 1Click depositAddress (plus optional EVM approve).
 
@@ -2587,8 +2731,9 @@ def _preswap_cross_chain_swap(
 
     is_solana_src = _is_solana_chain(from_chain)
     is_near_src = _is_near_chain(from_chain)
-    chain_int = None if (is_solana_src or is_near_src) else _chain_id_int(from_chain)
-    if not is_solana_src and not is_near_src and chain_int is None:
+    is_aptos_src = _is_aptos_chain(from_chain)
+    chain_int = None if (is_solana_src or is_near_src or is_aptos_src) else _chain_id_int(from_chain)
+    if not is_solana_src and not is_near_src and not is_aptos_src and chain_int is None:
         return {"code": -1, "msg": f"pre-swap route does not yet support fromChain={from_chain}"}
 
     intermediate = pre_swap.get("tokenOut") or {}
@@ -2649,6 +2794,16 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
             )
+        elif is_aptos_src:
+            stage_a = _stage_a_build_aptos(
+                token_in=token_in,
+                intermediate=intermediate,
+                amount_in=str(amount_in),
+                slippage=slippage,
+                sender=sender,
+                deposit_address=deposit_address,
+                preferred_router=str(pre_swap.get("router") or ""),
+            )
         else:
             stage_a = _stage_a_build_evm(
                 chain_int=chain_int,
@@ -2668,7 +2823,9 @@ def _preswap_cross_chain_swap(
         stage_a_estimated_out = stage_a.get("estimatedOut") or ""
         stage_a_min_out = stage_a.get("minAmountOut") or ""
         stage_a_router = stage_a.get("router") or (
-            "jupiter" if is_solana_src else ("near-ref-smart" if is_near_src else "okx")
+            "jupiter" if is_solana_src
+            else ("near-ref-smart" if is_near_src
+                  else ("hyperion" if is_aptos_src else "okx"))
         )
 
         # Safety: aggregator's swap-time min-out must be >= the bridge's expected mid amount
@@ -2688,7 +2845,8 @@ def _preswap_cross_chain_swap(
 
         source_chain_type = (
             CHAIN_TYPE_SOLANA if is_solana_src
-            else (CHAIN_TYPE_NEAR if is_near_src else CHAIN_TYPE_EVM)
+            else (CHAIN_TYPE_NEAR if is_near_src
+                  else (CHAIN_TYPE_APTOS if is_aptos_src else CHAIN_TYPE_EVM))
         )
         response_data = _build_common_response_data(
             is_cross_chain=True,
