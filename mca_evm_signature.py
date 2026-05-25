@@ -7,8 +7,6 @@ Mirrors multi-chain-lending `mcaSignature.ts`: poll lending batch, read
 request / request_result, and fall back to NEAR tx SuccessValue when needed.
 """
 
-from __future__ import annotations
-
 import base64
 import json
 from typing import Any, Dict, List, Optional, Sequence

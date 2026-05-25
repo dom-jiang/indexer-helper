@@ -6,8 +6,6 @@ Perps Hyperliquid API — /api/v1/perps/hyperliquid
 POST /deposits, POST /withdrawals, GET /transfer-jobs/<id>, GET /transfer-history
 """
 
-from __future__ import annotations
-
 import json
 import secrets
 from datetime import datetime
