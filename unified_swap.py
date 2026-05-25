@@ -831,7 +831,7 @@ def _stage_a_quote_evm(
     token_in: Dict,
     intermediate: Dict,
     amount_in: str,
-    slippage_decimal: float,
+    slippage: float,
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
     """Run a Bitget + OKX parallel Stage-A quote for the EVM leg.
@@ -846,7 +846,7 @@ def _stage_a_quote_evm(
         token_in=token_in,
         token_out=intermediate,
         amount_in=str(amount_in),
-        slippage=slippage_decimal,
+        slippage=slippage,
         sender=sender,
         recipient=sender,
     )
@@ -872,7 +872,7 @@ def _stage_a_quote_solana(
     token_in: Dict,
     intermediate: Dict,
     amount_in: str,
-    slippage_decimal: float,
+    slippage: float,
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
     """Run a Jupiter + Titan + OKX parallel Stage-A quote for the Solana leg.
@@ -885,7 +885,7 @@ def _stage_a_quote_solana(
         token_in=token_in,
         token_out=intermediate,
         amount_in=str(amount_in),
-        slippage=slippage_decimal,
+        slippage=slippage,
         sender=sender,
         recipient=sender,
     )
@@ -936,7 +936,7 @@ def _stage_a_quote_aptos(
     token_in: Dict,
     intermediate: Dict,
     amount_in: str,
-    slippage_decimal: float,
+    slippage: float,
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
     """Run Hyperion CLMM Stage-A quote for Aptos preswap leg."""
@@ -946,7 +946,7 @@ def _stage_a_quote_aptos(
         token_in=token_in,
         token_out=intermediate,
         amount_in=str(amount_in),
-        slippage=slippage_decimal,
+        slippage=slippage,
         sender=sender,
         recipient=sender,
     )
@@ -1008,7 +1008,7 @@ def _preswap_cross_chain_quote(
             stage_a_meta = None
             if is_solana_src:
                 mid_amount_raw, stage_a_router, err = _stage_a_quote_solana(
-                    token_in, inter, str(amount_in), slippage_decimal, sender,
+                    token_in, inter, str(amount_in), slippage, sender,
                 )
             elif is_near_src:
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_near(
@@ -1016,11 +1016,11 @@ def _preswap_cross_chain_quote(
                 )
             elif is_aptos_src:
                 mid_amount_raw, stage_a_router, err = _stage_a_quote_aptos(
-                    token_in, inter, str(amount_in), slippage_decimal, sender,
+                    token_in, inter, str(amount_in), slippage, sender,
                 )
             else:
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_evm(
-                    chain_int, token_in, inter, str(amount_in), slippage_decimal, sender,
+                    chain_int, token_in, inter, str(amount_in), slippage, sender,
                 )
             if err or mid_amount_raw is None:
                 errors.append(f"{inter['symbol']}: {err}")

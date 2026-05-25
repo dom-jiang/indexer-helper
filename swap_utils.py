@@ -180,6 +180,16 @@ def normalize_evm_address(address: str) -> str:
     return addr if addr.startswith("0x") else f"0x{addr}"
 
 
+def normalize_okx_token_address(chain_id, address: str) -> str:
+    """OKX DEX token address: EVM hex with 0x; Solana base58 unchanged."""
+    if is_native_token(address or ""):
+        return OKX_NATIVE_TOKEN_ADDRESS
+    cid = str(chain_id)
+    if chain_id in SOLANA_CHAIN_IDS or cid == OKX_SOLANA_CHAIN_INDEX:
+        return (address or "").strip()
+    return normalize_evm_address(address)
+
+
 def get_bitget_chain_name(chain_id: int) -> str:
     """Convert chain ID to Bitget chain name"""
     return BITGET_CHAIN_MAP.get(chain_id, "eth")
@@ -427,10 +437,8 @@ def okx_quote(
         swap_mode: "exactIn" | "exactOut"
     """
     try:
-        normalized_in = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_in.get("address", "")) \
-            else normalize_evm_address(token_in["address"])
-        normalized_out = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_out.get("address", "")) \
-            else normalize_evm_address(token_out["address"])
+        normalized_in = normalize_okx_token_address(chain_id, token_in.get("address", ""))
+        normalized_out = normalize_okx_token_address(chain_id, token_out.get("address", ""))
 
         query = {
             "chainIndex": str(chain_id),
@@ -471,10 +479,8 @@ def okx_swap(
         - exactOut: amount = tokenOut to buy exactly, tokenIn is the max the user agrees to pay.
     """
     try:
-        normalized_in = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_in.get("address", "")) \
-            else normalize_evm_address(token_in["address"])
-        normalized_out = OKX_NATIVE_TOKEN_ADDRESS if is_native_token(token_out.get("address", "")) \
-            else normalize_evm_address(token_out["address"])
+        normalized_in = normalize_okx_token_address(chain_id, token_in.get("address", ""))
+        normalized_out = normalize_okx_token_address(chain_id, token_out.get("address", ""))
 
         query = {
             "chainIndex": str(chain_id),
@@ -1437,7 +1443,7 @@ def _jupiter_quote_error_blocks_parse(data: Dict) -> bool:
 
 
 def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
-    """Parse Jupiter /swap/v2/order response into unified format."""
+    """Parse Jupiter /swap/v2/quote or /swap/v2/order response into unified format."""
     if _jupiter_quote_error_blocks_parse(data):
         return None
 
@@ -1490,7 +1496,7 @@ def aggregate_solana_quote(
         slippage: flexible input
         sender: wallet public key
     """
-    from jupiter_utils import jupiter_order
+    from jupiter_utils import jupiter_quote
     from titan_utils import titan_order
 
     if not recipient:
@@ -1503,12 +1509,11 @@ def aggregate_solana_quote(
     token_out_addr = token_out.get("address", "")
 
     routers = [
-        ("jupiter", lambda: jupiter_order(
+        ("jupiter", lambda: jupiter_quote(
             input_mint=token_in_addr,
             output_mint=token_out_addr,
             amount=amount_in,
             slippage_bps=slippage_bps,
-            taker=sender,
         )),
         ("titan", lambda: titan_order(
             input_mint=token_in_addr,
@@ -1606,9 +1611,13 @@ def build_solana_swap_tx(
     For Titan: assembles VersionedTransaction from route instructions + ALTs.
     For OKX: returns OKX Solana swap transaction.
     """
-    from jupiter_utils import jupiter_order
+    from jupiter_utils import jupiter_order, jupiter_build
     from titan_utils import titan_order
-    from solana_tx_assembler import assemble_titan_swap_tx, SolanaDepositTxBuildError
+    from solana_tx_assembler import (
+        assemble_jupiter_swap_tx,
+        assemble_titan_swap_tx,
+        SolanaDepositTxBuildError,
+    )
 
     if not recipient:
         recipient = sender
@@ -1649,21 +1658,40 @@ def build_solana_swap_tx(
             slippage_bps=slippage_bps,
             taker=sender,
         )
-        if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Jupiter order failed")}
+        if result.get("success"):
+            data = result["data"]
+            swap_tx = data.get("swapTransaction", "")
+            if swap_tx:
+                return {
+                    "success": True,
+                    "chainType": CHAIN_TYPE_SOLANA,
+                    "tx": {
+                        "transaction": swap_tx,
+                        "format": "base64",
+                    },
+                    "router": "jupiter",
+                }
 
-        data = result["data"]
-        swap_tx = data.get("swapTransaction", "")
-        if not swap_tx:
-            return {"success": False, "error": "Jupiter: no swapTransaction in response"}
+        build_res = jupiter_build(
+            input_mint=token_in.get("address", ""),
+            output_mint=token_out.get("address", ""),
+            amount=amount_in,
+            slippage_bps=slippage_bps,
+            taker=sender,
+        )
+        if not build_res.get("success"):
+            err = result.get("error") if not result.get("success") else "Jupiter: no swapTransaction in response"
+            return {"success": False, "error": build_res.get("error") or err or "Jupiter swap build failed"}
+
+        try:
+            assembled = assemble_jupiter_swap_tx(sender=sender, build_resp=build_res.get("data") or {})
+        except SolanaDepositTxBuildError as e:
+            return {"success": False, "error": str(e)}
 
         return {
             "success": True,
             "chainType": CHAIN_TYPE_SOLANA,
-            "tx": {
-                "transaction": swap_tx,
-                "format": "base64",
-            },
+            "tx": assembled,
             "router": "jupiter",
         }
 

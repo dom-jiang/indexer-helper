@@ -31,6 +31,41 @@ def _get_headers() -> dict:
     return headers
 
 
+def jupiter_quote(
+    input_mint: str,
+    output_mint: str,
+    amount: str,
+    slippage_bps: int,
+    swap_mode: str = "ExactIn",
+) -> Dict:
+    """
+    Price-only quote from Jupiter (no taker / no assembled transaction).
+
+    Prefer this for aggregator quote comparison — `/swap/v2/order` rejects
+    some long-tail mints that `/swap/v2/quote` can still price.
+    """
+    try:
+        params = {
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": str(amount),
+            "slippageBps": str(slippage_bps),
+            "swapMode": swap_mode,
+        }
+        resp = _session.get(
+            f"{JUPITER_BASE_URL}/swap/v2/quote",
+            params=params,
+            headers=_get_headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {"success": True, "router": "jupiter", "data": data}
+    except Exception as e:
+        logger.error(f"jupiter_quote error: {e}")
+        return {"success": False, "router": "jupiter", "error": str(e)}
+
+
 def jupiter_order(
     input_mint: str,
     output_mint: str,

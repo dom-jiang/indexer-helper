@@ -253,6 +253,70 @@ def assemble_jupiter_preswap_tx(
     }
 
 
+def assemble_jupiter_swap_tx(
+    *,
+    sender: str,
+    build_resp: Dict,
+) -> Dict:
+    """Same-chain Jupiter swap from `/swap/v2/build` (no bridge deposit ATA)."""
+    if not _SOLDERS_AVAILABLE:
+        raise SolanaDepositTxBuildError(
+            "Solana tx build: `solders` package not installed on the backend"
+        )
+    if not sender:
+        raise SolanaDepositTxBuildError(
+            "Solana tx build: sender is required for Jupiter swap assembly"
+        )
+
+    try:
+        sender_pk = Pubkey.from_string(sender)
+    except Exception as e:
+        raise SolanaDepositTxBuildError(
+            f"Solana tx build: invalid sender pubkey {sender}: {e}"
+        ) from e
+
+    blockhash_meta = build_resp.get("blockhashWithMetadata") or {}
+    blockhash_str = _decode_blockhash(blockhash_meta)
+    last_valid = int(blockhash_meta.get("lastValidBlockHeight") or 0)
+
+    try:
+        instructions = [_decode_instruction(ix_json) for ix_json in _flatten_jupiter_instructions(build_resp)]
+    except SolanaDepositTxBuildError:
+        raise
+    except Exception as e:
+        raise SolanaDepositTxBuildError(
+            f"Solana tx build: failed to decode Jupiter instructions: {e}"
+        ) from e
+
+    alts = _fetch_address_lookup_table_accounts(
+        build_resp.get("addressLookupTableAddresses") or []
+    )
+
+    try:
+        msg = MessageV0.try_compile(
+            payer=sender_pk,
+            instructions=instructions,
+            address_lookup_table_accounts=alts,
+            recent_blockhash=Hash.from_string(blockhash_str),
+        )
+        num_required = msg.header.num_required_signatures
+        placeholder_sigs = [Signature.default() for _ in range(num_required)]
+        tx = VersionedTransaction.populate(msg, placeholder_sigs)
+        tx_bytes = bytes(tx)
+    except Exception as e:
+        raise SolanaDepositTxBuildError(
+            f"Solana tx build: failed to compile/serialize VersionedTransaction: {e}"
+        ) from e
+
+    return {
+        "transaction": base64.b64encode(tx_bytes).decode("ascii"),
+        "format": "base64",
+        "txValidUntil": int(time.time() * 1000) + _SOL_TX_LIFETIME_MS,
+        "lastValidBlockHeight": last_valid,
+        "recentBlockhash": blockhash_str,
+    }
+
+
 def derive_destination_token_account(
     deposit_address: str,
     intermediate_mint: str,
