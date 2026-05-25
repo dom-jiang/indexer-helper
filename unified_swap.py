@@ -277,6 +277,10 @@ _TRON_BLUECHIP_LOOKUP = {
     v["address"].lower(): v for v in _TRON_BLUECHIP_TOKENS.values() if v.get("address")
 }
 
+_APTOS_BLUECHIP_LOOKUP = {
+    v["address"].lower(): v for v in APTOS_BLUECHIP_TOKENS.values()
+}
+
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -440,6 +444,16 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
                 "decimals": int(bluechip["decimals"]),
             }
 
+    # Aptos bluechip short-circuit (APT / USDC / USDT FA metadata addresses).
+    if chain in APTOS_CHAIN_IDS or str(chain).lower() in {str(c).lower() for c in APTOS_CHAIN_IDS}:
+        bluechip = _APTOS_BLUECHIP_LOOKUP.get(addr_lower)
+        if bluechip:
+            return {
+                "address": addr_raw,
+                "symbol": bluechip["symbol"],
+                "decimals": int(bluechip["decimals"]),
+            }
+
     # UTXO chains only have a single native asset that's already handled by
     # `is_chain_native_token` above. Anything else on a UTXO chain is not
     # supported by 1Click, so let the Redis lookup below (which will miss)
@@ -456,6 +470,19 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
                     "symbol": tok_info.get("symbol", ""),
                     "decimals": int(tok_info.get("decimals", 18)),
                 }
+
+    # Aptos long-tail FA: 1Click list, then on-chain FA decimals (Hyperion preswap).
+    if chain in APTOS_CHAIN_IDS or str(chain).lower() in {str(c).lower() for c in APTOS_CHAIN_IDS}:
+        from nearintents_utils import resolve_1click_token_info
+        from hyperion_utils import resolve_aptos_token_info
+
+        oneclick_meta = resolve_1click_token_info(chain, addr_raw)
+        if oneclick_meta:
+            return oneclick_meta
+        onchain_meta = resolve_aptos_token_info(addr_raw)
+        if onchain_meta:
+            return onchain_meta
+
     return None
 
 

@@ -222,6 +222,8 @@ class Cfg:
     HYPERION_CONTRACT = (
         "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
     )
+    # Aptos fullnode for on-chain FA metadata (decimals) when Redis is cold.
+    APTOS_RPC_URL = "https://fullnode.mainnet.aptoslabs.com/v1"
     # Titan Direct WebSocket for Solana same-chain / preswap aggregation.
     TITAN_WS_ENDPOINT = TITAN_WS_ENDPOINT
     TITAN_API_JWT = TITAN_API_JWT

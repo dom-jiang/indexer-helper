@@ -47,6 +47,75 @@ def _hyperion_contract() -> str:
     ).strip()
 
 
+def _aptos_rpc_url() -> str:
+    return (getattr(Cfg, "APTOS_RPC_URL", "") or "https://fullnode.mainnet.aptoslabs.com/v1").rstrip("/")
+
+
+def is_valid_aptos_fa_address(address: str) -> bool:
+    raw = (address or "").strip()
+    if not raw.startswith("0x"):
+        return False
+    hex_body = raw[2:]
+    if not hex_body or len(hex_body) > 64:
+        return False
+    try:
+        int(hex_body, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def fetch_aptos_fa_decimals(metadata_address: str, timeout: float = 8.0) -> Optional[int]:
+    """Read FA `decimals` via Aptos view (0x1::fungible_asset::decimals)."""
+    addr = normalize_hyperion_token(metadata_address)
+    if not is_valid_aptos_fa_address(addr) or is_coin_token(addr):
+        return None
+    try:
+        resp = _session.post(
+            f"{_aptos_rpc_url()}/view",
+            json={
+                "function": "0x1::fungible_asset::decimals",
+                "type_arguments": ["0x1::fungible_asset::Metadata"],
+                "arguments": [addr],
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return int(data[0])
+    except Exception as e:
+        logger.debug(f"Aptos FA decimals lookup failed for {metadata_address}: {e}")
+    return None
+
+
+def resolve_aptos_token_info(address: str) -> Optional[Dict]:
+    """
+    Resolve Aptos token metadata for long-tail FA tokens not in Redis.
+
+    Uses on-chain FA decimals; symbol falls back to a short address label.
+    """
+    raw = (address or "").strip()
+    if not raw:
+        return None
+    if normalize_hyperion_token(raw) == APTOS_FA_NATIVE or is_coin_token(raw):
+        return None
+
+    if not is_valid_aptos_fa_address(raw):
+        return None
+
+    decimals = fetch_aptos_fa_decimals(raw)
+    if decimals is None:
+        return None
+
+    short = raw[-8:] if len(raw) > 10 else raw
+    return {
+        "address": raw,
+        "symbol": f"APTOS-{short}",
+        "decimals": int(decimals),
+    }
+
+
 def is_coin_token(address: str) -> bool:
     return bool(address) and address.count("::") >= 2
 

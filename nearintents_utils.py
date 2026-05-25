@@ -376,6 +376,27 @@ def resolve_1click_asset_id(chain: str, address: str) -> Optional[str]:
     return None
 
 
+def resolve_1click_token_info(chain: str, address: str) -> Optional[Dict]:
+    """Map (chain, contractAddress) to {address, symbol, decimals} from 1Click /v0/tokens."""
+    chain_str = str(chain)
+    oneclick_chain = CHAIN_TO_1CLICK.get(chain_str, chain_str).lower()
+    addr_raw = address or ""
+    addr_lower = addr_raw.lower()
+
+    tokens = _fetch_token_list()
+    for t in tokens:
+        if (t.get("blockchain") or "").lower() != oneclick_chain:
+            continue
+        contract = (t.get("contractAddress") or "").lower()
+        if contract and contract == addr_lower:
+            return {
+                "address": addr_raw,
+                "symbol": str(t.get("symbol") or ""),
+                "decimals": int(t.get("decimals") or 8),
+            }
+    return None
+
+
 def resolve_omni_chain(chain: str) -> Optional[str]:
     """Map chainId to OmniBridge chain slug."""
     return CHAIN_TO_OMNI.get(str(chain))
