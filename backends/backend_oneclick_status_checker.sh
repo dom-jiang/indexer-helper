@@ -9,8 +9,9 @@ date >> backend_oneclick_status_checker.log
 if [ ! ${pid} ]; then
         echo "No backend process rubbish to clean." >> backend_oneclick_status_checker.log
 else
-        kill -s 9 ${pid}
-        echo "Warning: clean backend process of last round." >> backend_oneclick_status_checker.log
+#        kill -s 9 ${pid}
+#        echo "Warning: clean backend process of last round." >> backend_oneclick_status_checker.log
+        echo "Warning: The backend processing of the previous round is still ongoing, skip this round." >> backend_oneclick_status_checker.log
 fi
 /usr/local/bin/python oneclick_status_checker.py MAINNET >> backend_oneclick_status_checker.log
 echo 'OK'
