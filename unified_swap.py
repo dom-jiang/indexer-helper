@@ -1032,20 +1032,20 @@ def _preswap_cross_chain_quote(
                 errors.append(f"{inter['symbol']}: mid target <= 0")
                 continue
 
-            # Stage B: NearIntents 1Click quote (dry). Frontend SDK uses preswap
-            # amountOut with FLEX_INPUT; we quote with the raw stage-A estimate
-            # but keep amountOutTarget (buffered) locked for /swap build.
+            # Stage B: NearIntents 1Click dry quote — must match `/swap` build:
+            # EXACT_INPUT on the buffered `amountOutTarget` (what Stage A delivers),
+            # not FLEX_INPUT on the raw Stage-A estimate (would overstate final out).
             near_res = nearintents_quote(
                 from_chain=from_chain,
                 to_chain=to_chain,
                 token_in=inter,
                 token_out=token_out,
-                amount_in=str(int(mid_amount_raw)),
+                amount_in=str(mid_amount_target),
                 sender=sender,
                 recipient=recipient,
                 slippage=slippage,
                 oneclick_extensions=oneclick_extensions,
-                swap_type="FLEX_INPUT",
+                swap_type="EXACT_INPUT",
             )
             if not near_res.get("success"):
                 errors.append(f"{inter['symbol']}: 1Click quote failed: {near_res.get('error')}")
@@ -2615,11 +2615,16 @@ def _stage_a_build_solana(
         tx = tx_data.get("tx") or tx_data
         router_result = tx_data.get("routerResult") or {}
         out_amount_str = str(router_result.get("toTokenAmount") or router_result.get("toAmount") or "")
+        from solana_tx_assembler import okx_solana_tx_to_base64
+
+        tx_b64 = okx_solana_tx_to_base64(tx if isinstance(tx, dict) else None)
+        if not tx_b64:
+            return {"success": False, "router": "okx", "error": "OKX Solana swap missing tx.data"}
         return {
             "success": True,
             "router": "okx",
             "tx": {
-                "transaction": tx.get("data", ""),
+                "transaction": tx_b64,
                 "format": "base64",
             },
             "estimatedOut": out_amount_str,

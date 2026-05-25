@@ -1714,12 +1714,17 @@ def build_solana_swap_tx(
 
         tx_data = data["data"][0] if isinstance(data["data"], list) else data["data"]
         tx = tx_data.get("tx") or tx_data
+        from solana_tx_assembler import okx_solana_tx_to_base64
+
+        tx_b64 = okx_solana_tx_to_base64(tx if isinstance(tx, dict) else None)
+        if not tx_b64:
+            return {"success": False, "error": "OKX Solana swap missing or invalid tx.data"}
 
         return {
             "success": True,
             "chainType": CHAIN_TYPE_SOLANA,
             "tx": {
-                "transaction": tx.get("data", ""),
+                "transaction": tx_b64,
                 "format": "base64",
             },
             "router": "okx",

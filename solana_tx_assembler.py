@@ -74,6 +74,52 @@ from cross_chain_tx_builder import (
 NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
+def okx_solana_tx_to_base64(tx_data: Optional[Dict]) -> str:
+    """
+    OKX Solana /swap returns a serialized VersionedTransaction in ``tx.data``
+    as **base58**. Unified API consumers (web3.js) expect standard **base64**.
+    """
+    if not isinstance(tx_data, dict):
+        return ""
+    raw = str(tx_data.get("data") or "").strip()
+    if not raw:
+        return ""
+
+    def _validate_and_b64(blob: bytes) -> Optional[str]:
+        if not blob:
+            return None
+        if _SOLDERS_AVAILABLE:
+            try:
+                VersionedTransaction.from_bytes(blob)
+            except Exception:
+                return None
+        return base64.b64encode(blob).decode("ascii")
+
+    if raw.startswith("0x"):
+        out = _validate_and_b64(bytes.fromhex(raw[2:]))
+        if out:
+            return out
+
+    try:
+        import base58
+
+        out = _validate_and_b64(base58.b58decode(raw))
+        if out:
+            return out
+    except Exception:
+        pass
+
+    try:
+        out = _validate_and_b64(base64.b64decode(raw))
+        if out:
+            return out
+    except Exception:
+        pass
+
+    logger.warning("okx_solana_tx_to_base64: could not normalize OKX Solana tx.data")
+    return raw
+
+
 def _decode_account(acc: Dict) -> "AccountMeta":
     """Convert Jupiter API account spec into solders AccountMeta."""
     return AccountMeta(
