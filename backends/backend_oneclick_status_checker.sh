@@ -1,17 +1,23 @@
 #!/bin/sh
+#
+# Cron wrapper: run oneclick status poll only when no worker is already running.
+# Polling logic: last 70 minutes + batch limit — see backends/oneclick_status_checker.py
+# and db_provider.get_pending_oneclick_orders.
 
-pid=`ps -ef | grep "oneclick_status_checker.py MAINNET" | grep -v grep | /usr/bin/awk '{print $2}'`
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$SCRIPT_DIR/backend_oneclick_status_checker.log"
 
-cd "/indexer-helper/backends"
+# Match the python command line cron uses ([o] avoids matching grep itself).
+existing_pid="$(ps -ef | grep '[o]neclick_status_checker.py MAINNET' | awk 'NR==1 {print $2}')"
 
-date >> backend_oneclick_status_checker.log
-
-if [ ! ${pid} ]; then
-        echo "No backend process rubbish to clean." >> backend_oneclick_status_checker.log
-else
-#        kill -s 9 ${pid}
-#        echo "Warning: clean backend process of last round." >> backend_oneclick_status_checker.log
-        echo "Warning: The backend processing of the previous round is still ongoing, skip this round." >> backend_oneclick_status_checker.log
+if [ -n "$existing_pid" ]; then
+	date >>"$LOG"
+	echo "Skip: oneclick_status_checker.py already running (pid=$existing_pid)" >>"$LOG"
+	exit 0
 fi
-/usr/local/bin/python oneclick_status_checker.py MAINNET >> backend_oneclick_status_checker.log
-echo 'OK'
+
+cd "$SCRIPT_DIR" || exit 1
+date >>"$LOG"
+
+/usr/local/bin/python oneclick_status_checker.py MAINNET >>"$LOG"
+echo OK >>"$LOG"

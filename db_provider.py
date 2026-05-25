@@ -1957,17 +1957,37 @@ def get_burrow_total_fee_by_time_range(network_id, startTimestamp, endTimestamp)
 
     return burrow_total_fee
 
-def get_pending_oneclick_orders(network_id):
-    """Get orders that are not in a terminal state and were created within the last hour."""
+def get_pending_oneclick_orders(
+    network_id,
+    limit=150,
+    recent_boost_minutes=15,
+):
+    """Pending 1Click orders to poll for /v0/status.
+
+    Only considers rows with ``created_at >= NOW() - INTERVAL 70 MINUTE``
+    (business rule: quotes older than that are ignored).
+
+    ``recent_boost_minutes``: within the 70-minute window, orders created in this
+    many most recent minutes are polled **newest-first** first; remainder are still
+    included and ordered **oldest-first** so the batch does not starve slightly older pending rows.
+
+    Applies ``LIMIT`` cap per cron run via callers (see ONECLICK_POLL_BATCH_LIMIT).
+    """
     db_conn = get_db_connect(network_id)
     sql = """SELECT id, deposit_address, status FROM oneclick_orders
              WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED')
                AND deposit_address IS NOT NULL
                AND created_at >= NOW() - INTERVAL 70 MINUTE
-             ORDER BY created_at ASC"""
+             ORDER BY
+               CASE WHEN created_at >= NOW() - INTERVAL %s MINUTE THEN 1 ELSE 0 END DESC,
+               CASE WHEN created_at >= NOW() - INTERVAL %s MINUTE
+                    THEN -UNIX_TIMESTAMP(created_at)
+                    ELSE UNIX_TIMESTAMP(created_at)
+               END ASC
+             LIMIT %s"""
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
-        cursor.execute(sql)
+        cursor.execute(sql, (recent_boost_minutes, recent_boost_minutes, limit))
         return cursor.fetchall()
     except Exception as e:
         print("get_pending_oneclick_orders error:", e)
