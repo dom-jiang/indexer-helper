@@ -104,6 +104,8 @@ BITGET_CHAIN_MAP = {
     56: "bnb",
     137: "matic",
     8453: "base",
+    42161: "arbitrum",
+    10: "optimism",
 }
 
 # OKX native token sentinel address
@@ -1335,6 +1337,37 @@ SOLANA_BLUECHIP_TOKENS = {
 }
 
 
+def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
+    """Parse Titan swap quote into unified format."""
+    if not data:
+        return None
+
+    out_amount = data.get("outAmount")
+    if not out_amount:
+        return None
+
+    try:
+        amount_out = Decimal(str(out_amount))
+    except (InvalidOperation, ValueError):
+        return None
+
+    if amount_out <= 0:
+        return None
+
+    min_amount_out = int(amount_out * (Decimal("1") - Decimal(str(slippage_decimal))))
+    token_out_decimals = token_out.get("decimals", 9)
+
+    return {
+        "router": "titan",
+        "amountOut": str(int(amount_out)),
+        "amountOutReadable": shrink_token(str(int(amount_out)), token_out_decimals),
+        "minAmountOut": str(min_amount_out),
+        "gasEstimate": "",
+        "_amountOutDecimal": amount_out,
+        "_titanRaw": data,
+    }
+
+
 def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
     """Parse Jupiter /swap/v2/order response into unified format."""
     if not data or "error" in data:
@@ -1380,7 +1413,7 @@ def aggregate_solana_quote(
     recipient: str = None,
 ) -> Dict:
     """
-    Aggregate quotes from Jupiter and OKX for Solana swaps.
+    Aggregate quotes from Jupiter, OKX, and Titan for Solana swaps.
 
     Args:
         token_in: {"address": "So11...112", "symbol": "SOL", "decimals": 9}
@@ -1390,6 +1423,7 @@ def aggregate_solana_quote(
         sender: wallet public key
     """
     from jupiter_utils import jupiter_order
+    from titan_utils import titan_order
 
     if not recipient:
         recipient = sender
@@ -1402,6 +1436,13 @@ def aggregate_solana_quote(
 
     routers = [
         ("jupiter", lambda: jupiter_order(
+            input_mint=token_in_addr,
+            output_mint=token_out_addr,
+            amount=amount_in,
+            slippage_bps=slippage_bps,
+            taker=sender,
+        )),
+        ("titan", lambda: titan_order(
             input_mint=token_in_addr,
             output_mint=token_out_addr,
             amount=amount_in,
@@ -1446,6 +1487,8 @@ def aggregate_solana_quote(
         p = None
         if router == "jupiter":
             p = _parse_jupiter_order(data, token_out, slippage_decimal)
+        elif router == "titan":
+            p = _parse_titan_order(data, token_out, slippage_decimal)
         elif router == "okx":
             p = _parse_okx_solana_quote(data, token_out, slippage_decimal)
         if p:
@@ -1492,14 +1535,43 @@ def build_solana_swap_tx(
     Build Solana swap transaction.
 
     For Jupiter: returns pre-built base64 transaction for wallet signing.
+    For Titan: assembles VersionedTransaction from route instructions + ALTs.
     For OKX: returns OKX Solana swap transaction.
     """
     from jupiter_utils import jupiter_order
+    from titan_utils import titan_order
+    from solana_tx_assembler import assemble_titan_swap_tx, SolanaDepositTxBuildError
 
     if not recipient:
         recipient = sender
     slippage_decimal = convert_slippage_to_decimal(slippage)
     slippage_bps = max(1, int(slippage_decimal * 10000))
+
+    if router == "titan":
+        result = titan_order(
+            input_mint=token_in.get("address", ""),
+            output_mint=token_out.get("address", ""),
+            amount=amount_in,
+            slippage_bps=slippage_bps,
+            taker=sender,
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Titan order failed")}
+        titan_data = result.get("data") or {}
+
+        try:
+            assembled = assemble_titan_swap_tx(sender=sender, titan_data=titan_data)
+        except SolanaDepositTxBuildError as e:
+            return {"success": False, "error": str(e)}
+
+        return {
+            "success": True,
+            "chainType": CHAIN_TYPE_SOLANA,
+            "tx": assembled,
+            "router": "titan",
+            "estimatedOut": str(titan_data.get("outAmount") or ""),
+            "minAmountOut": str(titan_data.get("outAmount") or ""),
+        }
 
     if router == "jupiter":
         result = jupiter_order(
@@ -1892,6 +1964,7 @@ def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
             "chainId": "solana-mainnet",
             "routers": [
                 {"name": "jupiter", "supported": True},
+                {"name": "titan", "supported": True},
                 {"name": "okx", "chainId": "501", "supported": True},
             ],
             "bluechipTokens": [

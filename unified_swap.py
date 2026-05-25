@@ -552,18 +552,20 @@ def _compare_cross_chain_quotes(omni_result: Dict, near_result: Dict, token_out_
 # IS supported by 1Click to deliver `tokenOut` on `toChain`.
 #
 # Flow:
-#   stage A (same chain, OKX):   tokenIn  -> intermediate on fromChain
+#   stage A (same chain):   tokenIn  -> intermediate on fromChain
+#                           EVM: Bitget + OKX in parallel; Solana: Jupiter + Titan + OKX
 #   stage B (cross chain, 1Click): intermediate on fromChain -> tokenOut on toChain
 #
-# At swap time we use OKX **exactOut** for stage A so that the exact
-# intermediate amount promised to 1Click is delivered in a single
-# user-signed transaction whose receiver is the 1Click depositAddress.
+# At swap time Stage-A builders re-quote in parallel and pick the best executable route.
 
 _PRESWAP_ROUTER_NAME = "preswap-nearintents"
 _PRESWAP_EVM_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "WETH")
 # Order matters: USDC first (best 1Click + Jupiter liquidity), USDT second,
 # native SOL last (no ATA hop needed but typically smallest 1Click pool).
 _PRESWAP_SOLANA_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "SOL")
+# USDC/USDT first (best 1Click liquidity), wNEAR last (native wrap.near).
+_PRESWAP_NEAR_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "NEAR", "ETH", "BTC")
+_NEAR_NATIVE_ALIASES = frozenset({"", "near", "wnear", "wrap.near"})
 
 
 def _chain_id_int(chain) -> Optional[int]:
@@ -579,6 +581,22 @@ def _is_solana_chain(chain) -> bool:
     if chain in SOLANA_CHAIN_IDS:
         return True
     return str(chain).lower() in {str(x).lower() for x in SOLANA_CHAIN_IDS}
+
+
+def _is_near_chain(chain) -> bool:
+    if chain is None:
+        return False
+    if chain in NEAR_CHAIN_IDS:
+        return True
+    return str(chain).lower() in {str(x).lower() for x in NEAR_CHAIN_IDS}
+
+
+def _near_token_addr_eq(a: str, b: str) -> bool:
+    a_l = (a or "").strip().lower()
+    b_l = (b or "").strip().lower()
+    if a_l == b_l:
+        return True
+    return a_l in _NEAR_NATIVE_ALIASES and b_l in _NEAR_NATIVE_ALIASES
 
 
 def _token_addr_eq(a: str, b: str) -> bool:
@@ -605,7 +623,7 @@ def _preswap_intermediate_candidates(
     carries a human-readable explanation so the caller can surface it verbatim
     instead of reporting a generic "no intermediate" message.
 
-    Supports both EVM and Solana fromChain. Aptos / other non-EVM chains fall
+    Supports EVM, Solana, and NEAR fromChain. Aptos / other non-EVM chains fall
     through to a "not yet supported" message — extend here when adding more.
     """
     # Destination must be supported by 1Click, otherwise the bridge stage cannot succeed.
@@ -618,6 +636,9 @@ def _preswap_intermediate_candidates(
 
     if _is_solana_chain(from_chain):
         return _solana_intermediate_candidates(from_chain, token_in)
+
+    if _is_near_chain(from_chain):
+        return _near_intermediate_candidates(from_chain, token_in)
 
     chain_int = _chain_id_int(from_chain)
     if chain_int is None:
@@ -696,6 +717,36 @@ def _solana_intermediate_candidates(
     return candidates, None
 
 
+def _near_intermediate_candidates(
+    from_chain: str,
+    token_in: Dict,
+) -> Tuple[list, Optional[str]]:
+    """Build the ordered NEAR intermediate-token list (Ref SmartRouter → 1Click)."""
+    token_in_addr = token_in.get("address", "")
+    candidates: list = []
+    for sym in _PRESWAP_NEAR_INTERMEDIATE_SYMBOLS:
+        cfg = _NEAR_BLUECHIP_TOKENS.get(sym)
+        if not cfg:
+            continue
+        addr = cfg.get("address", "")
+        if not addr:
+            continue
+        if _near_token_addr_eq(addr, token_in_addr):
+            continue
+        asset_id = resolve_1click_asset_id(from_chain, addr)
+        if not asset_id:
+            continue
+        candidates.append({
+            "address": addr,
+            "symbol": cfg.get("symbol", sym),
+            "decimals": int(cfg.get("decimals", 24)),
+            "oneClickAssetId": asset_id,
+        })
+    if not candidates:
+        return [], "no 1Click-supported intermediate (USDC/USDT/wNEAR) on chain near"
+    return candidates, None
+
+
 def _stage_a_quote_evm(
     chain_int: int,
     token_in: Dict,
@@ -703,30 +754,39 @@ def _stage_a_quote_evm(
     amount_in: str,
     slippage_decimal: float,
     sender: str,
-) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
-    """Run an OKX exactIn quote for the EVM Stage-A leg.
+) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Run a Bitget + OKX parallel Stage-A quote for the EVM leg.
 
-    Returns ``(mid_amount, router, error)``. `mid_amount` is the unbuffered
-    estimated output (Decimal); the caller applies the slippage buffer.
+    Returns ``(mid_amount, router, error, meta)``. `meta` may carry Bitget-only
+    fields such as ``market`` (required for swap build).
     """
-    from swap_utils import okx_quote as _okx_quote_raw, _parse_okx_quote as _okx_parse
-    raw = _okx_quote_raw(
+    from swap_utils import aggregate_quote
+
+    res = aggregate_quote(
         chain_id=chain_int,
         token_in=token_in,
         token_out=intermediate,
         amount_in=str(amount_in),
         slippage=slippage_decimal,
-        user_address=sender,
+        sender=sender,
+        recipient=sender,
     )
-    if not raw.get("success"):
-        return None, None, f"OKX quote failed: {raw.get('error')}"
-    parsed = _okx_parse(raw["data"], intermediate, slippage_decimal)
-    if not parsed:
-        return None, None, "OKX quote unparseable"
+    if not res.get("success"):
+        return None, None, f"EVM aggregate quote failed: {res.get('error')}", None
+    quote = res.get("quote") or {}
+    out_str = str(quote.get("amountOut") or "")
+    if not out_str:
+        return None, None, "EVM aggregate quote missing amountOut", None
     try:
-        return Decimal(parsed["amountOut"]), "okx", None
+        router = str(quote.get("router") or "okx")
+        meta: Optional[Dict[str, Any]] = None
+        if router == "bitget":
+            market = str(quote.get("market") or "").strip()
+            if market:
+                meta = {"market": market}
+        return Decimal(out_str), router, None, meta
     except (InvalidOperation, ValueError) as e:
-        return None, None, f"OKX amountOut invalid: {e}"
+        return None, None, f"EVM amountOut invalid: {e}", None
 
 
 def _stage_a_quote_solana(
@@ -736,7 +796,7 @@ def _stage_a_quote_solana(
     slippage_decimal: float,
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
-    """Run a Jupiter + OKX parallel Stage-A quote for the Solana leg.
+    """Run a Jupiter + Titan + OKX parallel Stage-A quote for the Solana leg.
 
     Returns ``(mid_amount, router, error)``. `router` identifies which
     aggregator won the price competition so Stage-B build can match it.
@@ -762,6 +822,36 @@ def _stage_a_quote_solana(
         return None, None, f"Solana amountOut invalid: {e}"
 
 
+def _stage_a_quote_near(
+    token_in: Dict,
+    intermediate: Dict,
+    amount_in: str,
+    slippage_decimal: float,
+    sender: str,
+) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Run Ref SmartRouter Stage-A quote for the NEAR leg."""
+    from near_smart_router_swap import near_same_chain_quote, ROUTER_NEAR_REF_SMARTROUTER
+
+    res = near_same_chain_quote(
+        token_in=token_in,
+        token_out=intermediate,
+        amount_in=str(amount_in),
+        slippage_decimal=float(slippage_decimal),
+        sender=sender,
+        recipient=sender,
+    )
+    if not res.get("success"):
+        return None, None, f"NEAR SmartRouter quote failed: {res.get('error')}", None
+    quote = res.get("quote") or {}
+    out_str = str(quote.get("amountOut") or "")
+    if not out_str:
+        return None, None, "NEAR SmartRouter quote missing amountOut", None
+    try:
+        return Decimal(out_str), ROUTER_NEAR_REF_SMARTROUTER, None, None
+    except (InvalidOperation, ValueError) as e:
+        return None, None, f"NEAR amountOut invalid: {e}", None
+
+
 def _preswap_cross_chain_quote(
     from_chain: str,
     to_chain: str,
@@ -777,13 +867,14 @@ def _preswap_cross_chain_quote(
     ({"success": True/False, ...}) shaped like a cross-chain quote, with added
     `preSwap` / `bridge` sub-objects describing each stage.
 
-    Supports EVM and Solana fromChain. Stage-A uses chain-appropriate
-    aggregators (OKX for EVM, Jupiter+OKX for Solana); Stage-B is always
-    NearIntents 1Click.
+    Supports EVM, Solana, and NEAR fromChain. Stage-A uses chain-appropriate
+    aggregators (Bitget+OKX for EVM, Jupiter+Titan+OKX for Solana, Ref
+    SmartRouter for NEAR); Stage-B is always NearIntents 1Click.
     """
     is_solana_src = _is_solana_chain(from_chain)
-    chain_int = None if is_solana_src else _chain_id_int(from_chain)
-    if not is_solana_src and chain_int is None:
+    is_near_src = _is_near_chain(from_chain)
+    chain_int = None if (is_solana_src or is_near_src) else _chain_id_int(from_chain)
+    if not is_solana_src and not is_near_src and chain_int is None:
         return {"success": False, "error": f"pre-swap route does not yet support fromChain={from_chain}"}
 
     candidates, reason = _preswap_intermediate_candidates(from_chain, to_chain, token_in, token_out)
@@ -803,12 +894,17 @@ def _preswap_cross_chain_quote(
 
     for inter in candidates:
         try:
+            stage_a_meta = None
             if is_solana_src:
                 mid_amount_raw, stage_a_router, err = _stage_a_quote_solana(
                     token_in, inter, str(amount_in), slippage_decimal, sender,
                 )
+            elif is_near_src:
+                mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_near(
+                    token_in, inter, str(amount_in), slippage_decimal, sender,
+                )
             else:
-                mid_amount_raw, stage_a_router, err = _stage_a_quote_evm(
+                mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_evm(
                     chain_int, token_in, inter, str(amount_in), slippage_decimal, sender,
                 )
             if err or mid_amount_raw is None:
@@ -861,12 +957,17 @@ def _preswap_cross_chain_quote(
                 "recipient": recipient or sender,
                 # Stages — consumed verbatim by /api/swap/swap to lock the route.
                 "preSwap": {
-                    # `router` is informational here; the build step picks the
-                    # actual aggregator at swap time (parallel quote on Solana,
-                    # OKX-only on EVM). Persist what won quote-time so logs
-                    # and the frontend can display the chosen path.
-                    "router": stage_a_router or ("solana-aggregate" if is_solana_src else "okx"),
-                    "chainType": CHAIN_TYPE_SOLANA if is_solana_src else CHAIN_TYPE_EVM,
+                    # `router` is informational here; the build step re-quotes in
+                    # parallel (Bitget+OKX on EVM, Jupiter+Titan+OKX on Solana,
+                    # Ref SmartRouter on NEAR).
+                    "router": stage_a_router or (
+                        "solana-aggregate" if is_solana_src
+                        else ("near-ref-smart" if is_near_src else "evm-aggregate")
+                    ),
+                    "chainType": (
+                        CHAIN_TYPE_SOLANA if is_solana_src
+                        else (CHAIN_TYPE_NEAR if is_near_src else CHAIN_TYPE_EVM)
+                    ),
                     "chainId": str(from_chain),
                     "tokenIn": token_in,
                     "tokenOut": inter,
@@ -874,6 +975,7 @@ def _preswap_cross_chain_quote(
                     "estimatedAmountOut": str(int(mid_amount_raw)),
                     "amountOutTarget": str(mid_amount_target),
                     "slippage": str(slippage_decimal),
+                    **({"market": stage_a_meta["market"]} if isinstance(stage_a_meta, dict) and stage_a_meta.get("market") else {}),
                 },
                 "bridge": {
                     "router": "nearintents",
@@ -2108,40 +2210,132 @@ def _stage_a_build_evm(
     slippage: float,
     sender: str,
     deposit_address: str,
+    preferred_router: str = "",
+    preferred_market: str = "",
 ) -> Dict:
-    """Build the EVM Stage-A swap tx (OKX exactIn delivered to depositAddress).
+    """Build the EVM Stage-A swap tx (exactIn delivered to depositAddress).
 
-    Returns ``{"success": bool, "tx", "estimatedOut", "minAmountOut",
-    "router": "okx", "error"?}``.
-
-    NOTE: We deliberately use OKX exactIn (not exactOut). OKX exactOut is
-    only available on Ethereum / Base / BSC / Arbitrum via Uni V3 pools and
-    long-tail tokens that actually need the two-stage route almost never have
-    Uni V3 liquidity. With exactIn + OKX contract-level slippage guard the
-    amount delivered is guaranteed to be >= quote-time `amountOutTarget`;
-    1Click bridges anything >= the EXACT_INPUT amount we promised it.
+    Re-quotes Bitget and OKX at build time and picks the route with the best
+    ``minAmountOut`` so quote-time router hints stay consistent with the
+    signed transaction.
     """
-    res = build_same_chain_swap_tx(
-        chain_id=chain_int,
-        router="okx",
-        token_in=token_in,
-        token_out=intermediate,
-        amount_in=str(amount_in),
-        slippage=slippage,
-        sender=sender,
-        recipient=deposit_address,
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from swap_utils import (
+        BITGET_CHAIN_MAP,
+        bitget_quote,
+        _parse_bitget_quote,
+        build_swap_tx,
     )
-    if not res.get("success"):
-        return {"success": False, "error": res.get("error", "Pre-swap tx build failed"), "router": "okx"}
-    return {
-        "success": True,
-        "tx": res.get("tx") or {},
-        "estimatedOut": str(res.get("estimatedOut") or ""),
-        "minAmountOut": str(res.get("minAmountOut") or ""),
-        "router": "okx",
-        # OKX router contract address — needed so the caller can build approve.
-        "spender": (res.get("tx") or {}).get("to", ""),
-    }
+
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+
+    def _build_okx() -> Dict:
+        res = build_same_chain_swap_tx(
+            chain_id=chain_int,
+            router="okx",
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage,
+            sender=sender,
+            recipient=deposit_address,
+        )
+        if not res.get("success"):
+            return {"success": False, "router": "okx", "error": res.get("error")}
+        return {
+            "success": True,
+            "router": "okx",
+            "tx": res.get("tx") or {},
+            "estimatedOut": str(res.get("estimatedOut") or ""),
+            "minAmountOut": str(res.get("minAmountOut") or ""),
+            "spender": (res.get("tx") or {}).get("to", ""),
+        }
+
+    def _build_bitget() -> Dict:
+        if chain_int not in BITGET_CHAIN_MAP:
+            return {"success": False, "router": "bitget", "error": f"Bitget does not support chain {chain_int}"}
+
+        market = str(preferred_market or "").strip()
+        if preferred_router == "bitget" and market:
+            pass
+        else:
+            raw = bitget_quote(
+                chain_id=chain_int,
+                token_in=token_in,
+                token_out=intermediate,
+                amount_in=str(amount_in),
+                slippage=slippage_decimal,
+                user_address=sender,
+            )
+            if not raw.get("success"):
+                return {"success": False, "router": "bitget", "error": raw.get("error")}
+            parsed = _parse_bitget_quote(raw["data"], intermediate, slippage_decimal)
+            if not parsed:
+                return {"success": False, "router": "bitget", "error": "Bitget quote unparseable"}
+            if parsed.get("estimateRevert"):
+                return {"success": False, "router": "bitget", "error": "Bitget estimateRevert"}
+            market = str(parsed.get("market") or "").strip()
+        if not market:
+            return {"success": False, "router": "bitget", "error": "Bitget market missing from quote"}
+
+        res = build_swap_tx(
+            chain_id=chain_int,
+            router="bitget",
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage,
+            sender=sender,
+            recipient=deposit_address,
+            market=market,
+        )
+        if not res.get("success"):
+            return {"success": False, "router": "bitget", "error": res.get("error")}
+        return {
+            "success": True,
+            "router": "bitget",
+            "tx": res.get("tx") or {},
+            "estimatedOut": str(res.get("estimatedOut") or ""),
+            "minAmountOut": str(res.get("minAmountOut") or ""),
+            "spender": res.get("approveSpender") or (res.get("tx") or {}).get("to", ""),
+            "market": market,
+        }
+
+    builders: Dict[str, Any] = {"okx": _build_okx}
+    if chain_int in BITGET_CHAIN_MAP:
+        builders["bitget"] = _build_bitget
+
+    router_order = [preferred_router] if preferred_router in builders else []
+    router_order.extend(r for r in ("bitget", "okx") if r in builders and r not in router_order)
+
+    best = None
+    best_min = Decimal("-1")
+    errors = []
+    with ThreadPoolExecutor(max_workers=len(router_order)) as pool:
+        futures = {pool.submit(builders[r]): r for r in router_order}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                continue
+            if not result.get("success"):
+                errors.append(f"{name}: {result.get('error')}")
+                continue
+            try:
+                min_val = Decimal(str(result.get("minAmountOut") or result.get("estimatedOut") or "0"))
+            except (InvalidOperation, ValueError):
+                min_val = Decimal("0")
+            if min_val > best_min:
+                best_min = min_val
+                best = result
+
+    if not best:
+        detail = "; ".join(errors) if errors else "all EVM stage-A builders failed"
+        return {"success": False, "error": detail, "router": preferred_router or "evm-aggregate"}
+
+    return best
 
 
 def _stage_a_build_solana(
@@ -2151,22 +2345,21 @@ def _stage_a_build_solana(
     slippage: float,
     sender: str,
     deposit_address: str,
+    preferred_router: str = "",
 ) -> Dict:
-    """Build the Solana Stage-A swap tx using Jupiter `/swap/v2/build` and
-    inject `createAssociatedTokenAccountIdempotent` for the bridge ATA.
+    """Build the Solana Stage-A swap tx delivering output to the 1Click deposit.
 
-    The 1Click depositAddress is brand new for every order (verified
-    2026-05-09 — no pre-created ATAs), so we always prepend createATA
-    targeting `(deposit_address, intermediate_mint)` for SPL intermediates.
-    For native SOL we use Jupiter's `nativeDestinationAccount` parameter
-    instead and skip the ATA hop entirely.
-
-    Returns the same shape as `_stage_a_build_evm` but with the Solana
-    base64 VersionedTransaction in `tx`.
+    Re-quotes Jupiter, Titan, and OKX at build time (with deposit routing) and
+    picks the best executable route so quote-time router hints stay consistent
+    with the signed transaction.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from jupiter_utils import jupiter_build
+    from titan_utils import titan_order
+    from swap_utils import okx_swap
     from solana_tx_assembler import (
         assemble_jupiter_preswap_tx,
+        assemble_titan_preswap_tx,
         derive_destination_token_account,
         NATIVE_SOL_MINT,
     )
@@ -2189,43 +2382,171 @@ def _stage_a_build_solana(
     slippage_decimal = convert_slippage_to_decimal(slippage)
     slippage_bps = max(1, int(Decimal(str(slippage_decimal)) * Decimal("10000")))
 
-    build_res = jupiter_build(
-        input_mint=token_in.get("address", ""),
-        output_mint=intermediate_mint,
-        amount=str(amount_in),
-        slippage_bps=slippage_bps,
-        taker=sender,
-        destination_token_account=destination_token_account,
-        native_destination_account=native_destination_account,
-    )
-    if not build_res.get("success"):
-        return {"success": False, "error": f"Jupiter build failed: {build_res.get('error')}", "router": "jupiter"}
-
-    data = build_res.get("data") or {}
-    out_amount_str = str(data.get("outAmount") or "")
-    other_threshold = str(data.get("otherAmountThreshold") or "")
-    if not out_amount_str:
-        return {"success": False, "error": "Jupiter build missing outAmount", "router": "jupiter"}
-
-    try:
+    def _build_jupiter() -> Dict:
+        build_res = jupiter_build(
+            input_mint=token_in.get("address", ""),
+            output_mint=intermediate_mint,
+            amount=str(amount_in),
+            slippage_bps=slippage_bps,
+            taker=sender,
+            destination_token_account=destination_token_account,
+            native_destination_account=native_destination_account,
+        )
+        if not build_res.get("success"):
+            return {"success": False, "router": "jupiter", "error": build_res.get("error")}
+        data = build_res.get("data") or {}
+        out_amount_str = str(data.get("outAmount") or "")
+        other_threshold = str(data.get("otherAmountThreshold") or "")
+        if not out_amount_str:
+            return {"success": False, "router": "jupiter", "error": "Jupiter build missing outAmount"}
         assembled = assemble_jupiter_preswap_tx(
             sender=sender,
             deposit_address=deposit_address,
             intermediate_mint=intermediate_mint,
             build_resp=data,
         )
-    except Exception as e:
-        return {"success": False, "error": f"Solana stage-A assembly failed: {e}", "router": "jupiter"}
+        return {
+            "success": True,
+            "router": "jupiter",
+            "tx": assembled,
+            "estimatedOut": out_amount_str,
+            "minAmountOut": other_threshold or out_amount_str,
+            "spender": "",
+        }
 
+    def _build_titan() -> Dict:
+        if not destination_token_account:
+            return {"success": False, "router": "titan", "error": "Titan preswap requires SPL intermediate ATA"}
+        res = titan_order(
+            input_mint=token_in.get("address", ""),
+            output_mint=intermediate_mint,
+            amount=str(amount_in),
+            slippage_bps=slippage_bps,
+            taker=sender,
+            destination_token_account=destination_token_account,
+        )
+        if not res.get("success"):
+            return {"success": False, "router": "titan", "error": res.get("error")}
+        data = res.get("data") or {}
+        out_amount_str = str(data.get("outAmount") or "")
+        if not out_amount_str:
+            return {"success": False, "router": "titan", "error": "Titan quote missing outAmount"}
+        assembled = assemble_titan_preswap_tx(
+            sender=sender,
+            deposit_address=deposit_address,
+            intermediate_mint=intermediate_mint,
+            titan_data=data,
+        )
+        min_out = int(Decimal(out_amount_str) * (Decimal("1") - Decimal(str(slippage_decimal))))
+        return {
+            "success": True,
+            "router": "titan",
+            "tx": assembled,
+            "estimatedOut": out_amount_str,
+            "minAmountOut": str(max(min_out, 0)),
+            "spender": "",
+        }
+
+    def _build_okx() -> Dict:
+        res = okx_swap(
+            chain_id=501,
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage_decimal,
+            from_address=sender,
+            to_address=deposit_address,
+        )
+        if not res.get("success"):
+            return {"success": False, "router": "okx", "error": res.get("error")}
+        data = res.get("data") or {}
+        if str(data.get("code")) != "0" or not data.get("data"):
+            return {"success": False, "router": "okx", "error": data.get("msg", "OKX Solana swap error")}
+        tx_data = data["data"][0] if isinstance(data["data"], list) else data["data"]
+        tx = tx_data.get("tx") or tx_data
+        router_result = tx_data.get("routerResult") or {}
+        out_amount_str = str(router_result.get("toTokenAmount") or router_result.get("toAmount") or "")
+        return {
+            "success": True,
+            "router": "okx",
+            "tx": {
+                "transaction": tx.get("data", ""),
+                "format": "base64",
+            },
+            "estimatedOut": out_amount_str,
+            "minAmountOut": out_amount_str,
+            "spender": "",
+        }
+
+    builders = {
+        "jupiter": _build_jupiter,
+        "titan": _build_titan,
+        "okx": _build_okx,
+    }
+    router_order = [preferred_router] if preferred_router in builders else []
+    router_order.extend(r for r in ("titan", "jupiter", "okx") if r not in router_order)
+
+    best = None
+    best_min = Decimal("-1")
+    errors = []
+    with ThreadPoolExecutor(max_workers=len(router_order)) as pool:
+        futures = {pool.submit(builders[r]): r for r in router_order}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                continue
+            if not result.get("success"):
+                errors.append(f"{name}: {result.get('error')}")
+                continue
+            try:
+                min_val = Decimal(str(result.get("minAmountOut") or result.get("estimatedOut") or "0"))
+            except (InvalidOperation, ValueError):
+                min_val = Decimal("0")
+            if min_val > best_min:
+                best_min = min_val
+                best = result
+
+    if not best:
+        detail = "; ".join(errors) if errors else "all Solana stage-A builders failed"
+        return {"success": False, "error": detail, "router": preferred_router or "solana-aggregate"}
+
+    return best
+
+
+def _stage_a_build_near(
+    token_in: Dict,
+    intermediate: Dict,
+    amount_in: str,
+    slippage: float,
+    sender: str,
+    deposit_address: str,
+    preferred_router: str = "",
+) -> Dict:
+    """Build the NEAR Stage-A Ref SmartRouter tx delivering output to 1Click deposit."""
+    from near_smart_router_swap import near_same_chain_build_tx, ROUTER_NEAR_REF_SMARTROUTER
+
+    router = (preferred_router or ROUTER_NEAR_REF_SMARTROUTER).strip()
+    slippage_decimal = convert_slippage_to_decimal(slippage)
+    res = near_same_chain_build_tx(
+        router=router,
+        token_in=token_in,
+        token_out=intermediate,
+        amount_in=str(amount_in),
+        slippage_decimal=float(slippage_decimal),
+        sender=sender,
+        recipient=deposit_address,
+    )
+    if not res.get("success"):
+        return {"success": False, "error": res.get("error"), "router": router}
     return {
         "success": True,
-        "tx": assembled,
-        "estimatedOut": out_amount_str,
-        # Jupiter exposes its slippage-protected min-out as `otherAmountThreshold`
-        # in ExactIn mode; this is what the on-chain swap will refuse to go below.
-        "minAmountOut": other_threshold or out_amount_str,
-        "router": "jupiter",
-        # Solana has no ERC-20 style approve; signal that to the caller.
+        "router": res.get("router") or router,
+        "tx": res.get("tx") or {},
+        "estimatedOut": res.get("estimatedOut") or "",
+        "minAmountOut": res.get("minAmountOut") or "",
         "spender": "",
     }
 
@@ -2252,10 +2573,9 @@ def _preswap_cross_chain_swap(
     tx (Stage A delivered to the 1Click depositAddress) plus one optional approve
     (EVM only — Solana has no ERC-20-style approve).
 
-    Supports both EVM and Solana fromChain. The Stage-A aggregator is OKX for
-    EVM and Jupiter for Solana (Jupiter `/build` instructions are merged with
-    a `createAssociatedTokenAccountIdempotent` for the bridge ATA so the deposit
-    works against a brand-new 1Click address).
+    Supports EVM, Solana, and NEAR fromChain. Stage-A uses chain-appropriate
+    aggregators; the user signs ONE swap tx delivering intermediate tokens to
+    the 1Click depositAddress (plus optional EVM approve).
 
     Response shape matches the direct cross-chain swap (`tx` + `approve` + `deposit`)
     with an additional `preSwap` block carrying Stage-A metadata and route info.
@@ -2266,8 +2586,9 @@ def _preswap_cross_chain_swap(
         return {"code": -1, "msg": "bridge is required for two-stage route (from /api/swap/quote response)"}
 
     is_solana_src = _is_solana_chain(from_chain)
-    chain_int = None if is_solana_src else _chain_id_int(from_chain)
-    if not is_solana_src and chain_int is None:
+    is_near_src = _is_near_chain(from_chain)
+    chain_int = None if (is_solana_src or is_near_src) else _chain_id_int(from_chain)
+    if not is_solana_src and not is_near_src and chain_int is None:
         return {"code": -1, "msg": f"pre-swap route does not yet support fromChain={from_chain}"}
 
     intermediate = pre_swap.get("tokenOut") or {}
@@ -2316,6 +2637,17 @@ def _preswap_cross_chain_swap(
                 slippage=slippage,
                 sender=sender,
                 deposit_address=deposit_address,
+                preferred_router=str(pre_swap.get("router") or ""),
+            )
+        elif is_near_src:
+            stage_a = _stage_a_build_near(
+                token_in=token_in,
+                intermediate=intermediate,
+                amount_in=str(amount_in),
+                slippage=slippage,
+                sender=sender,
+                deposit_address=deposit_address,
+                preferred_router=str(pre_swap.get("router") or ""),
             )
         else:
             stage_a = _stage_a_build_evm(
@@ -2326,6 +2658,8 @@ def _preswap_cross_chain_swap(
                 slippage=slippage,
                 sender=sender,
                 deposit_address=deposit_address,
+                preferred_router=str(pre_swap.get("router") or ""),
+                preferred_market=str(pre_swap.get("market") or ""),
             )
         if not stage_a.get("success"):
             return {"code": -1, "msg": f"Pre-swap tx build failed: {stage_a.get('error')}"}
@@ -2333,7 +2667,9 @@ def _preswap_cross_chain_swap(
         stage_a_tx = stage_a.get("tx") or {}
         stage_a_estimated_out = stage_a.get("estimatedOut") or ""
         stage_a_min_out = stage_a.get("minAmountOut") or ""
-        stage_a_router = stage_a.get("router") or ("jupiter" if is_solana_src else "okx")
+        stage_a_router = stage_a.get("router") or (
+            "jupiter" if is_solana_src else ("near-ref-smart" if is_near_src else "okx")
+        )
 
         # Safety: aggregator's swap-time min-out must be >= the bridge's expected mid amount
         # (otherwise the bridge could be under-delivered and refund). If the aggregator now
@@ -2350,7 +2686,10 @@ def _preswap_cross_chain_swap(
                 },
             }
 
-        source_chain_type = CHAIN_TYPE_SOLANA if is_solana_src else CHAIN_TYPE_EVM
+        source_chain_type = (
+            CHAIN_TYPE_SOLANA if is_solana_src
+            else (CHAIN_TYPE_NEAR if is_near_src else CHAIN_TYPE_EVM)
+        )
         response_data = _build_common_response_data(
             is_cross_chain=True,
             source_chain_type=source_chain_type,
@@ -2401,10 +2740,8 @@ def _preswap_cross_chain_swap(
             "orderId": order_id,
         }
 
-        # 3) Approve info: EVM only. Solana base64 VersionedTransaction includes its
-        #    setup/wrap instructions inline (and the user signs in one go), and there is
-        #    no ERC-20 style approval on Solana.
-        if not is_solana_src and not is_native_token(token_in.get("address", "")):
+        # 3) Approve info: EVM only. Solana and NEAR have no ERC-20-style approve.
+        if not is_solana_src and not is_near_src and not is_native_token(token_in.get("address", "")):
             approve_amount = str(amount_in)
             approve_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
             approve_res = build_same_chain_approve_tx(

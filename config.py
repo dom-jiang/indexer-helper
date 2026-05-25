@@ -151,6 +151,19 @@ except ImportError:
     PANORA_API_KEY = ""
 
 try:
+    from db_info import (
+        TITAN_WS_ENDPOINT,
+        TITAN_API_JWT,
+        TITAN_API_ORIGIN,
+        TITAN_QUOTE_TIMEOUT_SEC,
+    )
+except ImportError:
+    TITAN_WS_ENDPOINT = ""
+    TITAN_API_JWT = ""
+    TITAN_API_ORIGIN = "https://titan.exchange"
+    TITAN_QUOTE_TIMEOUT_SEC = 15
+
+try:
     from db_info import BOSS_EMAIL_VERIFY
 except ImportError:
     BOSS_EMAIL_VERIFY = True
@@ -204,6 +217,11 @@ class Cfg:
     # https://app.panora.exchange/developer — the `/swap` endpoint is gated
     # and returns 401 without a key. Override in `db_info.py` for production.
     PANORA_API_KEY = PANORA_API_KEY
+    # Titan Direct WebSocket for Solana same-chain / preswap aggregation.
+    TITAN_WS_ENDPOINT = TITAN_WS_ENDPOINT
+    TITAN_API_JWT = TITAN_API_JWT
+    TITAN_API_ORIGIN = TITAN_API_ORIGIN
+    TITAN_QUOTE_TIMEOUT_SEC = TITAN_QUOTE_TIMEOUT_SEC
     # MCA deposit → NearIntents defaults (swap API server-side CRM fill).
     MCA_BURROW_LOGIC_CONTRACT = MCA_BURROW_LOGIC_CONTRACT
     MCA_INTENTS_APP_FEES_RECIPIENT = MCA_INTENTS_APP_FEES_RECIPIENT

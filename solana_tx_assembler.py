@@ -63,6 +63,8 @@ from cross_chain_tx_builder import (
     _SOL_TX_LIFETIME_MS,
     _ata,
     _create_ata_idempotent_ix,
+    _fetch_latest_blockhash,
+    _solana_rpc_url,
     SolanaDepositTxBuildError,
 )
 
@@ -273,3 +275,155 @@ def derive_destination_token_account(
             f"Solana tx build: invalid (deposit/mint) pair: {e}"
         ) from e
     return str(_ata(owner, mint))
+
+
+def _fetch_address_lookup_table_accounts(
+    alt_pubkeys: Iterable[str],
+) -> List["AddressLookupTableAccount"]:
+    """Resolve Titan/Jupiter ALT pubkeys via Solana RPC `getAddressLookupTable`."""
+    import requests
+
+    rpc_url = _solana_rpc_url()
+    alts: List[AddressLookupTableAccount] = []
+    for key_str in alt_pubkeys:
+        if not key_str:
+            continue
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAddressLookupTable",
+            "params": [key_str, {"encoding": "base64"}],
+        }
+        try:
+            resp = requests.post(rpc_url, json=body, timeout=8)
+            resp.raise_for_status()
+            value = (resp.json() or {}).get("result", {}).get("value")
+            if not value:
+                logger.warning(f"solana_tx_assembler: ALT not found on-chain: {key_str}")
+                continue
+            addresses = [
+                Pubkey.from_string(addr)
+                for addr in (value.get("state") or {}).get("addresses") or []
+            ]
+            alts.append(AddressLookupTableAccount(key=Pubkey.from_string(key_str), addresses=addresses))
+        except Exception as e:
+            logger.warning(f"solana_tx_assembler: failed to fetch ALT {key_str}: {e}")
+    return alts
+
+
+def _compile_versioned_tx(
+    *,
+    sender_pk: "Pubkey",
+    instructions: List["Instruction"],
+    alts: List["AddressLookupTableAccount"],
+    blockhash_str: str,
+    last_valid: int,
+) -> Dict:
+    try:
+        msg = MessageV0.try_compile(
+            payer=sender_pk,
+            instructions=instructions,
+            address_lookup_table_accounts=alts,
+            recent_blockhash=Hash.from_string(blockhash_str),
+        )
+        num_required = msg.header.num_required_signatures
+        placeholder_sigs = [Signature.default() for _ in range(num_required)]
+        tx = VersionedTransaction.populate(msg, placeholder_sigs)
+        tx_bytes = bytes(tx)
+    except Exception as e:
+        raise SolanaDepositTxBuildError(
+            f"Solana tx build: failed to compile/serialize VersionedTransaction: {e}"
+        ) from e
+
+    return {
+        "transaction": base64.b64encode(tx_bytes).decode("ascii"),
+        "format": "base64",
+        "txValidUntil": int(time.time() * 1000) + _SOL_TX_LIFETIME_MS,
+        "lastValidBlockHeight": last_valid,
+        "recentBlockhash": blockhash_str,
+    }
+
+
+def assemble_titan_swap_tx(
+    *,
+    sender: str,
+    titan_data: Dict,
+    prepend_instructions: Optional[List["Instruction"]] = None,
+) -> Dict:
+    """Build a signable base64 VersionedTransaction from a Titan quote payload.
+
+    If Titan returned a pre-built `swapTransaction`, pass it through directly.
+    Otherwise compile route `instructions` + RPC-resolved ALTs with a fresh
+    blockhash (same pattern as the frontend `transfer_solana` helper).
+    """
+    if not _SOLDERS_AVAILABLE:
+        raise SolanaDepositTxBuildError(
+            "Solana tx build: `solders` package not installed on the backend"
+        )
+    if not sender:
+        raise SolanaDepositTxBuildError("Solana tx build: sender is required")
+
+    prebuilt = str(titan_data.get("swapTransaction") or "").strip()
+    if prebuilt:
+        bh = _fetch_latest_blockhash()
+        last_valid = bh[1] if bh else 0
+        blockhash_str = bh[0] if bh else ""
+        return {
+            "transaction": prebuilt,
+            "format": "base64",
+            "txValidUntil": int(time.time() * 1000) + _SOL_TX_LIFETIME_MS,
+            "lastValidBlockHeight": last_valid,
+            "recentBlockhash": blockhash_str,
+        }
+
+    bh = _fetch_latest_blockhash()
+    if not bh:
+        raise SolanaDepositTxBuildError(
+            "Solana tx build: failed to fetch recent blockhash for Titan assembly"
+        )
+    blockhash_str, last_valid = bh
+
+    try:
+        sender_pk = Pubkey.from_string(sender)
+    except Exception as e:
+        raise SolanaDepositTxBuildError(f"Solana tx build: invalid sender {sender}: {e}") from e
+
+    instructions: List[Instruction] = list(prepend_instructions or [])
+    for ix_json in titan_data.get("instructions") or []:
+        instructions.append(_decode_instruction(ix_json))
+
+    alts = _fetch_address_lookup_table_accounts(titan_data.get("addressLookupTables") or [])
+    return _compile_versioned_tx(
+        sender_pk=sender_pk,
+        instructions=instructions,
+        alts=alts,
+        blockhash_str=blockhash_str,
+        last_valid=last_valid,
+    )
+
+
+def assemble_titan_preswap_tx(
+    *,
+    sender: str,
+    deposit_address: str,
+    intermediate_mint: str,
+    titan_data: Dict,
+) -> Dict:
+    """Titan Stage-A pre-swap tx with optional createATA for bridge deposit."""
+    if not _SOLDERS_AVAILABLE:
+        raise SolanaDepositTxBuildError(
+            "Solana tx build: `solders` package not installed on the backend"
+        )
+
+    prepend: List[Instruction] = []
+    if (intermediate_mint or "").lower() != NATIVE_SOL_MINT.lower():
+        sender_pk = Pubkey.from_string(sender)
+        deposit_pk = Pubkey.from_string(deposit_address)
+        mint_pk = Pubkey.from_string(intermediate_mint)
+        prepend.append(_create_ata_idempotent_ix(sender_pk, deposit_pk, mint_pk))
+
+    return assemble_titan_swap_tx(
+        sender=sender,
+        titan_data=titan_data,
+        prepend_instructions=prepend,
+    )
