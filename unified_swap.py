@@ -28,7 +28,8 @@ from swap_utils import (
     okx_quote_exact_out, build_okx_exact_out_swap_tx,
     build_swap_tx as build_same_chain_swap_tx,
     build_approve_tx as build_same_chain_approve_tx,
-    simulate_evm_tx,
+    simulate_preswap_evm_swap,
+    convert_preswap_slippage_to_decimal,
     get_bluechip_tokens,
 )
 
@@ -2400,7 +2401,7 @@ def _resolve_stage_a_slippage(pre_swap: Dict, slippage: float, chain_int: int, t
     ps = pre_swap.get("slippage") if isinstance(pre_swap, dict) else None
     if ps not in (None, ""):
         try:
-            decimals.append(convert_slippage_to_decimal(float(ps)))
+            decimals.append(convert_preswap_slippage_to_decimal(ps))
         except (TypeError, ValueError):
             pass
     max_decimal = max(decimals)
@@ -3078,23 +3079,50 @@ def _preswap_cross_chain_swap(
             else:
                 response_data["approveError"] = approve_res.get("error", approve_res.get("msg", ""))
 
-        # EVM: simulate Stage-A swap so users do not sign calldata that already reverts.
+        # EVM: simulate Stage-A swap (skips when allowance missing — user signs approve first).
         if not is_solana_src and not is_near_src and not is_aptos_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
-            sim = simulate_evm_tx(chain_int, sender, stage_a_tx)
-            if not sim.get("success") and not sim.get("skipped"):
+            sim_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
+            sim = simulate_preswap_evm_swap(
+                chain_int,
+                sender,
+                token_in.get("address", ""),
+                str(amount_in),
+                sim_spender,
+                stage_a_tx,
+            )
+            if sim.get("skipped") and sim.get("reason") == "approve_required":
+                response_data["simulateSkipped"] = "approve_required"
+                response_data["simulateNote"] = (
+                    "MOG allowance to the swap router is insufficient; sign approve first, then swap"
+                )
+            elif not sim.get("success") and not sim.get("skipped"):
                 slip_bps = convert_slippage_to_decimal(stage_a_slippage) * 10000
+                est_int = _safe_int_str(stage_a_estimated_out)
+                min_feasible = (
+                    int(est_int * (1 - convert_slippage_to_decimal(stage_a_slippage)))
+                    if est_int > 0 else 0
+                )
+                msg = "Pre-swap would revert on-chain; please re-quote"
+                hint = (
+                    "Stale quote or insufficient DEX liquidity for amountOutTarget; "
+                    "call /quote again and submit /swap immediately (do not reuse old preSwap/bridge)"
+                )
+                if slip_bps >= 100 and est_int > 0 and min_feasible >= mid_target:
+                    hint = (
+                        "Slippage is already wide enough; likely stale preSwap/bridge snapshot or "
+                        "MOG pool liquidity. Re-quote and swap within ~1 minute."
+                    )
                 return {
                     "code": -2,
-                    "msg": "Pre-swap would revert on-chain; please re-quote (try higher slippage)",
+                    "msg": msg,
                     "data": {
                         "simulateError": sim.get("error", ""),
                         "stageASlippageBps": int(slip_bps),
                         "amountOutTarget": str(mid_target),
                         "stageAEstimatedOut": str(stage_a_estimated_out or ""),
-                        "hint": (
-                            "Long-tail tokens may need >= "
-                            f"{_MIN_PRESWAP_STAGE_A_SLIPPAGE_BPS} bps slippage on Stage A"
-                        ),
+                        "stageAMinFeasibleOut": str(min_feasible),
+                        "allowance": sim.get("allowance", ""),
+                        "hint": hint,
                     },
                 }
 

@@ -252,6 +252,17 @@ def convert_slippage_to_decimal(slippage: float) -> float:
         return slippage
 
 
+def convert_preswap_slippage_to_decimal(slippage) -> float:
+    """
+    preSwap.slippage from /quote is a decimal fraction (not bps / not OKX percent).
+    Examples: 0.001 = 0.1%, 0.01 = 1%, 0.05 = 5%.
+    """
+    v = float(slippage)
+    if v >= 1:
+        return v / 10000
+    return v
+
+
 def slippage_decimal_to_okx_percent(slippage_decimal: float) -> str:
     """OKX v6 swap API expects slippagePercent as a percent literal (0.5 = 0.5%, 10 = 10%)."""
     pct = float(Decimal(str(slippage_decimal)) * Decimal("100"))
@@ -1199,6 +1210,45 @@ def build_okx_exact_out_swap_tx(
 # EVM transaction simulation
 # ============================================================
 
+ERC20_ALLOWANCE_SELECTOR = "0xdd62ed3e"
+
+
+def get_erc20_allowance(
+    chain_id: int,
+    token_address: str,
+    owner: str,
+    spender: str,
+    block: str = "latest",
+) -> Optional[int]:
+    """Read ERC20 allowance via eth_call. Returns None if RPC unavailable."""
+    import requests
+
+    rpc_urls = EVM_RPC_FALLBACK.get(int(chain_id)) or []
+    owner_hex = normalize_evm_address(owner).replace("0x", "").zfill(64)
+    spender_hex = normalize_evm_address(spender).replace("0x", "").zfill(64)
+    data = ERC20_ALLOWANCE_SELECTOR + owner_hex + spender_hex
+    call_obj = {"to": normalize_evm_address(token_address), "data": data}
+    for url in rpc_urls:
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "eth_call",
+                    "params": [call_obj, block],
+                },
+                timeout=15,
+            )
+            body = resp.json()
+            result = body.get("result")
+            if result:
+                return int(result, 16)
+        except Exception:
+            continue
+    return None
+
+
 def simulate_evm_tx(chain_id: int, from_address: str, tx: Dict, block: str = "latest") -> Dict:
     """
     eth_call simulation for a signed-ready EVM tx dict.
@@ -1264,6 +1314,43 @@ def simulate_evm_tx(chain_id: int, from_address: str, tx: Dict, block: str = "la
             continue
 
     return {"success": False, "error": last_err or "simulation failed"}
+
+
+def simulate_preswap_evm_swap(
+    chain_id: int,
+    sender: str,
+    token_in_address: str,
+    amount_in: str,
+    spender: str,
+    tx: Dict,
+) -> Dict:
+    """
+    Simulate Stage-A swap. Skips simulation when allowance is missing (user must
+    approve first — eth_call would falsely revert with TransferFromFailed).
+    """
+    try:
+        need = int(str(amount_in))
+    except ValueError:
+        need = 0
+
+    allowance = None
+    if spender and token_in_address and need > 0:
+        allowance = get_erc20_allowance(chain_id, token_in_address, sender, spender)
+
+    if allowance is not None and allowance < need:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "approve_required",
+            "allowance": str(allowance),
+            "amountIn": str(need),
+            "spender": spender,
+        }
+
+    sim = simulate_evm_tx(chain_id, sender, tx)
+    if allowance is not None:
+        sim["allowance"] = str(allowance)
+    return sim
 
 
 # ============================================================
