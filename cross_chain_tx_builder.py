@@ -374,11 +374,13 @@ def build_evm_deposit_tx(
     selector = "a9059cbb"
     calldata = "0x" + selector + recipient_hex + amount_hex
 
+    # Polygon USDC transfers can exceed 70k gas (cold account / high network load).
+    # 100k avoids OOG reverts while staying cheap vs a full DEX swap.
     return {
         "to": normalize_evm_address(token_address),
         "data": calldata,
         "value": "0x0",
-        "gasLimit": "0x11170",
+        "gasLimit": "0x186a0",
         "chainId": chain_id_out,
     }
 
