@@ -3578,6 +3578,7 @@ CREATE TABLE IF NOT EXISTS hyperliquid_transfer_jobs (
     deposit_address VARCHAR(256) DEFAULT NULL,
     batch_id VARCHAR(64) DEFAULT NULL,
     intent_nonces_json TEXT,
+    display_meta_json TEXT,
     permit_submitted_at DATETIME DEFAULT NULL,
     exchange_submitted_at DATETIME DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3644,9 +3645,9 @@ def insert_hyperliquid_transfer_job(network_id, row):
         "job_id, client_request_id, transfer_type, account_mode, "
         "hyperliquid_user_address, destination_address, status, message, progress, "
         "request_payload, tx_hashes_json, external_status_json, last_error, "
-        "permit_id, deposit_address, batch_id, intent_nonces_json"
+        "permit_id, deposit_address, batch_id, intent_nonces_json, display_meta_json"
         ") VALUES ("
-        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
         ")"
     )
     db_conn = get_db_connect(network_id)
@@ -3672,6 +3673,7 @@ def insert_hyperliquid_transfer_job(network_id, row):
                 row.get("deposit_address"),
                 row.get("batch_id"),
                 row.get("intent_nonces_json"),
+                row.get("display_meta_json"),
             ),
         )
         db_conn.commit()
@@ -3731,7 +3733,7 @@ def list_hyperliquid_transfer_history(
     list_sql = (
         "SELECT id, job_id, transfer_type, account_mode, hyperliquid_user_address, "
         "destination_address, status, message, progress, created_at, updated_at, finished_at, "
-        "last_error, tx_hashes_json, permit_id, external_status_json "
+        "last_error, tx_hashes_json, permit_id, external_status_json, display_meta_json "
         "FROM hyperliquid_transfer_jobs WHERE LOWER(hyperliquid_user_address) = %s "
         "ORDER BY id DESC LIMIT %s, %s"
     )
