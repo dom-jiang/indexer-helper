@@ -155,6 +155,16 @@ ERC20_APPROVE_SELECTOR = "0x095ea7b3"
 # Max uint256 for unlimited approval
 MAX_UINT256 = "0x" + "f" * 64
 
+# Public RPC fallbacks for pre-send eth_call simulation (build-time sanity check).
+EVM_RPC_FALLBACK: Dict[int, list] = {
+    1: ["https://1rpc.io/eth", "https://ethereum.publicnode.com"],
+    56: ["https://1rpc.io/bnb", "https://bsc-dataseed.binance.org"],
+    137: ["https://1rpc.io/matic", "https://polygon-rpc.com"],
+    8453: ["https://1rpc.io/base", "https://mainnet.base.org"],
+    42161: ["https://1rpc.io/arb", "https://arb1.arbitrum.io/rpc"],
+    10: ["https://1rpc.io/op", "https://mainnet.optimism.io"],
+}
+
 
 # ============================================================
 # Helper Functions
@@ -1183,6 +1193,77 @@ def build_okx_exact_out_swap_tx(
         "amountOut": str(to_amount) if to_amount else str(amount_out),
         "receiver": receiver,
     }
+
+
+# ============================================================
+# EVM transaction simulation
+# ============================================================
+
+def simulate_evm_tx(chain_id: int, from_address: str, tx: Dict, block: str = "latest") -> Dict:
+    """
+    eth_call simulation for a signed-ready EVM tx dict.
+    Used at build time to catch stale routes / insufficient slippage before the user signs.
+    """
+    import requests
+
+    to_addr = tx.get("to") or ""
+    data = tx.get("data") or ""
+    if not to_addr or not data:
+        return {"success": False, "error": "simulate_evm_tx: missing to or data"}
+
+    rpc_urls = EVM_RPC_FALLBACK.get(int(chain_id)) or []
+    if not rpc_urls:
+        return {"success": True, "skipped": True, "msg": "no public RPC configured for simulation"}
+
+    value = tx.get("value") or "0"
+    if isinstance(value, int):
+        value = hex(value)
+    elif isinstance(value, str) and value and not value.startswith("0x"):
+        try:
+            value = hex(int(value))
+        except ValueError:
+            value = "0x0"
+
+    gas = tx.get("gasLimit") or tx.get("gas") or "800000"
+    if isinstance(gas, int):
+        gas = hex(gas)
+    elif isinstance(gas, str) and gas and not gas.startswith("0x"):
+        try:
+            gas = hex(int(gas))
+        except ValueError:
+            gas = "0xc3500"
+
+    call_obj = {
+        "from": normalize_evm_address(from_address),
+        "to": normalize_evm_address(to_addr),
+        "data": data,
+        "value": value,
+        "gas": gas,
+    }
+
+    last_err = ""
+    for url in rpc_urls:
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "eth_call",
+                    "params": [call_obj, block],
+                },
+                timeout=20,
+            )
+            body = resp.json()
+            if body.get("result"):
+                return {"success": True, "rpc": url}
+            err = body.get("error") or {}
+            last_err = err.get("message") or str(err) or "execution reverted"
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    return {"success": False, "error": last_err or "simulation failed"}
 
 
 # ============================================================

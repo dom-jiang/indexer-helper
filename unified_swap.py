@@ -28,6 +28,8 @@ from swap_utils import (
     okx_quote_exact_out, build_okx_exact_out_swap_tx,
     build_swap_tx as build_same_chain_swap_tx,
     build_approve_tx as build_same_chain_approve_tx,
+    simulate_evm_tx,
+    get_bluechip_tokens,
 )
 
 
@@ -2378,6 +2380,36 @@ def _same_chain_swap(
         return {"code": -1, "msg": str(e)}
 
 
+# Minimum Stage-A slippage for long-tail tokenIn (bps). MOG-class tokens need more than 10 bps.
+_MIN_PRESWAP_STAGE_A_SLIPPAGE_BPS = 50
+
+
+def _is_evm_bluechip_token(chain_int: int, token: Dict) -> bool:
+    addr = (token.get("address") or "").lower()
+    if not addr or is_native_token(addr):
+        return True
+    for meta in get_bluechip_tokens(chain_int).values():
+        if (meta.get("address") or "").lower() == addr:
+            return True
+    return False
+
+
+def _resolve_stage_a_slippage(pre_swap: Dict, slippage: float, chain_int: int, token_in: Dict) -> float:
+    """Pick the looser of top-level and preSwap slippage; floor long-tail tokens."""
+    decimals = [convert_slippage_to_decimal(slippage)]
+    ps = pre_swap.get("slippage") if isinstance(pre_swap, dict) else None
+    if ps not in (None, ""):
+        try:
+            decimals.append(convert_slippage_to_decimal(float(ps)))
+        except (TypeError, ValueError):
+            pass
+    max_decimal = max(decimals)
+    max_bps = max_decimal * 10000
+    if chain_int and token_in and not _is_evm_bluechip_token(chain_int, token_in):
+        max_bps = max(max_bps, _MIN_PRESWAP_STAGE_A_SLIPPAGE_BPS)
+    return max_bps
+
+
 def _stage_a_build_evm(
     chain_int: int,
     token_in: Dict,
@@ -2432,25 +2464,23 @@ def _stage_a_build_evm(
             return {"success": False, "router": "bitget", "error": f"Bitget does not support chain {chain_int}"}
 
         market = str(preferred_market or "").strip()
-        if preferred_router == "bitget" and market:
-            pass
-        else:
-            raw = bitget_quote(
-                chain_id=chain_int,
-                token_in=token_in,
-                token_out=intermediate,
-                amount_in=str(amount_in),
-                slippage=slippage_decimal,
-                user_address=sender,
-            )
-            if not raw.get("success"):
-                return {"success": False, "router": "bitget", "error": raw.get("error")}
-            parsed = _parse_bitget_quote(raw["data"], intermediate, slippage_decimal)
-            if not parsed:
-                return {"success": False, "router": "bitget", "error": "Bitget quote unparseable"}
-            if parsed.get("estimateRevert"):
-                return {"success": False, "router": "bitget", "error": "Bitget estimateRevert"}
-            market = str(parsed.get("market") or "").strip()
+        # Always refresh Bitget quote at build time (market hint from /quote may be stale).
+        raw = bitget_quote(
+            chain_id=chain_int,
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage_decimal,
+            user_address=sender,
+        )
+        if not raw.get("success"):
+            return {"success": False, "router": "bitget", "error": raw.get("error")}
+        parsed = _parse_bitget_quote(raw["data"], intermediate, slippage_decimal)
+        if not parsed:
+            return {"success": False, "router": "bitget", "error": "Bitget quote unparseable"}
+        if parsed.get("estimateRevert"):
+            return {"success": False, "router": "bitget", "error": "Bitget estimateRevert"}
+        market = str(parsed.get("market") or market).strip()
         if not market:
             return {"success": False, "router": "bitget", "error": "Bitget market missing from quote"}
 
@@ -2855,6 +2885,10 @@ def _preswap_cross_chain_swap(
     if mid_target <= 0:
         return {"code": -1, "msg": "preSwap.amountOutTarget is required and must be a positive integer"}
 
+    stage_a_slippage = slippage
+    if not is_solana_src and not is_near_src and not is_aptos_src and chain_int is not None:
+        stage_a_slippage = _resolve_stage_a_slippage(pre_swap, slippage, chain_int, token_in)
+
     try:
         # 1) Stage B: create the 1Click order (dry=false) so we have a depositAddress.
         #    Use EXACT_INPUT with `amount = mid_target` — this matches what stage A will deliver.
@@ -2887,7 +2921,7 @@ def _preswap_cross_chain_swap(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
-                slippage=slippage,
+                slippage=stage_a_slippage,
                 sender=sender,
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
@@ -2897,7 +2931,7 @@ def _preswap_cross_chain_swap(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
-                slippage=slippage,
+                slippage=stage_a_slippage,
                 sender=sender,
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
@@ -2907,7 +2941,7 @@ def _preswap_cross_chain_swap(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
-                slippage=slippage,
+                slippage=stage_a_slippage,
                 sender=sender,
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
@@ -2918,7 +2952,7 @@ def _preswap_cross_chain_swap(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
-                slippage=slippage,
+                slippage=stage_a_slippage,
                 sender=sender,
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
@@ -3015,9 +3049,11 @@ def _preswap_cross_chain_swap(
         if not is_solana_src and not is_near_src and not is_native_token(token_in.get("address", "")):
             approve_amount = str(amount_in)
             approve_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
+            # Must match Stage-A router: Bitget swap pulls via tx.to; OKX uses dexContractAddress.
+            approve_router = stage_a_router if stage_a_router in ("okx", "bitget") else "okx"
             approve_res = build_same_chain_approve_tx(
                 chain_id=chain_int,
-                router="okx",
+                router=approve_router,
                 token_address=token_in.get("address", ""),
                 approve_amount=approve_amount,
                 spender=approve_spender,
@@ -3025,13 +3061,42 @@ def _preswap_cross_chain_swap(
             if approve_res.get("success"):
                 approve_tx = approve_res.get("tx")
                 if approve_tx:
+                    approve_spender_out = approve_res.get("dexContractAddress", approve_spender)
+                    if approve_router == "bitget":
+                        swap_executor = (stage_a_tx.get("to") or "").lower()
+                        if swap_executor and normalize_evm_address(approve_spender_out).lower() != swap_executor:
+                            logger.warning(
+                                "preswap bitget approve spender %s != swap tx.to %s",
+                                approve_spender_out,
+                                swap_executor,
+                            )
                     response_data["approve"] = {
                         "tx": approve_tx,
-                        "spender": approve_res.get("dexContractAddress", approve_spender),
+                        "spender": approve_spender_out,
                     }
                     response_data["needsApprove"] = True
             else:
                 response_data["approveError"] = approve_res.get("error", approve_res.get("msg", ""))
+
+        # EVM: simulate Stage-A swap so users do not sign calldata that already reverts.
+        if not is_solana_src and not is_near_src and not is_aptos_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
+            sim = simulate_evm_tx(chain_int, sender, stage_a_tx)
+            if not sim.get("success") and not sim.get("skipped"):
+                slip_bps = convert_slippage_to_decimal(stage_a_slippage) * 10000
+                return {
+                    "code": -2,
+                    "msg": "Pre-swap would revert on-chain; please re-quote (try higher slippage)",
+                    "data": {
+                        "simulateError": sim.get("error", ""),
+                        "stageASlippageBps": int(slip_bps),
+                        "amountOutTarget": str(mid_target),
+                        "stageAEstimatedOut": str(stage_a_estimated_out or ""),
+                        "hint": (
+                            "Long-tail tokens may need >= "
+                            f"{_MIN_PRESWAP_STAGE_A_SLIPPAGE_BPS} bps slippage on Stage A"
+                        ),
+                    },
+                }
 
         # Deviation check against /quote results.
         quote_min_int = _safe_int_str(quote_min_amount_out)
