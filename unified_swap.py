@@ -1627,7 +1627,7 @@ def _near_same_chain_mca_deposit_swap(
         amount_in=amount_in,
         router=ROUTER_NEAR_MCA_DEPOSIT,
     )
-    response_data["tx"] = tx_payload
+    _set_near_source_tx(response_data, tx_payload, sender, router=ROUTER_NEAR_MCA_DEPOSIT)
     response_data["estimatedOut"] = str(amount_in)
     response_data["minAmountOut"] = str(amount_in)
     response_data["deposit"] = None
@@ -2197,13 +2197,28 @@ def unified_swap(
         )
 
 
+def _is_near_mca_withdraw_router(router: str) -> bool:
+    """MCA withdraw (funds leave Lending) keeps legacy single-object ``tx``."""
+    return (router or "").strip() == ROUTER_NEAR_MCA_WITHDRAW
+
+
 def _set_near_source_tx(
     response_data: Dict[str, Any],
     tx: Any,
     sender: str,
+    *,
+    router: str = "",
 ) -> None:
-    """Normalize NEAR source-chain ``tx`` to an ordered array and attach sign hints."""
+    """Normalize NEAR source-chain ``tx`` to an ordered array and attach sign hints.
+
+    Skipped only for ``near-mca-withdraw`` (MCA → wallet). All other NEAR-source
+    flows use an array, including ``near-mca-deposit`` (wallet → MCA) and cross-chain
+    nearintents deposits.
+    """
     if not isinstance(response_data, dict):
+        return
+    if _is_near_mca_withdraw_router(router):
+        response_data["tx"] = tx
         return
     from near_smart_router_swap import near_source_tx_to_array
 
@@ -2312,7 +2327,9 @@ def _same_chain_swap(
             router=router,
         )
         if source_chain_type == CHAIN_TYPE_NEAR:
-            _set_near_source_tx(response_data, build_result.get("tx", {}), sender)
+            _set_near_source_tx(
+                response_data, build_result.get("tx", {}), sender, router=router,
+            )
         else:
             response_data["tx"] = build_result.get("tx", {})
         response_data["estimatedOut"] = build_result.get("estimatedOut", "")
@@ -2951,7 +2968,9 @@ def _preswap_cross_chain_swap(
         )
         # Top-level `tx` is the user-signed stage-A tx (it alone triggers both stages).
         if is_near_src:
-            _set_near_source_tx(response_data, stage_a_tx, sender)
+            _set_near_source_tx(
+                response_data, stage_a_tx, sender, router=_PRESWAP_ROUTER_NAME,
+            )
         else:
             response_data["tx"] = stage_a_tx
         response_data["estimatedOut"] = str(bridge_estimated_out or "")
@@ -3172,7 +3191,7 @@ def _cross_chain_swap(
                 deposit_memo=deposit_memo,
                 network_id=str(Cfg.NETWORK_ID),
             )
-            _set_near_source_tx(response_data, tx_payload, sender)
+            _set_near_source_tx(response_data, tx_payload, sender, router=router)
             response_data["approve"] = None
         elif source_chain_type == CHAIN_TYPE_SOLANA:
             response_data["tx"] = build_solana_deposit_tx(
