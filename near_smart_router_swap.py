@@ -1025,8 +1025,87 @@ def near_same_chain_build_tx(
     )
 
 
+_NEAR_TX_META_KEYS = (
+    "chainId",
+    "standard",
+    "tokenAddress",
+    "depositAddress",
+    "amount",
+    "swapKind",
+    "format",
+    "recipient",
+    "nearSmartXHints",
+)
+
+
+def near_source_tx_to_array(
+    tx: Any,
+    sender: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Expand a NEAR swap/deposit tx blob into an ordered list for unified swap API.
+
+    Used when the source chain is NEAR so ``data.tx`` is always an array of
+    wallet-signable transactions (bootstrap transfer, prep calls, deposit leg, …).
+    """
+    if isinstance(tx, list):
+        out: List[Dict[str, Any]] = []
+        for item in tx:
+            out.extend(near_source_tx_to_array(item, sender=sender))
+        return out
+
+    if not isinstance(tx, dict) or not tx:
+        return []
+
+    signer = (tx.get("signerId") or sender or "").strip()
+    meta = {
+        k: tx[k]
+        for k in _NEAR_TX_META_KEYS
+        if k in tx and tx[k] is not None
+    }
+    out: List[Dict[str, Any]] = []
+
+    setup = tx.get("depositSetupTransaction")
+    if isinstance(setup, dict):
+        setup_item = dict(setup)
+        if signer and not setup_item.get("signerId"):
+            setup_item["signerId"] = signer
+        if setup_item.get("receiverId") and isinstance(setup_item.get("actions"), list):
+            out.append(setup_item)
+
+    batch = tx.get("transactions")
+    if isinstance(batch, list) and batch:
+        for item in batch:
+            if not isinstance(item, dict):
+                continue
+            rid = (item.get("receiverId") or "").strip()
+            actions = item.get("actions")
+            if not rid or not isinstance(actions, list) or not actions:
+                continue
+            out.append({
+                "signerId": (item.get("signerId") or signer).strip(),
+                "receiverId": rid,
+                "actions": actions,
+            })
+        if out and meta:
+            out[-1].update(meta)
+        return out
+
+    main = {
+        k: v
+        for k, v in tx.items()
+        if k not in ("depositSetupTransaction", "transactions")
+    }
+    if signer and not main.get("signerId"):
+        main["signerId"] = signer
+    if main.get("receiverId") and isinstance(main.get("actions"), list):
+        out.append(main)
+
+    return out
+
+
 def near_tx_to_sign_transactions(
-    tx: Optional[Dict[str, Any]],
+    tx: Any,
     sender: str,
 ) -> List[Dict[str, Any]]:
     """
@@ -1036,11 +1115,24 @@ def near_tx_to_sign_transactions(
     when present — SmartX prep (storage_deposit, tokens_storage_deposit, …)
     may span multiple ``receiverId`` values and cannot fit a single NEAR tx.
     """
+    if isinstance(tx, list):
+        out: List[Dict[str, Any]] = []
+        for item in tx:
+            out.extend(near_tx_to_sign_transactions(item, sender))
+        return out
+
     if not isinstance(tx, dict):
         return []
     signer = (tx.get("signerId") or sender or "").strip()
     if not signer:
         return []
+
+    setup = tx.get("depositSetupTransaction")
+    if isinstance(setup, dict):
+        rid = (setup.get("receiverId") or "").strip()
+        actions = setup.get("actions")
+        if rid and isinstance(actions, list) and actions:
+            return near_source_tx_to_array(tx, sender=sender)
 
     batch = tx.get("transactions")
     if isinstance(batch, list) and batch:

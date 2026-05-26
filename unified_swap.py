@@ -2197,17 +2197,36 @@ def unified_swap(
         )
 
 
+def _set_near_source_tx(
+    response_data: Dict[str, Any],
+    tx: Any,
+    sender: str,
+) -> None:
+    """Normalize NEAR source-chain ``tx`` to an ordered array and attach sign hints."""
+    if not isinstance(response_data, dict):
+        return
+    from near_smart_router_swap import near_source_tx_to_array
+
+    response_data["tx"] = near_source_tx_to_array(tx, sender=sender)
+    _attach_near_sign_transactions(response_data, response_data["tx"], sender)
+
+
 def _attach_near_sign_transactions(
     response_data: Dict[str, Any],
-    tx: Optional[Dict],
+    tx: Any,
     sender: str,
 ) -> None:
     """Attach ordered NEAR wallet batch to unified swap API responses."""
-    if not isinstance(response_data, dict) or not isinstance(tx, dict):
+    if not isinstance(response_data, dict) or tx is None:
         return
     from near_smart_router_swap import near_tx_to_sign_transactions
 
-    sign_txs = near_tx_to_sign_transactions(tx, sender)
+    sign_txs: list = []
+    if isinstance(tx, list):
+        for item in tx:
+            sign_txs.extend(near_tx_to_sign_transactions(item, sender))
+    else:
+        sign_txs = near_tx_to_sign_transactions(tx, sender)
     if not sign_txs:
         return
     response_data["nearSignTransactions"] = sign_txs
@@ -2292,11 +2311,12 @@ def _same_chain_swap(
             amount_in=amount_in,
             router=router,
         )
-        response_data["tx"] = build_result.get("tx", {})
+        if source_chain_type == CHAIN_TYPE_NEAR:
+            _set_near_source_tx(response_data, build_result.get("tx", {}), sender)
+        else:
+            response_data["tx"] = build_result.get("tx", {})
         response_data["estimatedOut"] = build_result.get("estimatedOut", "")
         response_data["minAmountOut"] = build_result.get("minAmountOut", "")
-        if source_chain_type == CHAIN_TYPE_NEAR:
-            _attach_near_sign_transactions(response_data, response_data.get("tx"), sender)
 
         # Deviation check: if caller passes /quote results, ensure current build is not worse than quote's minAmountOut.
         # This prevents "quote shows 1U but swap silently builds for 0.81U" type confusion.
@@ -2930,8 +2950,10 @@ def _preswap_cross_chain_swap(
             router=_PRESWAP_ROUTER_NAME,
         )
         # Top-level `tx` is the user-signed stage-A tx (it alone triggers both stages).
-        response_data["tx"] = stage_a_tx
-        _attach_near_sign_transactions(response_data, stage_a_tx, sender)
+        if is_near_src:
+            _set_near_source_tx(response_data, stage_a_tx, sender)
+        else:
+            response_data["tx"] = stage_a_tx
         response_data["estimatedOut"] = str(bridge_estimated_out or "")
         response_data["minAmountOut"] = str(bridge_min_out or "")
         response_data["deposit"] = {
@@ -3142,7 +3164,7 @@ def _cross_chain_swap(
                 amount_smallest=amount_in,
             )
         elif source_chain_type == CHAIN_TYPE_NEAR:
-            response_data["tx"] = build_near_deposit_tx(
+            tx_payload = build_near_deposit_tx(
                 token_address=token_in.get("address", ""),
                 deposit_address=deposit_address,
                 amount_smallest=amount_in,
@@ -3150,6 +3172,7 @@ def _cross_chain_swap(
                 deposit_memo=deposit_memo,
                 network_id=str(Cfg.NETWORK_ID),
             )
+            _set_near_source_tx(response_data, tx_payload, sender)
             response_data["approve"] = None
         elif source_chain_type == CHAIN_TYPE_SOLANA:
             response_data["tx"] = build_solana_deposit_tx(

@@ -242,6 +242,13 @@ def convert_slippage_to_decimal(slippage: float) -> float:
         return slippage
 
 
+def slippage_decimal_to_okx_percent(slippage_decimal: float) -> str:
+    """OKX v6 swap API expects slippagePercent as a percent literal (0.5 = 0.5%, 10 = 10%)."""
+    pct = float(Decimal(str(slippage_decimal)) * Decimal("100"))
+    s = f"{pct:.10f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 def get_bluechip_tokens(chain_id: int) -> Dict[str, Dict]:
     """Get bluechip tokens config for a specific chain"""
     return BLUECHIP_TOKENS.get(chain_id, {})
@@ -488,7 +495,7 @@ def okx_swap(
             "toTokenAddress": normalized_out,
             "amount": str(amount_in),
             "swapMode": swap_mode,
-            "slippagePercent": str(slippage),
+            "slippagePercent": slippage_decimal_to_okx_percent(slippage),
             "userWalletAddress": from_address,
         }
         if to_address and to_address.lower() != from_address.lower():
