@@ -70,7 +70,12 @@ def _fetch_apollo_jwt(user_pubkey: str) -> str:
     """Fetch a per-wallet Apollo JWT from Titan (same as frontend `/api/titan/apollo-jwt`)."""
     origin = _cfg("TITAN_API_ORIGIN", TITAN_API_ORIGIN).rstrip("/")
     url = f"{origin}/api/apollo-jwt"
-    resp = requests.get(url, params={"address": user_pubkey}, timeout=10)
+    resp = requests.get(
+        url,
+        params={"address": user_pubkey},
+        timeout=10,
+        verify=_titan_requests_verify(),
+    )
     resp.raise_for_status()
     data = resp.json() or {}
     token = str(data.get("token") or "").strip()
@@ -115,6 +120,31 @@ def _ws_url(auth_token: str) -> str:
         endpoint = "wss://api.titan.exchange/api/v1/ws"
     sep = "&" if "?" in endpoint else "?"
     return f"{endpoint}{sep}auth={auth_token}"
+
+
+def _titan_sslopt() -> Dict[str, Any]:
+    """
+    websocket-client SSL options. Use certifi CA bundle when available so WSS works
+    on minimal Linux / Windows Python installs (avoids CERTIFICATE_VERIFY_FAILED).
+    """
+    sslopt: Dict[str, Any] = {"cert_reqs": ssl.CERT_REQUIRED}
+    try:
+        import certifi
+
+        sslopt["ca_certs"] = certifi.where()
+    except ImportError:
+        pass
+    return sslopt
+
+
+def _titan_requests_verify():
+    """CA bundle path for requests (apollo-jwt HTTP). Falls back to default verify."""
+    try:
+        import certifi
+
+        return certifi.where()
+    except ImportError:
+        return True
 
 
 class _TitanCodec:
@@ -239,7 +269,7 @@ def titan_order(
             url,
             timeout=timeout_sec,
             subprotocols=_TITAN_SUBPROTOCOLS,
-            sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+            sslopt=_titan_sslopt(),
         )
         negotiated = ws.subprotocol or "v1.api.titan.ag"
         use_compression = negotiated != "v1.api.titan.ag"

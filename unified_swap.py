@@ -829,6 +829,100 @@ def _aptos_intermediate_candidates(
     return candidates, None
 
 
+def _normalize_stage_a_errors(errors: Any) -> list:
+    """Normalize aggregate quote `errors` into [{router, error}, ...]."""
+    out = []
+    if not errors:
+        return out
+    if not isinstance(errors, list):
+        errors = [errors]
+    for item in errors:
+        if isinstance(item, dict):
+            if item.get("router") is not None:
+                out.append({
+                    "router": str(item.get("router")),
+                    "error": str(item.get("error", "")),
+                })
+            else:
+                for router, err in item.items():
+                    out.append({"router": str(router), "error": str(err)})
+        else:
+            out.append({"router": "unknown", "error": str(item)})
+    return out
+
+
+def _stage_a_aggregate_meta(aggregate_res: Dict) -> Dict[str, Any]:
+    """Build preSwap transparency fields from aggregate_*_quote responses."""
+    if not aggregate_res or not isinstance(aggregate_res, dict):
+        return {}
+    meta: Dict[str, Any] = {}
+    winner = aggregate_res.get("quote") or {}
+    if winner.get("router"):
+        meta["stageAWinner"] = str(winner.get("router"))
+
+    stage_all = []
+    for q in aggregate_res.get("allQuotes") or []:
+        if not isinstance(q, dict):
+            continue
+        entry = {
+            "router": q.get("router"),
+            "amountOut": str(q.get("amountOut") or ""),
+            "minAmountOut": str(q.get("minAmountOut") or ""),
+        }
+        if q.get("amountOutReadable") is not None:
+            entry["amountOutReadable"] = q.get("amountOutReadable")
+        if q.get("market"):
+            entry["market"] = q.get("market")
+        stage_all.append(entry)
+    if stage_all:
+        meta["stageAAllQuotes"] = stage_all
+
+    stage_errors = _normalize_stage_a_errors(aggregate_res.get("errors"))
+    if stage_errors:
+        meta["stageAErrors"] = stage_errors
+    return meta
+
+
+def _merge_stage_a_meta_into_preswap(pre_swap: Dict, stage_a_meta: Optional[Dict]) -> None:
+    """Attach stage-A aggregator breakdown to the preSwap block (in-place)."""
+    if not isinstance(stage_a_meta, dict):
+        return
+    for key in ("stageAAllQuotes", "stageAErrors", "stageAWinner"):
+        if stage_a_meta.get(key) is not None:
+            pre_swap[key] = stage_a_meta[key]
+    if stage_a_meta.get("market"):
+        pre_swap["market"] = stage_a_meta["market"]
+
+
+def _build_quote_provider_warnings(
+    direct_errors: Optional[list] = None,
+    preswap_errors: Optional[list] = None,
+    stage_a_by_intermediate: Optional[list] = None,
+) -> Optional[list]:
+    """Non-fatal quote failures for QA (direct providers + Stage-A aggregators)."""
+    warnings = []
+    for msg in direct_errors or []:
+        if msg:
+            warnings.append({"source": "direct", "message": str(msg)})
+    for msg in preswap_errors or []:
+        if msg:
+            warnings.append({"source": "preswap", "message": str(msg)})
+    for block in stage_a_by_intermediate or []:
+        if not isinstance(block, dict):
+            continue
+        inter = block.get("intermediate") or block.get("symbol") or ""
+        for err in block.get("stageAErrors") or []:
+            if not isinstance(err, dict):
+                continue
+            warnings.append({
+                "source": "stageA",
+                "intermediate": inter,
+                "router": err.get("router"),
+                "message": err.get("error", ""),
+            })
+    return warnings or None
+
+
 def _stage_a_quote_evm(
     chain_int: int,
     token_in: Dict,
@@ -861,11 +955,11 @@ def _stage_a_quote_evm(
         return None, None, "EVM aggregate quote missing amountOut", None
     try:
         router = str(quote.get("router") or "okx")
-        meta: Optional[Dict[str, Any]] = None
+        meta = _stage_a_aggregate_meta(res)
         if router == "bitget":
             market = str(quote.get("market") or "").strip()
             if market:
-                meta = {"market": market}
+                meta["market"] = market
         return Decimal(out_str), router, None, meta
     except (InvalidOperation, ValueError) as e:
         return None, None, f"EVM amountOut invalid: {e}", None
@@ -877,11 +971,11 @@ def _stage_a_quote_solana(
     amount_in: str,
     slippage: float,
     sender: str,
-) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
+) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
     """Run a Jupiter + Titan + OKX parallel Stage-A quote for the Solana leg.
 
-    Returns ``(mid_amount, router, error)``. `router` identifies which
-    aggregator won the price competition so Stage-B build can match it.
+    Returns ``(mid_amount, router, error, meta)``. `meta` includes
+    ``stageAAllQuotes`` / ``stageAErrors`` for API transparency.
     """
     from swap_utils import aggregate_solana_quote
     res = aggregate_solana_quote(
@@ -893,15 +987,20 @@ def _stage_a_quote_solana(
         recipient=sender,
     )
     if not res.get("success"):
-        return None, None, f"Solana aggregate quote failed: {res.get('error')}"
+        err_detail = res.get("error", "Solana aggregate quote failed")
+        details = res.get("details")
+        if details:
+            err_detail = f"{err_detail}: {details}"
+        return None, None, err_detail, None
     quote = res.get("quote") or {}
     out_str = str(quote.get("amountOut") or "")
     if not out_str:
-        return None, None, "Solana aggregate quote missing amountOut"
+        return None, None, "Solana aggregate quote missing amountOut", None
     try:
-        return Decimal(out_str), str(quote.get("router") or "jupiter"), None
+        meta = _stage_a_aggregate_meta(res)
+        return Decimal(out_str), str(quote.get("router") or "jupiter"), None, meta
     except (InvalidOperation, ValueError) as e:
-        return None, None, f"Solana amountOut invalid: {e}"
+        return None, None, f"Solana amountOut invalid: {e}", None
 
 
 def _stage_a_quote_near(
@@ -941,8 +1040,8 @@ def _stage_a_quote_aptos(
     amount_in: str,
     slippage: float,
     sender: str,
-) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
-    """Run Hyperion CLMM Stage-A quote for Aptos preswap leg."""
+) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Run Hyperion + Panora Stage-A quote for Aptos preswap leg."""
     from swap_utils import aggregate_aptos_quote
 
     res = aggregate_aptos_quote(
@@ -954,15 +1053,58 @@ def _stage_a_quote_aptos(
         recipient=sender,
     )
     if not res.get("success"):
-        return None, None, f"Aptos aggregate quote failed: {res.get('error')}"
+        err_detail = res.get("error", "Aptos aggregate quote failed")
+        details = res.get("details")
+        if details:
+            err_detail = f"{err_detail}: {details}"
+        return None, None, err_detail, None
     quote = res.get("quote") or {}
     out_str = str(quote.get("amountOut") or "")
     if not out_str:
-        return None, None, "Aptos aggregate quote missing amountOut"
+        return None, None, "Aptos aggregate quote missing amountOut", None
     try:
-        return Decimal(out_str), str(quote.get("router") or "hyperion"), None
+        meta = _stage_a_aggregate_meta(res)
+        return Decimal(out_str), str(quote.get("router") or "hyperion"), None, meta
     except (InvalidOperation, ValueError) as e:
-        return None, None, f"Aptos amountOut invalid: {e}"
+        return None, None, f"Aptos amountOut invalid: {e}", None
+
+
+def _build_preswap_stage_block(
+    is_solana_src: bool,
+    is_near_src: bool,
+    is_aptos_src: bool,
+    from_chain: str,
+    token_in: Dict,
+    inter: Dict,
+    amount_in: str,
+    mid_amount_raw: Decimal,
+    mid_amount_target: int,
+    slippage_decimal: float,
+    stage_a_router: Optional[str],
+    stage_a_meta: Optional[Dict],
+) -> Dict:
+    """Assemble the preSwap object for a single intermediate candidate."""
+    pre_swap = {
+        "router": stage_a_router or (
+            "solana-aggregate" if is_solana_src
+            else ("near-ref-smart" if is_near_src
+                  else ("aptos-aggregate" if is_aptos_src else "evm-aggregate"))
+        ),
+        "chainType": (
+            CHAIN_TYPE_SOLANA if is_solana_src
+            else (CHAIN_TYPE_NEAR if is_near_src
+                  else (CHAIN_TYPE_APTOS if is_aptos_src else CHAIN_TYPE_EVM))
+        ),
+        "chainId": str(from_chain),
+        "tokenIn": token_in,
+        "tokenOut": inter,
+        "amountIn": amount_in,
+        "estimatedAmountOut": str(int(mid_amount_raw)),
+        "amountOutTarget": str(mid_amount_target),
+        "slippage": str(slippage_decimal),
+    }
+    _merge_stage_a_meta_into_preswap(pre_swap, stage_a_meta)
+    return pre_swap
 
 
 def _preswap_cross_chain_quote(
@@ -1005,12 +1147,13 @@ def _preswap_cross_chain_quote(
     best_amount = Decimal("-1")
     all_quotes = []
     errors = []
+    stage_a_by_intermediate = []
 
     for inter in candidates:
         try:
             stage_a_meta = None
             if is_solana_src:
-                mid_amount_raw, stage_a_router, err = _stage_a_quote_solana(
+                mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_solana(
                     token_in, inter, str(amount_in), slippage, sender,
                 )
             elif is_near_src:
@@ -1018,13 +1161,20 @@ def _preswap_cross_chain_quote(
                     token_in, inter, str(amount_in), slippage_decimal, sender,
                 )
             elif is_aptos_src:
-                mid_amount_raw, stage_a_router, err = _stage_a_quote_aptos(
+                mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_aptos(
                     token_in, inter, str(amount_in), slippage, sender,
                 )
             else:
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_evm(
                     chain_int, token_in, inter, str(amount_in), slippage, sender,
                 )
+            if isinstance(stage_a_meta, dict) and stage_a_meta.get("stageAErrors"):
+                stage_a_by_intermediate.append({
+                    "intermediate": inter.get("symbol") or "",
+                    "intermediateAddress": inter.get("address") or "",
+                    "stageAErrors": stage_a_meta.get("stageAErrors"),
+                    "stageAWinner": stage_a_meta.get("stageAWinner"),
+                })
             if err or mid_amount_raw is None:
                 errors.append(f"{inter['symbol']}: {err}")
                 continue
@@ -1077,29 +1227,20 @@ def _preswap_cross_chain_quote(
                 "sender": sender,
                 "recipient": recipient or sender,
                 # Stages — consumed verbatim by /api/swap/swap to lock the route.
-                "preSwap": {
-                    # `router` is informational here; the build step re-quotes in
-                    # parallel (Bitget+OKX on EVM, Jupiter+Titan+OKX on Solana,
-                    # Ref SmartRouter on NEAR).
-                    "router": stage_a_router or (
-                        "solana-aggregate" if is_solana_src
-                        else ("near-ref-smart" if is_near_src
-                              else ("aptos-aggregate" if is_aptos_src else "evm-aggregate"))
-                    ),
-                    "chainType": (
-                        CHAIN_TYPE_SOLANA if is_solana_src
-                        else (CHAIN_TYPE_NEAR if is_near_src
-                              else (CHAIN_TYPE_APTOS if is_aptos_src else CHAIN_TYPE_EVM))
-                    ),
-                    "chainId": str(from_chain),
-                    "tokenIn": token_in,
-                    "tokenOut": inter,
-                    "amountIn": str(amount_in),
-                    "estimatedAmountOut": str(int(mid_amount_raw)),
-                    "amountOutTarget": str(mid_amount_target),
-                    "slippage": str(slippage_decimal),
-                    **({"market": stage_a_meta["market"]} if isinstance(stage_a_meta, dict) and stage_a_meta.get("market") else {}),
-                },
+                "preSwap": _build_preswap_stage_block(
+                    is_solana_src=is_solana_src,
+                    is_near_src=is_near_src,
+                    is_aptos_src=is_aptos_src,
+                    from_chain=from_chain,
+                    token_in=token_in,
+                    inter=inter,
+                    amount_in=str(amount_in),
+                    mid_amount_raw=mid_amount_raw,
+                    mid_amount_target=mid_amount_target,
+                    slippage_decimal=slippage_decimal,
+                    stage_a_router=stage_a_router,
+                    stage_a_meta=stage_a_meta,
+                ),
                 "bridge": {
                     "router": "nearintents",
                     "fromChain": str(from_chain),
@@ -1131,6 +1272,7 @@ def _preswap_cross_chain_quote(
         "quote": best,
         "allQuotes": all_quotes,
         "errors": errors or None,
+        "stageAAggregateErrors": stage_a_by_intermediate or None,
     }
 
 
@@ -1935,20 +2077,38 @@ def _same_chain_quote(
         )
 
         if result.get("success"):
-            quote_data = result.get("quote", {})
+            quote_data = dict(result.get("quote", {}) or {})
             all_quotes = result.get("allQuotes", [])
             if not all_quotes and quote_data:
                 all_quotes = [quote_data]
-            return {
-                "code": 0,
-                "msg": "success",
-                "data": {
-                    "isCrossChain": False,
-                    "bestQuote": quote_data,
-                    "allQuotes": all_quotes,
-                    "chainType": result.get("chainType", "evm"),
-                },
+            stage_errors = _normalize_stage_a_errors(result.get("errors"))
+            if stage_errors:
+                quote_data["stageAErrors"] = stage_errors
+            if result.get("allQuotes"):
+                quote_data["stageAAllQuotes"] = [
+                    {
+                        "router": q.get("router"),
+                        "amountOut": str(q.get("amountOut") or ""),
+                        "minAmountOut": str(q.get("minAmountOut") or ""),
+                    }
+                    for q in result.get("allQuotes", [])
+                    if isinstance(q, dict)
+                ]
+            data = {
+                "isCrossChain": False,
+                "bestQuote": quote_data,
+                "allQuotes": all_quotes,
+                "chainType": result.get("chainType", "evm"),
             }
+            warnings = _build_quote_provider_warnings(
+                stage_a_by_intermediate=(
+                    [{"intermediate": "same-chain", "stageAErrors": stage_errors}]
+                    if stage_errors else None
+                ),
+            )
+            if warnings:
+                data["quoteProviderWarnings"] = warnings
+            return {"code": 0, "msg": "success", "data": data}
         else:
             return {"code": -1, "msg": result.get("error", "Quote failed"), "data": result}
     except Exception as e:
@@ -2029,6 +2189,10 @@ def _cross_chain_quote(
     token_out_decimals = token_out.get("decimals", 18)
     best_quote, all_quotes = _compare_cross_chain_quotes(omni_result, near_result, token_out_decimals)
 
+    preswap_res = None
+    preswap_stage_a_errors = None
+    preswap_route_errors = None
+
     # If no direct provider returned a usable quote, try the two-stage pre-swap route
     # as a fallback. This is especially important when `tokenIn` is a long-tail token
     # (e.g. VELA) that 1Click does not list but USDC/USDT/WETH on `fromChain` does.
@@ -2048,6 +2212,8 @@ def _cross_chain_quote(
             best_quote = preswap_res.get("quote")
             ps_all = preswap_res.get("allQuotes") or []
             all_quotes = list(all_quotes) + ps_all
+            preswap_stage_a_errors = preswap_res.get("stageAAggregateErrors")
+            preswap_route_errors = preswap_res.get("errors")
             if errors:
                 logger.info(f"cross-chain direct providers all failed, falling back to pre-swap route. direct errors: {errors}")
         else:
@@ -2057,21 +2223,29 @@ def _cross_chain_quote(
         error_detail = "; ".join(errors) if errors else "All providers failed"
         return {"code": -1, "msg": f"Cross-chain quote failed: {error_detail}"}
 
-    # Log non-fatal provider failures but do not expose them to the caller on success,
-    # otherwise a successful quote looks half-broken (e.g. OmniBridge returning 404
-    # for EVM<->EVM pairs it never supports).
+    quote_warnings = _build_quote_provider_warnings(
+        direct_errors=errors,
+        preswap_errors=preswap_route_errors if preswap_res and preswap_res.get("success") else None,
+        stage_a_by_intermediate=preswap_stage_a_errors,
+    )
     if errors:
-        logger.info(f"cross-chain quote partial provider failures (ignored on success): {errors}")
+        logger.info(f"cross-chain quote partial provider failures: {errors}")
+
+    data = {
+        "isCrossChain": True,
+        "bestQuote": best_quote,
+        "allQuotes": all_quotes,
+        "chainType": "cross-chain",
+    }
+    if quote_warnings:
+        data["quoteProviderWarnings"] = quote_warnings
+    if preswap_stage_a_errors:
+        data["stageAAggregateErrors"] = preswap_stage_a_errors
 
     return {
         "code": 0,
         "msg": "success",
-        "data": {
-            "isCrossChain": True,
-            "bestQuote": best_quote,
-            "allQuotes": all_quotes,
-            "chainType": "cross-chain",
-        },
+        "data": data,
     }
 
 
