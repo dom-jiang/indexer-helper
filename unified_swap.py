@@ -377,6 +377,36 @@ def _resolve_native_token_meta(chain) -> Dict:
     return {"symbol": "ETH", "decimals": 18}
 
 
+def _resolve_cfg_near_token(addr_raw: str) -> Optional[Dict]:
+    """Resolve Ref / bridge NEP-141 ids from ``Cfg.TOKENS`` (long-tail DEX tokens)."""
+    if not addr_raw:
+        return None
+    try:
+        from config import Cfg
+
+        network_id = getattr(Cfg, "NETWORK_ID", None) or "MAINNET"
+        token_rows = (getattr(Cfg, "TOKENS", None) or {}).get(network_id) or []
+    except Exception:
+        return None
+    addr_lower = addr_raw.lower()
+    for row in token_rows:
+        if not isinstance(row, dict):
+            continue
+        near_id = (row.get("NEAR_ID") or "").strip()
+        if near_id and near_id.lower() == addr_lower:
+            return {
+                "address": addr_raw,
+                "symbol": str(row.get("SYMBOL") or ""),
+                "decimals": int(row.get("DECIMAL") or 18),
+            }
+    return None
+
+
+def _token_in_supported_by_1click(from_chain: str, token_address: str) -> bool:
+    """True when 1Click lists ``token_address`` as an origin asset on ``from_chain``."""
+    return bool(resolve_1click_asset_id(from_chain, token_address or ""))
+
+
 def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
     """
     Look up token metadata (symbol, decimals) from Redis multichain token data.
@@ -422,6 +452,14 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
                 "symbol": bluechip["symbol"],
                 "decimals": int(bluechip["decimals"]),
             }
+        cfg_near = _resolve_cfg_near_token(addr_raw)
+        if cfg_near:
+            return cfg_near
+        from nearintents_utils import resolve_1click_token_info
+
+        oneclick_near = resolve_1click_token_info(chain, addr_raw)
+        if oneclick_near:
+            return oneclick_near
 
     # SUI bluechip short-circuit. SUI Move type paths are quite long and
     # rarely make it into the generic multichain token-price feed, so we
@@ -1034,8 +1072,23 @@ def _stage_a_quote_near(
     if not out_str:
         return None, None, "NEAR SmartRouter quote missing amountOut", None
     stage_router = str(quote.get("router") or "near-ref-smart")
+    stage_meta: Dict[str, Any] = {"stageAWinner": stage_router}
+    stage_all = []
+    for q in res.get("allQuotes") or []:
+        if not isinstance(q, dict):
+            continue
+        entry = {
+            "router": q.get("router"),
+            "amountOut": str(q.get("amountOut") or ""),
+            "minAmountOut": str(q.get("minAmountOut") or q.get("amountOut") or ""),
+        }
+        if q.get("amountOutReadable") is not None:
+            entry["amountOutReadable"] = q.get("amountOutReadable")
+        stage_all.append(entry)
+    if stage_all:
+        stage_meta["stageAAllQuotes"] = stage_all
     try:
-        return Decimal(out_str), stage_router, None, None
+        return Decimal(out_str), stage_router, None, stage_meta
     except (InvalidOperation, ValueError) as e:
         return None, None, f"NEAR amountOut invalid: {e}", None
 
@@ -2133,11 +2186,19 @@ def _cross_chain_quote(
     recipient: str,
     mca_block: Optional[Dict] = None,
 ) -> Dict:
-    """Run OmniBridge + NearIntents quotes in parallel, return best."""
+    """Run OmniBridge + NearIntents quotes in parallel, return best.
+
+    When ``tokenIn`` is not listed by 1Click on ``fromChain`` (e.g. Ref-only
+    NEP-141), skip the direct 1Click leg and run the two-stage preswap route
+    (Ref SmartRouter / SmartX → intermediate → 1Click) in parallel with OmniBridge.
+    """
     oneclick_extensions = _mca_deposit_extensions(mca_block)
     omni_result = None
     near_result = None
     errors = []
+
+    token_in_addr = token_in.get("address", "")
+    token_in_oneclick = _token_in_supported_by_1click(from_chain, token_in_addr)
 
     futures = {}
 
@@ -2158,7 +2219,7 @@ def _cross_chain_quote(
 
     oneclick_from = CHAIN_TO_1CLICK.get(from_chain)
     oneclick_to = CHAIN_TO_1CLICK.get(to_chain)
-    if oneclick_from or oneclick_to:
+    if (oneclick_from or oneclick_to) and token_in_oneclick:
 
         def _run_near_quote():
             return nearintents_quote(
@@ -2175,8 +2236,27 @@ def _cross_chain_quote(
 
         f = _executor.submit(_run_near_quote)
         futures[f] = "nearintents"
+    elif (oneclick_from or oneclick_to) and not token_in_oneclick:
+        errors.append(
+            f"nearintents: skipped direct quote — tokenIn {token_in_addr!r} not supported by 1Click on {from_chain}; use preswap"
+        )
 
-    if not futures:
+    preswap_future = None
+    if not token_in_oneclick:
+        preswap_future = _executor.submit(
+            _preswap_cross_chain_quote,
+            from_chain=from_chain,
+            to_chain=to_chain,
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=amount_in,
+            slippage=slippage,
+            sender=sender,
+            recipient=recipient,
+            oneclick_extensions=oneclick_extensions,
+        )
+
+    if not futures and not preswap_future:
         return {"code": -1, "msg": "No cross-chain provider supports this chain pair"}
 
     for future in as_completed(futures, timeout=30):
@@ -2199,10 +2279,36 @@ def _cross_chain_quote(
     preswap_stage_a_errors = None
     preswap_route_errors = None
 
-    # If no direct provider returned a usable quote, try the two-stage pre-swap route
-    # as a fallback. This is especially important when `tokenIn` is a long-tail token
-    # (e.g. VELA) that 1Click does not list but USDC/USDT/WETH on `fromChain` does.
-    if not best_quote:
+    if preswap_future is not None:
+        try:
+            preswap_res = preswap_future.result(timeout=45)
+        except Exception as e:
+            preswap_res = {"success": False, "error": str(e)}
+        if preswap_res.get("success"):
+            ps_quote = preswap_res.get("quote")
+            ps_all = preswap_res.get("allQuotes") or []
+            preswap_stage_a_errors = preswap_res.get("stageAAggregateErrors")
+            preswap_route_errors = preswap_res.get("errors")
+            if not best_quote:
+                best_quote = ps_quote
+                all_quotes = list(all_quotes) + ps_all
+                if errors:
+                    logger.info(
+                        "cross-chain: tokenIn not 1Click-listed, using preswap route. direct errors: %s",
+                        errors,
+                    )
+            else:
+                try:
+                    ps_out = Decimal(str((ps_quote or {}).get("estimatedOut") or "0"))
+                    direct_out = Decimal(str(best_quote.get("estimatedOut") or "0"))
+                    if ps_out > direct_out:
+                        best_quote = ps_quote
+                        all_quotes = list(all_quotes) + ps_all
+                except (InvalidOperation, ValueError):
+                    pass
+        elif not token_in_oneclick:
+            errors.append(f"preswap: {preswap_res.get('error')}")
+    elif not best_quote:
         preswap_res = _preswap_cross_chain_quote(
             from_chain=from_chain,
             to_chain=to_chain,
@@ -2221,7 +2327,10 @@ def _cross_chain_quote(
             preswap_stage_a_errors = preswap_res.get("stageAAggregateErrors")
             preswap_route_errors = preswap_res.get("errors")
             if errors:
-                logger.info(f"cross-chain direct providers all failed, falling back to pre-swap route. direct errors: {errors}")
+                logger.info(
+                    "cross-chain direct providers all failed, falling back to pre-swap route. direct errors: %s",
+                    errors,
+                )
         else:
             errors.append(f"preswap: {preswap_res.get('error')}")
 
