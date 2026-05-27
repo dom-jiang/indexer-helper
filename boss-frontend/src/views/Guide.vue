@@ -227,7 +227,7 @@ print(swap_resp.json())</pre>
     "amountIn": "1000000",
     "estimatedOut":  "999898",
     "minAmountOut":  "994898",
-    "tx":      <source-chain-specific, see below>,
+    "tx":      &lt;source-chain-specific, see below&gt;,
     "approve": null | { "tx": {...}, "spender": "0x..." },    // EVM same-chain only
     "deposit": null | {                                        // only for cross-chain
       "depositAddress": "0x...",
@@ -247,7 +247,7 @@ print(swap_resp.json())</pre>
           <pre>{
   "to":       "0x...",            // DEX router (same-chain) or token / deposit address (cross-chain)
   "data":     "0x...",            // calldata (empty "0x" for native transfer)
-  "value":    "0x0" | "0x<hex>",  // native amount in hex
+  "value":    "0x0" | "0x&lt;hex&gt;",  // native amount in hex
   "gasLimit": "0x...",
   "chainId":  56
 }</pre>
@@ -257,8 +257,8 @@ print(swap_resp.json())</pre>
         <div class="code-block">
           <pre>{
   "function":       "0x1::aptos_account::transfer_coins",   // or Panora's swap function
-  "type_arguments": ["<CoinType>"],
-  "arguments":      ["<recipient>", "<amount>"]
+  "type_arguments": ["&lt;CoinType&gt;"],
+  "arguments":      ["&lt;recipient&gt;", "&lt;amount&gt;"]
 }</pre>
         </div>
 

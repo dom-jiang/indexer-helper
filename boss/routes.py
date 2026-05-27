@@ -42,6 +42,7 @@ from boss.auth import (
 )
 from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
 from boss.email_utils import send_verification_code
+from boss.validators import is_valid_email
 from config import Cfg
 
 _aes_key = getattr(Cfg, "CRYPTO_AES_KEY", "") or ""
@@ -103,8 +104,8 @@ def send_code():
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
 
-    if not email or "@" not in email:
-        return jsonify({"code": -1, "msg": "Valid email required"})
+    if not is_valid_email(email):
+        return jsonify({"code": -1, "msg": "Invalid email format"})
 
     r = _boss_redis()
     lock_key = f"boss:email_code_lock:{email}"
@@ -129,8 +130,8 @@ def register():
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
 
-    if not email or "@" not in email:
-        return jsonify({"code": -1, "msg": "Valid email required"})
+    if not is_valid_email(email):
+        return jsonify({"code": -1, "msg": "Invalid email format"})
     if len(password) < 6:
         return jsonify({"code": -1, "msg": "Password must be at least 6 characters"})
 

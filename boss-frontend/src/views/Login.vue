@@ -4,14 +4,14 @@
       <h2 class="login-title">API Management</h2>
       <p class="login-subtitle">{{ isRegister ? 'Create your account' : 'Sign in to your account' }}</p>
 
-      <el-form :model="form" @submit.prevent="handleSubmit" class="login-form">
-        <el-form-item>
+      <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleSubmit" class="login-form">
+        <el-form-item prop="email">
           <el-input v-model="form.email" placeholder="Email" size="large" prefix-icon="Message" />
         </el-form-item>
-        <el-form-item>
+        <el-form-item prop="password">
           <el-input v-model="form.password" placeholder="Password" type="password" size="large" prefix-icon="Lock" show-password />
         </el-form-item>
-        <el-form-item v-if="isRegister && emailVerify">
+        <el-form-item v-if="isRegister && emailVerify" prop="code">
           <div class="code-row">
             <el-input v-model="form.code" placeholder="Verification Code" size="large" maxlength="6" />
             <el-button
@@ -55,7 +55,42 @@ const loading = ref(false)
 const sendingCode = ref(false)
 const countdown = ref(0)
 const emailVerify = ref(true)
+const formRef = ref(null)
 const form = ref({ email: '', password: '', code: '' })
+
+const EMAIL_PATTERN = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/
+
+const rules = {
+  email: [
+    { required: true, message: 'Please enter your email', trigger: 'blur' },
+    { pattern: EMAIL_PATTERN, message: 'Please enter a valid email address', trigger: ['blur', 'change'] },
+  ],
+  password: [
+    { required: true, message: 'Please enter your password', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (isRegister.value && value && value.length < 6) {
+          callback(new Error('Password must be at least 6 characters'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+  code: [
+    {
+      validator: (_rule, value, callback) => {
+        if (isRegister.value && emailVerify.value && !value) {
+          callback(new Error('Please enter the verification code'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 
 let countdownTimer = null
 
@@ -70,7 +105,18 @@ onMounted(async () => {
 
 watch(isRegister, () => {
   form.value.code = ''
+  formRef.value?.clearValidate()
 })
+
+async function validateEmailField() {
+  if (!formRef.value) return false
+  try {
+    await formRef.value.validateField('email')
+    return true
+  } catch {
+    return false
+  }
+}
 
 function startCountdown() {
   countdown.value = 60
@@ -84,10 +130,7 @@ function startCountdown() {
 }
 
 async function handleSendCode() {
-  if (!form.value.email || !form.value.email.includes('@')) {
-    ElMessage.warning('Please enter a valid email first')
-    return
-  }
+  if (!(await validateEmailField())) return
   sendingCode.value = true
   try {
     const res = await api.post('/send-code', { email: form.value.email })
@@ -105,12 +148,10 @@ async function handleSendCode() {
 }
 
 async function handleSubmit() {
-  if (!form.value.email || !form.value.password) {
-    ElMessage.warning('Please fill in all fields')
-    return
-  }
-  if (isRegister.value && emailVerify.value && !form.value.code) {
-    ElMessage.warning('Please enter the verification code')
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
     return
   }
   loading.value = true
