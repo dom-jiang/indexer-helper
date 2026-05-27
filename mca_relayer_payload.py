@@ -247,6 +247,142 @@ def extract_intents_deposit_from_relayer_payload(payload: Dict[str, Any]) -> str
     return ""
 
 
+def iter_business_objects_from_relayer_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Yield every `business` map present on an mcaRelayer-shaped payload."""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return out
+    biz = payload.get("business")
+    if isinstance(biz, dict):
+        out.append(biz)
+    pkgs = payload.get("signedPackages")
+    if isinstance(pkgs, list):
+        for p in pkgs:
+            if isinstance(p, dict) and isinstance(p.get("business"), dict):
+                out.append(p["business"])
+    legacy = payload.get("request")
+    if isinstance(legacy, list):
+        for item in legacy:
+            try:
+                if isinstance(item, str):
+                    obj = json.loads(item)
+                elif isinstance(item, dict):
+                    obj = item
+                else:
+                    continue
+                b = obj.get("business") if isinstance(obj, dict) else None
+                if isinstance(b, dict):
+                    out.append(b)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+    return out
+
+
+def _parse_function_call_args(args_raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        if isinstance(args_raw, str):
+            ad = json.loads(args_raw)
+        elif isinstance(args_raw, dict):
+            ad = args_raw
+        else:
+            return None
+        return ad if isinstance(ad, dict) else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def extract_withdraw_token_id_from_business(business: Any) -> str:
+    """Burrow ``execute`` → ``Withdraw.token_id`` from signed relayer business."""
+    if not isinstance(business, dict):
+        return ""
+    txs = business.get("tx_requests")
+    if not isinstance(txs, list):
+        return ""
+    for tr in txs:
+        if not isinstance(tr, dict):
+            continue
+        fc = tr.get("FunctionCall")
+        if not isinstance(fc, dict):
+            continue
+        for call in fc.get("function_calls") or []:
+            if not isinstance(call, dict) or call.get("method_name") != "execute":
+                continue
+            ad = _parse_function_call_args(call.get("args"))
+            if not ad:
+                continue
+            for action in ad.get("actions") or []:
+                if not isinstance(action, dict):
+                    continue
+                wd = action.get("Withdraw")
+                if isinstance(wd, dict):
+                    tid = str(wd.get("token_id") or "").strip()
+                    if tid:
+                        return tid
+    return ""
+
+
+def extract_last_ft_transfer_fields_from_business(
+    business: Any,
+) -> Tuple[str, str]:
+    """Last ``ft_transfer`` in business → (receiver_id, amount) smallest units."""
+    if not isinstance(business, dict):
+        return "", ""
+    txs = business.get("tx_requests")
+    if not isinstance(txs, list):
+        return "", ""
+    last_recv = ""
+    last_amt = ""
+    for tr in txs:
+        if not isinstance(tr, dict):
+            continue
+        fc = tr.get("FunctionCall")
+        if not isinstance(fc, dict):
+            continue
+        for call in fc.get("function_calls") or []:
+            if not isinstance(call, dict) or call.get("method_name") != "ft_transfer":
+                continue
+            ad = _parse_function_call_args(call.get("args"))
+            if not ad:
+                continue
+            rid = str(ad.get("receiver_id") or "").strip()
+            amt = str(ad.get("amount") or "").strip()
+            if rid:
+                last_recv = rid
+            if amt:
+                last_amt = amt
+    return last_recv, last_amt
+
+
+def looks_like_1click_deposit_address(addr: str) -> bool:
+    a = str(addr or "").strip()
+    return a.lower().startswith("0x") and len(a) >= 42
+
+
+def parse_swap_history_hints_from_relayer_payload(payload: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Best-effort fields for swap_transactions when the swap POST only includes mcaRelayer.
+    Keys: from_token, amount_in, deposit_address, recipient_hint (may be 1Click or NEAR).
+    """
+    hints: Dict[str, str] = {
+        "from_token": "",
+        "amount_in": "",
+        "deposit_address": "",
+        "recipient_hint": "",
+    }
+    for biz in iter_business_objects_from_relayer_payload(payload):
+        if not hints["from_token"]:
+            hints["from_token"] = extract_withdraw_token_id_from_business(biz)
+        recv, amt = extract_last_ft_transfer_fields_from_business(biz)
+        if recv:
+            hints["recipient_hint"] = recv
+        if amt:
+            hints["amount_in"] = amt
+        dep = extract_intents_deposit_address_from_business(biz)
+        if dep:
+            hints["deposit_address"] = dep
+    return hints
+
+
 def summarize_multichain_lending_batch(rows: Optional[List[Any]]) -> Dict[str, Any]:
     """
     Interpret `multichain_lending_requests` (+ history union) rows for API / worker.

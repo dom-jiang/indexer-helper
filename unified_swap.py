@@ -101,7 +101,7 @@ from cross_chain_tx_builder import (
     build_sui_deposit_tx, build_tron_deposit_tx, build_utxo_deposit_tx,
     SUI_NATIVE_TYPE,
 )
-from db_provider import add_multichain_lending_requests
+from db_provider import add_multichain_lending_requests, insert_swap_transaction
 from near_same_chain_mca import (
     near_same_chain_mca_deposit_intents_applies,
     near_same_chain_mca_withdraw_applies,
@@ -1984,7 +1984,159 @@ def _near_same_chain_mca_withdraw_swap(
     return {"code": 0, "msg": "success", "data": base}
 
 
-def _unified_mca_relayer_submit(payload: Dict) -> Dict:
+def _normalize_swap_history_context(ctx: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge optional swap POST fields; missing keys are fine (frontend may not send them yet)."""
+    if not isinstance(ctx, dict):
+        return {}
+    return dict(ctx)
+
+
+def _try_insert_mca_relayer_swap_history(
+    *,
+    mca_id: str,
+    batch_id: str,
+    relayer_payload: Dict[str, Any],
+    history_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Best-effort swap_transactions row after multichain relayer enqueue.
+    Never raises — relayer submit must succeed even if history insert fails.
+    """
+    try:
+        from mca_relayer_payload import (
+            extract_intents_deposit_from_relayer_payload,
+            looks_like_1click_deposit_address,
+            parse_swap_history_hints_from_relayer_payload,
+        )
+
+        ctx = _normalize_swap_history_context(history_context)
+        hints = parse_swap_history_hints_from_relayer_payload(relayer_payload)
+
+        mca_s = str(mca_id or "").strip()
+        if not mca_s:
+            return
+
+        sender = str(
+            ctx.get("multi_addr")
+            or ctx.get("multiAddr")
+            or ctx.get("sender")
+            or mca_s
+        ).strip() or mca_s
+        multi_addr = str(ctx.get("multi_addr") or ctx.get("multiAddr") or mca_s).strip() or mca_s
+
+        deposit = str(
+            ctx.get("deposit_address")
+            or ctx.get("depositAddress")
+            or hints.get("deposit_address")
+            or extract_intents_deposit_from_relayer_payload(relayer_payload)
+            or ""
+        ).strip()
+
+        from_token = str(
+            ctx.get("from_token")
+            or ctx.get("fromToken")
+            or ctx.get("token_in")
+            or ctx.get("tokenIn")
+            or hints.get("from_token")
+            or ""
+        ).strip()
+        to_token = str(
+            ctx.get("to_token")
+            or ctx.get("toToken")
+            or ctx.get("token_out")
+            or ctx.get("tokenOut")
+            or ""
+        ).strip()
+
+        amount_in = ctx.get("amount_in") or ctx.get("amountIn") or hints.get("amount_in")
+        if amount_in is not None:
+            amount_in = str(amount_in).strip() or None
+        else:
+            amount_in = None
+
+        estimated_out = ctx.get("estimated_out") or ctx.get("estimatedOut") or ctx.get("expectedOut")
+        if estimated_out is not None:
+            estimated_out = str(estimated_out).strip() or None
+        else:
+            estimated_out = None
+
+        from_chain = str(ctx.get("from_chain") or ctx.get("fromChain") or "near").strip() or "near"
+        to_chain = str(
+            ctx.get("to_chain") or ctx.get("toChain") or from_chain
+        ).strip() or from_chain
+
+        recipient = str(
+            ctx.get("recipient")
+            or ctx.get("receiver")
+            or ""
+        ).strip()
+        if not recipient and deposit and not looks_like_1click_deposit_address(deposit):
+            recipient = deposit
+        elif not recipient:
+            rh = str(hints.get("recipient_hint") or "").strip()
+            if rh and not looks_like_1click_deposit_address(rh):
+                recipient = rh
+
+        router = str(ctx.get("router") or "").strip().lower()
+        if deposit and looks_like_1click_deposit_address(deposit):
+            if router in ("", "mca_relayer", "mca-withdraw-intents"):
+                router = "nearintents"
+        elif not router:
+            router = "mca_relayer"
+
+        tx_type = str(
+            ctx.get("tx_type") or ctx.get("txType") or "mca-withdraw-relayer"
+        ).strip() or "mca-withdraw-relayer"
+
+        is_cross_chain = ctx.get("is_cross_chain")
+        if is_cross_chain is None:
+            is_cross_chain = ctx.get("isCrossChain")
+        if is_cross_chain is None:
+            if deposit and looks_like_1click_deposit_address(deposit):
+                is_cross_chain = True
+            elif from_chain and to_chain:
+                is_cross_chain = str(from_chain) != str(to_chain)
+            else:
+                is_cross_chain = False
+        else:
+            is_cross_chain = bool(is_cross_chain)
+
+        bid = str(batch_id or "").strip()
+        if not bid:
+            return
+        from_hash = f"mca_relayer:{bid}"
+
+        insert_swap_transaction(
+            Cfg.NETWORK_ID,
+            sender=sender,
+            recipient=recipient or None,
+            from_hash=from_hash,
+            deposit_address=deposit or None,
+            from_token=from_token,
+            to_token=to_token,
+            from_chain=from_chain,
+            to_chain=to_chain,
+            amount_in=amount_in,
+            estimated_out=estimated_out,
+            router=router,
+            tx_type=tx_type,
+            is_cross_chain=is_cross_chain,
+            multi_addr=multi_addr,
+            swap_id=bid,
+            status="PENDING",
+        )
+        logger.info(
+            f"mca_relayer swap history inserted from_hash={from_hash} mca={mca_s} "
+            f"deposit={deposit[:16] + '...' if len(deposit) > 16 else deposit or '(none)'}"
+        )
+    except Exception as e:
+        logger.warning(f"mca_relayer swap history insert skipped (non-fatal): {e}")
+
+
+def _unified_mca_relayer_submit(
+    payload: Dict,
+    history_context: Optional[Dict[str, Any]] = None,
+) -> Dict:
     """Forward a signed MCA relayer package to multichain_lending_requests (DB queue)."""
     try:
         from mca_relayer_payload import canonicalize_mca_relayer_block
@@ -2016,6 +2168,12 @@ def _unified_mca_relayer_submit(payload: Dict) -> Dict:
             deposit_hint = extract_intents_deposit_from_relayer_payload(dict(payload)) or ""
         except Exception:
             deposit_hint = ""
+        _try_insert_mca_relayer_swap_history(
+            mca_id=str(mca_id or ""),
+            batch_id=bid_str,
+            relayer_payload=dict(payload),
+            history_context=history_context,
+        )
         data_out: Dict[str, Any] = {
             "batchId": bid_str,
             "orderId": bid_str,
@@ -2032,6 +2190,47 @@ def _unified_mca_relayer_submit(payload: Dict) -> Dict:
     except Exception as e:
         logger.exception(f"_unified_mca_relayer_submit error: {e}")
         return {"code": -1, "msg": str(e), "data": None}
+
+
+def build_mca_relayer_swap_history_context(
+    *,
+    from_chain: str = "",
+    to_chain: str = "",
+    token_in_address: str = "",
+    token_out_address: str = "",
+    amount_in: str = "",
+    sender: str = "",
+    recipient: str = "",
+    router: str = "",
+    quote_expected_out: str = "",
+    deposit_address: str = "",
+    is_cross_chain: Optional[bool] = None,
+    tx_type: str = "",
+    multi_addr: str = "",
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Collect optional swap POST fields for relayer history (all may be empty)."""
+    ctx: Dict[str, Any] = {
+        "from_chain": from_chain,
+        "to_chain": to_chain,
+        "token_in": token_in_address,
+        "token_out": token_out_address,
+        "amount_in": amount_in,
+        "sender": sender,
+        "recipient": recipient,
+        "router": router,
+        "expectedOut": quote_expected_out,
+        "deposit_address": deposit_address,
+        "tx_type": tx_type,
+        "multi_addr": multi_addr,
+    }
+    if is_cross_chain is not None:
+        ctx["is_cross_chain"] = is_cross_chain
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if v is not None and k not in ctx:
+                ctx[k] = v
+    return ctx
 
 
 def unified_quote(
@@ -2524,6 +2723,10 @@ def unified_swap(
     bridge: Optional[Dict] = None,
     mca_relayer: Optional[Dict] = None,
     mca_oneclick: Optional[Dict] = None,
+    deposit_address: str = "",
+    is_cross_chain: Optional[bool] = None,
+    tx_type: str = "",
+    multi_addr: str = "",
 ) -> Dict:
     """
     Unified swap (build tx) entry point.
@@ -2532,7 +2735,22 @@ def unified_swap(
     - Optional `mca_relayer`: forward signed relayer payloads (no ordinary swap tx)
     """
     if mca_relayer is not None and isinstance(mca_relayer, dict) and mca_relayer:
-        return _unified_mca_relayer_submit(mca_relayer)
+        history_ctx = build_mca_relayer_swap_history_context(
+            from_chain=from_chain,
+            to_chain=to_chain,
+            token_in_address=token_in_address,
+            token_out_address=token_out_address,
+            amount_in=amount_in,
+            sender=sender,
+            recipient=recipient,
+            router=router,
+            quote_expected_out=quote_expected_out,
+            deposit_address=deposit_address,
+            is_cross_chain=is_cross_chain,
+            tx_type=tx_type,
+            multi_addr=multi_addr,
+        )
+        return _unified_mca_relayer_submit(mca_relayer, history_context=history_ctx)
 
     from_chain = _normalize_chain_id(from_chain)
     to_chain = _normalize_chain_id(to_chain)

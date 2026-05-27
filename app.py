@@ -2672,6 +2672,19 @@ def api_swap_build():
         mca_oc = body.get("mca") if isinstance(body.get("mca"), dict) else None
         if mca_oc is None and isinstance(body.get("mcaOneclick"), dict):
             mca_oc = body.get("mcaOneclick")
+        mca_id_hint = ""
+        if isinstance(mca_rel, dict):
+            mca_id_hint = str(
+                mca_rel.get("mcaAccountId") or mca_rel.get("mca_id") or ""
+            ).strip()
+        if not mca_id_hint and isinstance(mca_oc, dict):
+            mca_id_hint = str(
+                mca_oc.get("mcaAccountId") or mca_oc.get("mca_id") or ""
+            ).strip()
+        multi_addr_body = body.get("multi_addr") or body.get("multiAddr") or ""
+        is_cross_chain_body = body.get("is_cross_chain")
+        if is_cross_chain_body is None:
+            is_cross_chain_body = body.get("isCrossChain")
         result = unified_swap(
             from_chain=body.get("fromChain", body.get("chainId", "")),
             to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
@@ -2679,7 +2692,7 @@ def api_swap_build():
             token_out_address=body.get("tokenOut", ""),
             amount_in=str(body.get("amountIn", "")),
             slippage=float(body.get("slippage", 0.5)),
-            sender=body.get("sender", ""),
+            sender=body.get("sender", "") or mca_id_hint,
             recipient=body.get("recipient", ""),
             router=body.get("router", ""),
             market=body.get("market", ""),
@@ -2689,6 +2702,12 @@ def api_swap_build():
             bridge=body.get("bridge") if isinstance(body.get("bridge"), dict) else None,
             mca_relayer=mca_rel,
             mca_oneclick=mca_oc,
+            deposit_address=str(
+                body.get("deposit_address") or body.get("depositAddress") or ""
+            ),
+            is_cross_chain=is_cross_chain_body,
+            tx_type=str(body.get("tx_type") or body.get("txType") or ""),
+            multi_addr=str(multi_addr_body or mca_id_hint or ""),
         )
 
         return jsonify(result)
@@ -2840,6 +2859,41 @@ def api_swap_order_status():
 # Swap Transaction Report & History
 # ============================================================
 
+CROSS_CHAIN_ACCOUNT_DISPLAY = "Cross-chain Account"
+
+
+def _is_mca_near_account_id(addr: str) -> bool:
+    """
+    True for NEAR MCA account ids (e.g. rhea000006.ma.private-mainnet.ref-dev-team.near).
+
+    Aligns with frontend trade history: legacy *.multica.near and staging/mainnet *.ma.*.near.
+    """
+    a = (addr or "").strip().lower()
+    if not a or not a.endswith(".near"):
+        return False
+    if a.endswith(".multica.near"):
+        return True
+    if ".ma." in a:
+        return True
+    am = (getattr(Cfg, "MCA_AM_CONTRACT", None) or "").strip().lower()
+    if am and (a == am or a.endswith("." + am)):
+        return True
+    return False
+
+
+def _swap_history_display_address(addr, multi_addr=None):
+    """Map MCA NEAR account ids to fixed UI label for GET /api/swap/history."""
+    raw = (addr or "").strip()
+    if not raw:
+        return addr
+    mca = (multi_addr or "").strip()
+    if mca and raw == mca:
+        return CROSS_CHAIN_ACCOUNT_DISPLAY
+    if _is_mca_near_account_id(raw):
+        return CROSS_CHAIN_ACCOUNT_DISPLAY
+    return addr
+
+
 try:
     ensure_swap_transactions_table(Cfg.NETWORK_ID)
 except Exception as _e:
@@ -2968,6 +3022,13 @@ def api_swap_history():
                 row["created_at"] = created_at.strftime("%Y-%m-%d %H:%M:%S")
             if isinstance(updated_at, datetime.datetime):
                 row["updated_at"] = updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            mca_ref = row.get("multi_addr")
+            if row.get("sender") is not None:
+                row["sender"] = _swap_history_display_address(row.get("sender"), mca_ref)
+            if row.get("recipient") is not None:
+                row["recipient"] = _swap_history_display_address(row.get("recipient"), mca_ref)
+            if row.get("multi_addr") is not None:
+                row["multi_addr"] = _swap_history_display_address(row.get("multi_addr"), mca_ref)
             for json_field in ("extra", "status_response"):
                 if row.get(json_field):
                     try:
