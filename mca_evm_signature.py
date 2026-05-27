@@ -375,13 +375,41 @@ def _ledger_updates_list(updates: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _withdraw_nonce_match_targets(withdraw_nonce: Any) -> set:
+    """Build nonce variants for matching HL ledger `delta.nonce` to exchange `time`.
+
+    Exchange withdraw uses `withdrawAction.time` (unix ms). Ledger entries often
+    store the same value or `time * 1000` (see internal HL samples).
+    """
+    targets = set()
+    if withdraw_nonce is None:
+        return targets
+    raw = str(withdraw_nonce).strip()
+    if raw:
+        targets.add(raw)
+    try:
+        n = int(withdraw_nonce)
+    except (TypeError, ValueError):
+        return targets
+    targets.add(str(n))
+    targets.add(str(n * 1000))
+    if n > 0 and n % 1000 == 0:
+        targets.add(str(n // 1000))
+    return targets
+
+
 def extract_withdraw_hash_from_ledger(updates: Any, withdraw_nonce: Any) -> Optional[str]:
-    target = str(withdraw_nonce)
+    targets = _withdraw_nonce_match_targets(withdraw_nonce)
+    if not targets:
+        return None
     for item in _ledger_updates_list(updates):
         delta = item.get("delta") or {}
         if str(delta.get("type", "")).lower() != "withdraw":
             continue
-        if str(delta.get("nonce")) != target:
+        ledger_nonce = delta.get("nonce")
+        if ledger_nonce is None:
+            continue
+        if str(ledger_nonce) not in targets:
             continue
         h = item.get("hash")
         if h:
