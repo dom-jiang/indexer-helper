@@ -2,12 +2,22 @@
 SMTP email utility for sending verification codes.
 """
 
+import re
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from loguru import logger
 from config import Cfg
+
+EMAIL_PATTERN = re.compile(
+    r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$"
+)
+
+
+def is_valid_email(email: str) -> bool:
+    return bool(email and EMAIL_PATTERN.match(email))
 
 
 def send_verification_code(to_email: str, code: str) -> bool:

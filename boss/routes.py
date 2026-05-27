@@ -41,8 +41,7 @@ from boss.auth import (
     generate_jwt, generate_boss_session_token, boss_login_required, boss_admin_required,
 )
 from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
-from boss.email_utils import send_verification_code
-from boss.validators import is_valid_email
+from boss.email_utils import send_verification_code, is_valid_email
 from config import Cfg
 
 _aes_key = getattr(Cfg, "CRYPTO_AES_KEY", "") or ""
