@@ -15,7 +15,7 @@ API Endpoints:
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from loguru import logger
 from bitget_utils import proxy_bitget_request, proxy_okx_request
@@ -624,7 +624,7 @@ def _parse_okx_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Op
     min_amount_out = int(amount_out * (Decimal("1") - Decimal(str(slippage_decimal))))
     token_out_decimals = token_out.get("decimals", 18)
 
-    return {
+    parsed: Dict = {
         "router": "okx",
         "amountOut": str(int(amount_out)),
         "amountOutReadable": shrink_token(str(int(amount_out)), token_out_decimals),
@@ -632,6 +632,10 @@ def _parse_okx_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Op
         "gasEstimate": od.get("estimateGasFee") or od.get("estimatedGas") or "",
         "_amountOutDecimal": amount_out,
     }
+    alts = _solana_alt_pubkeys_from_provider("okx", data)
+    if alts:
+        parsed["addressLookupTableAddresses"] = alts
+    return parsed
 
 
 # ============================================================
@@ -1559,6 +1563,40 @@ SOLANA_BLUECHIP_TOKENS = {
 }
 
 
+def _solana_alt_pubkeys_from_provider(router: str, data: Dict) -> List[str]:
+    """ALT account pubkeys for quote transparency (Titan / Jupiter / OKX)."""
+    from solana_tx_assembler import (
+        extract_alt_pubkeys_from_versioned_tx_b64,
+        jupiter_alt_pubkey_strings,
+        okx_solana_tx_to_base64,
+    )
+
+    if not isinstance(data, dict):
+        return []
+    if router == "titan":
+        return [
+            str(a).strip()
+            for a in (data.get("addressLookupTables") or [])
+            if str(a).strip()
+        ]
+    if router == "jupiter":
+        alts = jupiter_alt_pubkey_strings(data)
+        swap_tx = str(data.get("swapTransaction") or "").strip()
+        if not alts and swap_tx:
+            alts = extract_alt_pubkeys_from_versioned_tx_b64(swap_tx)
+        return alts
+    if router == "okx":
+        payload = data.get("data")
+        if not payload:
+            return []
+        od = payload[0] if isinstance(payload, list) else payload
+        tx_obj = (od.get("tx") or od) if isinstance(od, dict) else None
+        tx_b64 = okx_solana_tx_to_base64(tx_obj if isinstance(tx_obj, dict) else None)
+        if tx_b64:
+            return extract_alt_pubkeys_from_versioned_tx_b64(tx_b64)
+    return []
+
+
 def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
     """Parse Titan swap quote into unified format."""
     if not data:
@@ -1579,7 +1617,7 @@ def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> 
     min_amount_out = int(amount_out * (Decimal("1") - Decimal(str(slippage_decimal))))
     token_out_decimals = token_out.get("decimals", 9)
 
-    return {
+    parsed: Dict = {
         "router": "titan",
         "amountOut": str(int(amount_out)),
         "amountOutReadable": shrink_token(str(int(amount_out)), token_out_decimals),
@@ -1588,6 +1626,10 @@ def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> 
         "_amountOutDecimal": amount_out,
         "_titanRaw": data,
     }
+    alts = _solana_alt_pubkeys_from_provider("titan", data)
+    if alts:
+        parsed["addressLookupTableAddresses"] = alts
+    return parsed
 
 
 # Jupiter /swap/v2/order may include non-fatal `error` strings (e.g. taker
@@ -1637,7 +1679,7 @@ def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -
     min_amount_out = int(amount_out * (Decimal("1") - Decimal(str(slippage_decimal))))
     token_out_decimals = token_out.get("decimals", 9)
 
-    return {
+    parsed: Dict = {
         "router": "jupiter",
         "amountOut": str(int(amount_out)),
         "amountOutReadable": shrink_token(str(int(amount_out)), token_out_decimals),
@@ -1646,6 +1688,10 @@ def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -
         "swapTransaction": data.get("swapTransaction", ""),
         "_amountOutDecimal": amount_out,
     }
+    alts = _solana_alt_pubkeys_from_provider("jupiter", data)
+    if alts:
+        parsed["addressLookupTableAddresses"] = alts
+    return parsed
 
 
 def _parse_okx_solana_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Optional[Dict]:
@@ -1837,13 +1883,16 @@ def build_solana_swap_tx(
             data = result["data"]
             swap_tx = data.get("swapTransaction", "")
             if swap_tx:
+                from solana_tx_assembler import enrich_solana_tx_envelope
+
+                tx_envelope = enrich_solana_tx_envelope(
+                    {"transaction": swap_tx, "format": "base64"},
+                    alt_pubkeys=_solana_alt_pubkeys_from_provider("jupiter", data),
+                )
                 return {
                     "success": True,
                     "chainType": CHAIN_TYPE_SOLANA,
-                    "tx": {
-                        "transaction": swap_tx,
-                        "format": "base64",
-                    },
+                    "tx": tx_envelope,
                     "router": "jupiter",
                 }
 
@@ -1895,13 +1944,16 @@ def build_solana_swap_tx(
         if not tx_b64:
             return {"success": False, "error": "OKX Solana swap missing or invalid tx.data"}
 
+        from solana_tx_assembler import enrich_solana_tx_envelope
+
+        tx_envelope = enrich_solana_tx_envelope(
+            {"transaction": tx_b64, "format": "base64"},
+            alt_pubkeys=_solana_alt_pubkeys_from_provider("okx", data),
+        )
         return {
             "success": True,
             "chainType": CHAIN_TYPE_SOLANA,
-            "tx": {
-                "transaction": tx_b64,
-                "format": "base64",
-            },
+            "tx": tx_envelope,
             "router": "okx",
         }
 

@@ -873,9 +873,13 @@ def _stage_a_aggregate_meta(aggregate_res: Dict) -> Dict[str, Any]:
             entry["amountOutReadable"] = q.get("amountOutReadable")
         if q.get("market"):
             entry["market"] = q.get("market")
+        if q.get("addressLookupTableAddresses"):
+            entry["addressLookupTableAddresses"] = q.get("addressLookupTableAddresses")
         stage_all.append(entry)
     if stage_all:
         meta["stageAAllQuotes"] = stage_all
+    if winner.get("addressLookupTableAddresses"):
+        meta["addressLookupTableAddresses"] = winner["addressLookupTableAddresses"]
 
     stage_errors = _normalize_stage_a_errors(aggregate_res.get("errors"))
     if stage_errors:
@@ -892,6 +896,8 @@ def _merge_stage_a_meta_into_preswap(pre_swap: Dict, stage_a_meta: Optional[Dict
             pre_swap[key] = stage_a_meta[key]
     if stage_a_meta.get("market"):
         pre_swap["market"] = stage_a_meta["market"]
+    if stage_a_meta.get("addressLookupTableAddresses"):
+        pre_swap["addressLookupTableAddresses"] = stage_a_meta["addressLookupTableAddresses"]
 
 
 def _build_quote_provider_warnings(
@@ -2859,16 +2865,20 @@ def _stage_a_build_solana(
         out_amount_str = str(router_result.get("toTokenAmount") or router_result.get("toAmount") or "")
         from solana_tx_assembler import okx_solana_tx_to_base64
 
+        from solana_tx_assembler import enrich_solana_tx_envelope
+        from swap_utils import _solana_alt_pubkeys_from_provider
+
         tx_b64 = okx_solana_tx_to_base64(tx if isinstance(tx, dict) else None)
         if not tx_b64:
             return {"success": False, "router": "okx", "error": "OKX Solana swap missing tx.data"}
+        tx_envelope = enrich_solana_tx_envelope(
+            {"transaction": tx_b64, "format": "base64"},
+            alt_pubkeys=_solana_alt_pubkeys_from_provider("okx", data),
+        )
         return {
             "success": True,
             "router": "okx",
-            "tx": {
-                "transaction": tx_b64,
-                "format": "base64",
-            },
+            "tx": tx_envelope,
             "estimatedOut": out_amount_str,
             "minAmountOut": out_amount_str,
             "spender": "",
@@ -3193,7 +3203,7 @@ def _preswap_cross_chain_swap(
             "minAmountOut": bridge_min_out,
             "timeEstimate": cross_tx.get("timeEstimate", ""),
         }
-        response_data["preSwap"] = {
+        pre_swap_resp = {
             "router": stage_a_router,
             "chainType": source_chain_type,
             "chainId": str(from_chain),
@@ -3206,6 +3216,11 @@ def _preswap_cross_chain_swap(
             "amountOutTarget": str(mid_target),
             "receiver": deposit_address,
         }
+        if isinstance(stage_a_tx, dict) and stage_a_tx.get("addressLookupTableAddresses"):
+            pre_swap_resp["addressLookupTableAddresses"] = stage_a_tx[
+                "addressLookupTableAddresses"
+            ]
+        response_data["preSwap"] = pre_swap_resp
         response_data["bridge"] = {
             "router": "nearintents",
             "fromChain": str(from_chain),
