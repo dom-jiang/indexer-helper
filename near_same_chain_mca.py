@@ -45,11 +45,22 @@ def near_same_chain_mca_deposit_intents_applies(
     True when same-chain NEAR wallet → Lending deposit should use 1Click (+ optional Ref preswap).
 
     Replaces the legacy ``near-mca-deposit`` direct ``ft_transfer_call`` to MCA.
+
+    ``tokenIn`` and ``tokenOut`` may differ (e.g. FLX → USDT): Stage A Ref/SmartX swap must
+    deliver to 1Click ``depositAddress`` (``swap_out_recipient``), not ``mcaAccountId``.
     """
-    if not _near_same_chain_mca_base(from_chain, to_chain, token_in, token_out, mca):
+    if not mca or not isinstance(mca, dict):
+        return False
+    if not is_near_chain_id(from_chain) or not is_near_chain_id(to_chain):
+        return False
+    if str(from_chain).strip().lower() != str(to_chain).strip().lower():
         return False
     flow = str(mca.get("flow") or mca.get("mcaFlow") or "").strip().lower()
-    return flow == "deposit"
+    if flow != "deposit":
+        return False
+    if not (token_in or {}).get("address") or not (token_out or {}).get("address"):
+        return False
+    return True
 
 
 def near_same_chain_mca_withdraw_applies(
@@ -64,6 +75,33 @@ def near_same_chain_mca_withdraw_applies(
         return False
     flow = str(mca.get("flow") or mca.get("mcaFlow") or "").strip().lower()
     return flow == "withdraw"
+
+
+def near_same_chain_mca_withdraw_intents_applies(
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict[str, Any],
+    token_out: Dict[str, Any],
+    mca: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    True when same-chain NEAR Lending withdraw + different destination NEP-141
+    (e.g. USDT from Burrow → USDC to recipient via 1Click after MCA exec).
+    """
+    if not mca or not isinstance(mca, dict):
+        return False
+    if not is_near_chain_id(from_chain) or not is_near_chain_id(to_chain):
+        return False
+    if str(from_chain).strip().lower() != str(to_chain).strip().lower():
+        return False
+    flow = str(mca.get("flow") or mca.get("mcaFlow") or "").strip().lower()
+    if flow != "withdraw":
+        return False
+    a = (token_in or {}).get("address")
+    b = (token_out or {}).get("address")
+    if not a or not b:
+        return False
+    return not _addr_equal(a, b)
 
 
 def near_same_chain_mca_applies(
