@@ -815,12 +815,12 @@ def enrich_near_preswap_tx_for_1click_deposit(
     deposit_address: str,
 ) -> Dict[str, Any]:
     """
-    Before Ref/SmartX swap delivers ``token_out`` to a 1Click ``depositAddress``, ensure the
-    recipient is registered on the NEP-141 ledger (``storage_deposit`` on ``token_out``).
+    Before Ref/SmartX preswap delivers ``token_out`` to a 1Click ``depositAddress``, prepend
+    ``storage_deposit`` on ``token_out`` when the deposit account lacks FT registration.
 
-    For 64-hex implicit deposit targets, prepend ``depositSetupTransaction`` (native NEAR
-    transfer) when the account does not exist on NEAR protocol yet — same rules as
-    ``cross_chain_tx_builder.build_near_deposit_tx``.
+    Intentionally does **not** add the 0.005 NEAR implicit bootstrap ``Transfer`` used by
+    ``cross_chain_tx_builder.build_near_deposit_tx`` — preswap Stage-A is only
+    ``storage_deposit`` + ``ft_transfer_call`` (swap).
     """
     if not isinstance(tx, dict) or not tx:
         return tx
@@ -833,27 +833,15 @@ def enrich_near_preswap_tx_for_1click_deposit(
         return tx
 
     needs_reg = ccb._near_deposit_account_needs_registration(network_id, tout, recv)
-    setup_tx = ccb._near_implicit_bootstrap_transaction_if_needed(
-        network_id,
-        snd,
-        recv,
-        needs_fungible_ledger_registration=needs_reg,
-    )
 
     prep_batches: List[Dict[str, Any]] = []
     if needs_reg:
-        skip_storage = False
-        if ccb._looks_like_implicit_near_account_id(recv):
-            existed = ccb._near_protocol_account_exists(network_id, recv)
-            if existed is not True and not setup_tx:
-                skip_storage = True
-        if not skip_storage:
-            prep_batches.append(
-                {
-                    "receiverId": tout,
-                    "actions": [ccb._near_wallet_storage_deposit_action(recv)],
-                }
-            )
+        prep_batches.append(
+            {
+                "receiverId": tout,
+                "actions": [ccb._near_wallet_storage_deposit_action(recv)],
+            }
+        )
 
     existing_batches: List[Dict[str, Any]] = []
     if isinstance(tx.get("transactions"), list) and tx["transactions"]:
@@ -872,12 +860,10 @@ def enrich_near_preswap_tx_for_1click_deposit(
         prep_batches = []
 
     merged = prep_batches + existing_batches
-    if not prep_batches and not setup_tx:
+    if not prep_batches:
         return tx
 
     out = dict(tx)
-    if setup_tx:
-        out["depositSetupTransaction"] = setup_tx
     if len(merged) > 1 or prep_batches:
         out["format"] = NEAR_TX_FORMAT_BATCH
         out["transactions"] = merged

@@ -468,6 +468,7 @@ def build_near_deposit_tx(
     deposit_memo: str = "",
     *,
     network_id: Optional[str] = None,
+    skip_implicit_bootstrap: bool = False,
 ) -> Dict:
     """
     Build a NEAR transaction payload that deposits `amount_smallest` of the
@@ -487,13 +488,10 @@ def build_near_deposit_tx(
     matching Lending ``tansfer_txs_query`` / ``near.transfer_near``.
 
     Intents ``depositAddress`` values are often **64-char hex implicits** that do
-    not exist on the NEAR protocol until they receive NEAR. In that case
-    ``storage_deposit(account_id=deposit)`` fails (``account … doesn't exist``).
-    We then attach ``depositSetupTransaction``: a simple native NEAR
-    **Transfer** (0.005 NEAR) whose ``receiverId`` is ``depositAddress``. The
-    wallet must **sign and submit that tx first**, then sign the main token
-    transaction (``storage_deposit`` + … + ``ft_transfer``) — mirroring the
-    fact that one NEAR tx only has a single ``receiverId``.
+    not exist on the NEAR protocol until they receive NEAR. Unless
+    ``skip_implicit_bootstrap=True`` (1Click swap build from ``unified_swap``),
+    we attach ``depositSetupTransaction``: a native NEAR **Transfer** (0.005 NEAR)
+    to bootstrap the implicit before ``storage_deposit`` + token leg.
     Two transaction shapes:
 
     1) NEAR-native source (`token_address` in `NEAR_NATIVE_ALIASES`):
@@ -555,12 +553,14 @@ def build_near_deposit_tx(
         needs_wr = _near_deposit_account_needs_registration(
             network_id, "wrap.near", deposit_address
         )
-        setup_tx = _near_implicit_bootstrap_transaction_if_needed(
-            network_id,
-            sender,
-            deposit_address,
-            needs_fungible_ledger_registration=needs_wr,
-        )
+        setup_tx = None
+        if not skip_implicit_bootstrap:
+            setup_tx = _near_implicit_bootstrap_transaction_if_needed(
+                network_id,
+                sender,
+                deposit_address,
+                needs_fungible_ledger_registration=needs_wr,
+            )
         if needs_wr:
             acts.append(_near_wallet_storage_deposit_action(deposit_address))
         acts.append(near_deposit_action)
@@ -581,12 +581,14 @@ def build_near_deposit_tx(
 
     nep141_actions: List[Dict[str, Any]] = []
     needs_reg = _near_deposit_account_needs_registration(network_id, addr_raw, deposit_address)
-    setup_tx_nep = _near_implicit_bootstrap_transaction_if_needed(
-        network_id,
-        sender,
-        deposit_address,
-        needs_fungible_ledger_registration=needs_reg,
-    )
+    setup_tx_nep = None
+    if not skip_implicit_bootstrap:
+        setup_tx_nep = _near_implicit_bootstrap_transaction_if_needed(
+            network_id,
+            sender,
+            deposit_address,
+            needs_fungible_ledger_registration=needs_reg,
+        )
     if needs_reg:
         nep141_actions.append(_near_wallet_storage_deposit_action(deposit_address))
     nep141_actions.append(ft_deposit_final_action)

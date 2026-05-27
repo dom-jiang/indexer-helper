@@ -3679,6 +3679,7 @@ def _cross_chain_swap(
                 sender=sender,
                 deposit_memo=deposit_memo,
                 network_id=str(Cfg.NETWORK_ID),
+                skip_implicit_bootstrap=True,
             )
             _set_near_source_tx(response_data, tx_payload, sender, router=router)
             response_data["approve"] = None
