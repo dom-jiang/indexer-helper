@@ -270,6 +270,26 @@ def _explorer_from_row(
     return empty
 
 
+_ARBISCAN_TX_PREFIX = "https://arbiscan.io/tx/"
+
+
+def _explorer_for_transfer_history(
+    row: Dict[str, Any],
+    display_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """transfer-history: withdrawHash 外链固定 Arbiscan（与 depositHash 一致）。"""
+    explorer = _explorer_from_row(row, display_meta)
+    if explorer.get("displayHashType") != "withdrawHash":
+        return explorer
+    h = explorer.get("displayHash")
+    if not h or not str(h).strip():
+        return explorer
+    out = dict(explorer)
+    out["chain"] = "arbitrum"
+    out["url"] = "{0}{1}".format(_ARBISCAN_TX_PREFIX, str(h).strip())
+    return out
+
+
 def _validate_display_meta_endpoint(dm: Any, endpoint: str) -> Optional[str]:
     if not isinstance(dm, dict):
         return "displayMeta object is required"
@@ -739,7 +759,7 @@ def perps_hl_transfer_history():
                 "txHashes": _tx_list_from_row(r),
                 "hashes": _hashes_from_row(r),
                 "displayMeta": display_meta,
-                "explorer": _explorer_from_row(r, display_meta),
+                "explorer": _explorer_for_transfer_history(r, display_meta),
                 "createdAt": _dt_ms(r.get("created_at")),
                 "updatedAt": _dt_ms(r.get("updated_at")),
                 "finishedAt": _dt_ms(r.get("finished_at")),
