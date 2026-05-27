@@ -783,6 +783,112 @@ def near_same_chain_quote(
     }
 
 
+def _tx_batches_already_register_deposit(
+    batches: List[Dict[str, Any]],
+    token_contract: str,
+    deposit_account: str,
+) -> bool:
+    """True if a batch already calls storage_deposit for ``deposit_account`` on ``token_contract``."""
+    tc = str(token_contract or "").strip()
+    dep = str(deposit_account or "").strip()
+    for batch in batches:
+        if str(batch.get("receiverId") or "").strip() != tc:
+            continue
+        for act in batch.get("actions") or []:
+            if not isinstance(act, dict):
+                continue
+            params = act.get("params") if isinstance(act.get("params"), dict) else {}
+            if str(params.get("methodName") or "") != "storage_deposit":
+                continue
+            args = params.get("args") if isinstance(params.get("args"), dict) else {}
+            if str(args.get("account_id") or "").strip() == dep:
+                return True
+    return False
+
+
+def enrich_near_preswap_tx_for_1click_deposit(
+    tx: Dict[str, Any],
+    *,
+    network_id: str,
+    sender: str,
+    token_out: Dict[str, Any],
+    deposit_address: str,
+) -> Dict[str, Any]:
+    """
+    Before Ref/SmartX swap delivers ``token_out`` to a 1Click ``depositAddress``, ensure the
+    recipient is registered on the NEP-141 ledger (``storage_deposit`` on ``token_out``).
+
+    For 64-hex implicit deposit targets, prepend ``depositSetupTransaction`` (native NEAR
+    transfer) when the account does not exist on NEAR protocol yet — same rules as
+    ``cross_chain_tx_builder.build_near_deposit_tx``.
+    """
+    if not isinstance(tx, dict) or not tx:
+        return tx
+
+    ccb = _ccb()
+    recv = str(deposit_address or tx.get("recipient") or "").strip()
+    tout = str((token_out or {}).get("address") or "").strip()
+    snd = str(sender or tx.get("signerId") or "").strip()
+    if not recv or not tout or not snd:
+        return tx
+
+    needs_reg = ccb._near_deposit_account_needs_registration(network_id, tout, recv)
+    setup_tx = ccb._near_implicit_bootstrap_transaction_if_needed(
+        network_id,
+        snd,
+        recv,
+        needs_fungible_ledger_registration=needs_reg,
+    )
+
+    prep_batches: List[Dict[str, Any]] = []
+    if needs_reg:
+        skip_storage = False
+        if ccb._looks_like_implicit_near_account_id(recv):
+            existed = ccb._near_protocol_account_exists(network_id, recv)
+            if existed is not True and not setup_tx:
+                skip_storage = True
+        if not skip_storage:
+            prep_batches.append(
+                {
+                    "receiverId": tout,
+                    "actions": [ccb._near_wallet_storage_deposit_action(recv)],
+                }
+            )
+
+    existing_batches: List[Dict[str, Any]] = []
+    if isinstance(tx.get("transactions"), list) and tx["transactions"]:
+        for item in tx["transactions"]:
+            if isinstance(item, dict) and item.get("receiverId") and item.get("actions"):
+                existing_batches.append(item)
+    elif tx.get("receiverId") and tx.get("actions"):
+        existing_batches.append(
+            {"receiverId": str(tx["receiverId"]), "actions": list(tx["actions"])}
+        )
+
+    if not existing_batches:
+        return tx
+
+    if prep_batches and _tx_batches_already_register_deposit(existing_batches, tout, recv):
+        prep_batches = []
+
+    merged = prep_batches + existing_batches
+    if not prep_batches and not setup_tx:
+        return tx
+
+    out = dict(tx)
+    if setup_tx:
+        out["depositSetupTransaction"] = setup_tx
+    if len(merged) > 1 or prep_batches:
+        out["format"] = NEAR_TX_FORMAT_BATCH
+        out["transactions"] = merged
+        out["receiverId"] = merged[0]["receiverId"]
+        if len(merged) == 1:
+            out["actions"] = merged[0]["actions"]
+        else:
+            out.pop("actions", None)
+    return out
+
+
 def _build_near_ref_signed_tx_skeleton(
     *,
     swap_out_recipient: str,
@@ -911,6 +1017,14 @@ def _build_near_smartx_tx(
     if len(batch_txs) == 1:
         tx["actions"] = batch_txs[0]["actions"]
 
+    tx = enrich_near_preswap_tx_for_1click_deposit(
+        tx,
+        network_id=network_id,
+        sender=sender.strip(),
+        token_out=token_out,
+        deposit_address=recipient.strip(),
+    )
+
     return {
         "success": True,
         "chainType": "near",
@@ -967,6 +1081,13 @@ def _build_near_ref_smart_tx(
         "actions": actions,
         "nearRefSmartRouterHints": {"tokenInRoute": tin, "tokenOutRoute": tout},
     }
+    tx = enrich_near_preswap_tx_for_1click_deposit(
+        tx,
+        network_id=_near_network_id(),
+        sender=sender.strip(),
+        token_out=token_out,
+        deposit_address=recipient.strip(),
+    )
 
     return {
         "success": True,

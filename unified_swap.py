@@ -3159,6 +3159,7 @@ def _stage_a_build_near(
     )
     if not res.get("success"):
         return {"success": False, "error": res.get("error"), "router": router}
+
     return {
         "success": True,
         "router": res.get("router") or router,
