@@ -102,7 +102,11 @@ from cross_chain_tx_builder import (
     SUI_NATIVE_TYPE,
 )
 from db_provider import add_multichain_lending_requests
-from near_same_chain_mca import near_same_chain_mca_applies, resolve_near_mca_deposit_receiver
+from near_same_chain_mca import (
+    near_same_chain_mca_deposit_intents_applies,
+    near_same_chain_mca_withdraw_applies,
+    resolve_near_mca_deposit_receiver,
+)
 from near_mca_withdraw_tx import build_near_mca_withdraw_exec_tx_payload
 from mca_withdraw_cross_intents import nep141_ft_transfer_amount_minus_one
 
@@ -1379,7 +1383,8 @@ def _mca_context_for_quote(
     *,
     deposit_extras_scheduled: bool,
     is_cross_chain: bool,
-    near_same_chain_mca: bool = False,
+    near_same_chain_mca_withdraw: bool = False,
+    near_same_chain_mca_deposit_intents: bool = False,
 ) -> Optional[Dict]:
     flow = _mca_flow(mca_block)
     if not flow:
@@ -1394,27 +1399,29 @@ def _mca_context_for_quote(
         if mca_acc:
             ctx["mcaAccountId"] = str(mca_acc)
     if flow == "deposit":
-        ctx["depositOneClickConfigured"] = bool(deposit_extras_scheduled) and bool(is_cross_chain)
-        if near_same_chain_mca:
-            ctx["nearDirectToLending"] = True
-            ctx["routerForSwap"] = ROUTER_NEAR_MCA_DEPOSIT
+        deposit_via_1click = bool(is_cross_chain) or bool(near_same_chain_mca_deposit_intents)
+        ctx["depositOneClickConfigured"] = bool(deposit_extras_scheduled) and deposit_via_1click
+        if near_same_chain_mca_deposit_intents:
+            ctx["nearIntentsToLending"] = True
+            ctx["routerForSwap"] = "nearintents or preswap-nearintents (from quote bestQuote.router)"
         if isinstance(mca_block, dict) and mca_block.get("depositCrmAutoFilled"):
             ctx["customRecipientMsgAutoFilled"] = True
-        if near_same_chain_mca:
+        if near_same_chain_mca_deposit_intents:
             ctx["note"] = (
-                "Same-chain NEAR deposit to Lending: `/swap` with `router=near-mca-deposit` returns NEAR `ft_transfer_call` "
-                "(`customRecipientMsg` as `msg`). No DEX and no 1Click bridge leg."
+                "Same-chain NEAR deposit to Lending uses Near Intents 1Click (CRM in order). "
+                "If tokenIn is not 1Click-listed, quote returns preswap-nearintents (Ref SmartRouter → 1Click). "
+                "If tokenIn is listed (e.g. USDT→USDT), quote may return router nearintents (wallet ft_transfer to depositAddress). "
+                "POST /api/swap/swap with quote router; pass preSwap+bridge when router is preswap-nearintents."
             )
         else:
             ctx["note"] = (
                 "When NearIntents 1Click is selected (two-stage Stage-B counts), extras from "
-                "`mca` are merged into 1Click /v0/quote. OmniBridge-only quotes ignore them. "
-                "Same-chain quotes never hit 1Click — deposit extras are not applied."
+                "`mca` are merged into 1Click /v0/quote. OmniBridge-only quotes ignore them."
             )
     elif flow == "withdraw":
         if ctx.get("mcaAccountId"):
             ctx["intentsRefundToSuggested"] = ctx["mcaAccountId"]
-        if near_same_chain_mca:
+        if near_same_chain_mca_withdraw:
             ctx["nearDirectFromLending"] = True
             ctx["routerForSwap"] = ROUTER_NEAR_MCA_WITHDRAW
             ctx["withdrawExecutionPlan"] = [
@@ -1699,9 +1706,9 @@ def _synthetic_near_same_chain_mca_quote(
     recipient: str,
     mca_block: Dict,
 ) -> Dict:
-    """Synthetic quote when NEAR wallet moves NEP-141 to/from Lending without DEX/1Click."""
+    """Synthetic quote for same-chain NEAR Lending withdraw (MCA exec; deposit uses 1Click)."""
     flow = _mca_flow(mca_block)
-    router = ROUTER_NEAR_MCA_DEPOSIT if flow == "deposit" else ROUTER_NEAR_MCA_WITHDRAW
+    router = ROUTER_NEAR_MCA_WITHDRAW
     est = str(amount_in)
     bq = {
         "router": router,
@@ -1726,35 +1733,7 @@ def _synthetic_near_same_chain_mca_quote(
         "allQuotes": [bq],
     }
 
-    # Signable NEAR actions for MCA *deposit* — mirrors `_near_same_chain_mca_deposit_swap`
-    # / `build_near_deposit_tx` (wallet-selector / near-api-js shape).
-    if flow == "deposit":
-        crm = str(
-            (mca_block or {}).get("customRecipientMsg")
-            or (mca_block or {}).get("custom_recipient_msg")
-            or ""
-        ).strip()
-        dep = resolve_near_mca_deposit_receiver(mca_block or {}, recipient)
-        if crm and dep and (sender or "").strip():
-            try:
-                data["nearDepositTx"] = build_near_deposit_tx(
-                    token_address=token_in.get("address", ""),
-                    deposit_address=dep,
-                    amount_smallest=str(amount_in),
-                    sender=str(sender).strip(),
-                    deposit_memo=crm,
-                    network_id=str(Cfg.NETWORK_ID),
-                )
-                bq["txPreviewAvailable"] = True
-            except Exception as e:
-                logger.warning(f"_synthetic_near_same_chain_mca_quote build_near_deposit_tx: {e}")
-                data["nearDepositTxError"] = str(e)
-        else:
-            data["nearDepositTxError"] = (
-                "missing customRecipientMsg, deposit receiver, or sender — cannot assemble ft_transfer_call preview"
-            )
-
-    elif flow == "withdraw":
+    if flow == "withdraw":
         try:
             data["nearMcaWithdrawTx"] = _assemble_near_mca_withdraw_tx(
                 mca_block or {},
@@ -2025,28 +2004,40 @@ def unified_quote(
 
     oneclick_ext = _mca_deposit_extensions(mca_enriched)
 
-    near_dir = (not _is_cross_chain(from_chain, to_chain)) and near_same_chain_mca_applies(
+    near_dep_intents = (not _is_cross_chain(from_chain, to_chain)) and near_same_chain_mca_deposit_intents_applies(
+        from_chain, to_chain, token_in_info, token_out_info, mca_enriched
+    )
+    near_withdraw_dir = (not _is_cross_chain(from_chain, to_chain)) and near_same_chain_mca_withdraw_applies(
         from_chain, to_chain, token_in_info, token_out_info, mca_enriched
     )
 
     if not _is_cross_chain(from_chain, to_chain):
-        if near_dir:
-            flow_nd = _mca_flow(mca_enriched) if isinstance(mca_enriched, dict) else ""
-            if flow_nd == "deposit":
-                crm_chk = (mca_enriched or {}).get("customRecipientMsg") or (mca_enriched or {}).get("custom_recipient_msg")
-                if not (isinstance(crm_chk, str) and crm_chk.strip()):
-                    return {
-                        "code": -1,
-                        "msg": "NEAR same-chain Lending deposit requires customRecipientMsg (use mca.signer + mcaAccountId for server CRM).",
-                        "data": None,
-                    }
-            elif flow_nd == "withdraw":
-                if not ((mca_enriched or {}).get("mcaAccountId") or (mca_enriched or {}).get("mca_id")):
-                    return {
-                        "code": -1,
-                        "msg": "NEAR same-chain withdraw quote requires mca.mcaAccountId.",
-                        "data": None,
-                    }
+        if near_dep_intents:
+            crm_chk = (mca_enriched or {}).get("customRecipientMsg") or (mca_enriched or {}).get("custom_recipient_msg")
+            if not (isinstance(crm_chk, str) and crm_chk.strip()):
+                return {
+                    "code": -1,
+                    "msg": "NEAR same-chain Lending deposit requires customRecipientMsg (use mca.signer + mcaAccountId for server CRM).",
+                    "data": None,
+                }
+            resp = _cross_chain_quote(
+                from_chain,
+                to_chain,
+                token_in_info,
+                token_out_info,
+                amount_in,
+                slippage,
+                sender,
+                recipient,
+                mca_block=mca_enriched,
+            )
+        elif near_withdraw_dir:
+            if not ((mca_enriched or {}).get("mcaAccountId") or (mca_enriched or {}).get("mca_id")):
+                return {
+                    "code": -1,
+                    "msg": "NEAR same-chain withdraw quote requires mca.mcaAccountId.",
+                    "data": None,
+                }
             resp = _synthetic_near_same_chain_mca_quote(
                 from_chain,
                 to_chain,
@@ -2077,7 +2068,8 @@ def unified_quote(
         mca_enriched if isinstance(mca_enriched, dict) else None,
         deposit_extras_scheduled=bool(oneclick_ext),
         is_cross_chain=_is_cross_chain(from_chain, to_chain),
-        near_same_chain_mca=near_dir,
+        near_same_chain_mca_withdraw=near_withdraw_dir,
+        near_same_chain_mca_deposit_intents=near_dep_intents,
     )
     if mc_ctx is not None and isinstance(resp, dict) and resp.get("code") == 0:
         dat = resp.get("data")
@@ -2089,7 +2081,7 @@ def unified_quote(
         and resp.get("code") == 0
         and isinstance(resp.get("data"), dict)
         and _is_cross_chain(from_chain, to_chain)
-        and not near_dir
+        and not near_withdraw_dir
     ):
         _try_attach_mca_withdraw_near_to_intents_quote(
             data=resp["data"],
@@ -2427,36 +2419,49 @@ def unified_swap(
             return {"code": -1, "msg": crm_err, "data": None}
 
     if not _is_cross_chain(from_chain, to_chain):
-        if isinstance(mca_oc, dict) and mca_oc and near_same_chain_mca_applies(
+        if isinstance(mca_oc, dict) and mca_oc and near_same_chain_mca_deposit_intents_applies(
             from_chain, to_chain, token_in_info, token_out_info, mca_oc
         ):
-            fl = _mca_flow(mca_oc)
-            if fl == "deposit":
-                return _near_same_chain_mca_deposit_swap(
-                    from_chain,
-                    token_in_info,
-                    token_out_info,
-                    amount_in,
-                    sender,
-                    recipient,
-                    router,
-                    mca_oc,
-                    quote_expected_out=quote_expected_out,
-                    quote_min_amount_out=quote_min_amount_out,
-                )
-            if fl == "withdraw":
-                return _near_same_chain_mca_withdraw_swap(
-                    from_chain,
-                    token_in_info,
-                    token_out_info,
-                    amount_in,
-                    sender,
-                    recipient,
-                    router,
-                    mca_oc,
-                    quote_expected_out=quote_expected_out,
-                    quote_min_amount_out=quote_min_amount_out,
-                )
+            if (router or "").strip() == ROUTER_NEAR_MCA_DEPOSIT:
+                return {
+                    "code": -1,
+                    "msg": (
+                        "router near-mca-deposit is no longer used for same-chain NEAR Lending deposit. "
+                        "Re-quote and use router from bestQuote (nearintents or preswap-nearintents)."
+                    ),
+                    "data": None,
+                }
+            return _cross_chain_swap(
+                from_chain=from_chain,
+                to_chain=to_chain,
+                token_in=token_in_info,
+                token_out=token_out_info,
+                amount_in=amount_in,
+                slippage=slippage,
+                sender=sender,
+                recipient=recipient,
+                router=router,
+                quote_expected_out=quote_expected_out,
+                quote_min_amount_out=quote_min_amount_out,
+                pre_swap=pre_swap,
+                bridge=bridge,
+                oneclick_extensions=_mca_deposit_extensions(mca_oc),
+            )
+        if isinstance(mca_oc, dict) and mca_oc and near_same_chain_mca_withdraw_applies(
+            from_chain, to_chain, token_in_info, token_out_info, mca_oc
+        ):
+            return _near_same_chain_mca_withdraw_swap(
+                from_chain,
+                token_in_info,
+                token_out_info,
+                amount_in,
+                sender,
+                recipient,
+                router,
+                mca_oc,
+                quote_expected_out=quote_expected_out,
+                quote_min_amount_out=quote_min_amount_out,
+            )
         return _same_chain_swap(
             from_chain,
             token_in_info,

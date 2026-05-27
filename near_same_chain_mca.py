@@ -1,4 +1,4 @@
-"""Same-chain NEAR + MCA direct to/from Lending (no DEX / no 1Click swap leg)."""
+"""Same-chain NEAR + MCA: deposit via Near Intents (1Click); withdraw direct to MCA."""
 
 from __future__ import annotations
 
@@ -13,18 +13,14 @@ def is_near_chain_id(chain: str) -> bool:
     return str(chain or "").strip().lower() in frozenset({"near", "near-mainnet"})
 
 
-def near_same_chain_mca_applies(
+def _near_same_chain_mca_base(
     from_chain: str,
     to_chain: str,
     token_in: Dict[str, Any],
     token_out: Dict[str, Any],
     mca: Optional[Dict[str, Any]],
 ) -> bool:
-    """
-    True when: NEAR↔NEAR same chain, same NEP-141 address, mca.flow in deposit|withdraw.
-
-    Deposit/withdraw here means wallet <-> Lending on NEAR without bridging other chains.
-    """
+    """NEAR↔NEAR, same NEP-141, with an mca block (flow checked by callers)."""
     if not mca or not isinstance(mca, dict):
         return False
     if not is_near_chain_id(from_chain) or not is_near_chain_id(to_chain):
@@ -35,8 +31,52 @@ def near_same_chain_mca_applies(
     b = (token_out or {}).get("address")
     if not a or not _addr_equal(a, b):
         return False
+    return True
+
+
+def near_same_chain_mca_deposit_intents_applies(
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict[str, Any],
+    token_out: Dict[str, Any],
+    mca: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    True when same-chain NEAR wallet → Lending deposit should use 1Click (+ optional Ref preswap).
+
+    Replaces the legacy ``near-mca-deposit`` direct ``ft_transfer_call`` to MCA.
+    """
+    if not _near_same_chain_mca_base(from_chain, to_chain, token_in, token_out, mca):
+        return False
     flow = str(mca.get("flow") or mca.get("mcaFlow") or "").strip().lower()
-    return flow in ("deposit", "withdraw")
+    return flow == "deposit"
+
+
+def near_same_chain_mca_withdraw_applies(
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict[str, Any],
+    token_out: Dict[str, Any],
+    mca: Optional[Dict[str, Any]],
+) -> bool:
+    """True when same-chain NEAR Lending → wallet withdraw (MCA exec, no 1Click)."""
+    if not _near_same_chain_mca_base(from_chain, to_chain, token_in, token_out, mca):
+        return False
+    flow = str(mca.get("flow") or mca.get("mcaFlow") or "").strip().lower()
+    return flow == "withdraw"
+
+
+def near_same_chain_mca_applies(
+    from_chain: str,
+    to_chain: str,
+    token_in: Dict[str, Any],
+    token_out: Dict[str, Any],
+    mca: Optional[Dict[str, Any]],
+) -> bool:
+    """Alias for withdraw-only direct MCA path (kept for call-site clarity)."""
+    return near_same_chain_mca_withdraw_applies(
+        from_chain, to_chain, token_in, token_out, mca,
+    )
 
 
 def resolve_near_mca_deposit_receiver(mca: Dict[str, Any], recipient: str) -> str:
