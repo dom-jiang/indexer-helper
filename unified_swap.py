@@ -1387,6 +1387,7 @@ def _mca_context_for_quote(
     near_same_chain_mca_withdraw: bool = False,
     near_same_chain_mca_deposit_intents: bool = False,
     near_same_chain_mca_withdraw_intents: bool = False,
+    near_withdraw_use_near_exec: bool = True,
 ) -> Optional[Dict]:
     flow = _mca_flow(mca_block)
     if not flow:
@@ -1427,23 +1428,42 @@ def _mca_context_for_quote(
         if near_same_chain_mca_withdraw:
             ctx["nearDirectFromLending"] = True
             ctx["routerForSwap"] = ROUTER_NEAR_MCA_WITHDRAW
-            ctx["withdrawExecutionPlan"] = [
-                {
-                    "step": 1,
-                    "action": "sign_and_send_near",
-                    "description": "User signs ONE NEAR tx to MCA `exec` (see quote `nearMcaWithdrawTx`; same shape as in-app call_on_near)",
-                },
-                {
-                    "step": 2,
-                    "action": "optional_broadcast_api",
-                    "description": "POST /api/swap/swap with `nearMcaDepositSignedTx` if relaying a pre-signed tx (same as deposit broadcast).",
-                },
-            ]
-            ctx["note"] = (
-                "Same-chain NEAR Lending withdraw: `/quote` returns `nearMcaWithdrawTx` (MCA exec: Burrow Withdraw + token transfer to recipient). "
-                "`/swap` with router near-mca-withdraw rebuilds the same `tx`. "
-                "Optional: `mca.amountBurrow` and `mca.execSignerAccountId` when defaults differ from amountIn/recipient."
-            )
+            if near_withdraw_use_near_exec:
+                ctx["withdrawExecutionPlan"] = [
+                    {
+                        "step": 1,
+                        "action": "sign_and_send_near",
+                        "description": "User signs ONE NEAR tx to MCA `exec` (see quote `nearMcaWithdrawTx`; same shape as in-app call_on_near)",
+                    },
+                    {
+                        "step": 2,
+                        "action": "optional_broadcast_api",
+                        "description": "POST /api/swap/swap with `nearMcaDepositSignedTx` if relaying a pre-signed tx (same as deposit broadcast).",
+                    },
+                ]
+                ctx["note"] = (
+                    "Same-chain NEAR Lending withdraw: `/quote` returns `nearMcaWithdrawTx` (MCA exec: Burrow Withdraw + token transfer to recipient). "
+                    "`/swap` with router near-mca-withdraw rebuilds the same `tx`. "
+                    "Optional: `mca.amountBurrow` and `mca.execSignerAccountId` when defaults differ from amountIn/recipient."
+                )
+            else:
+                ctx["withdrawExecutionPlan"] = [
+                    {
+                        "step": 1,
+                        "action": "sign_message",
+                        "description": "MCA has no bound NEAR wallet: sign `mcaWithdrawToIntents.messageToSign` with `mca.signer` (same as Solana).",
+                    },
+                    {
+                        "step": 2,
+                        "action": "mcaRelayer",
+                        "description": "POST /api/swap/swap with `mcaRelayer` (not NEAR `exec` from connected wallet).",
+                    },
+                ]
+                ctx["note"] = (
+                    "Same-chain NEAR Lending withdraw without bound NEAR controller: "
+                    "`mcaWithdrawToIntents.submissionMode` is `multichain_relayer` (identical to Solana withdraw). "
+                    "Bind NEAR on the MCA to use `near_exec` + `nearMcaWithdrawTx`."
+                )
         elif near_same_chain_mca_withdraw_intents:
             ctx["nearWithdrawSwapViaIntents"] = True
             ctx["routerForSwap"] = "use quote mcaWithdrawToIntents (not DEX bestQuote.router)"
@@ -1506,18 +1526,23 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
     recipient: str,
     mca_block: Optional[Dict[str, Any]],
     oneclick_extensions: Optional[Dict[str, Any]],
+    skip_1click_order: bool = False,
+    direct_deposit_address: str = "",
 ) -> None:
     """
-    MCA Burrow withdraw on NEAR + ft_transfer to 1Click `depositAddress` (matches `withdrawFromMca` without simpleWithdrawData).
+    MCA Burrow withdraw on NEAR + ft_transfer to 1Click `depositAddress` or NEAR `recipient`.
 
     NearIntents quote / `minAmountIn` must use the same NEP-141 smallest-unit amount as the MCA
     ``ft_transfer`` leg (Lending ``amountToken`` = ``max(0, amountIn - 1)``); otherwise the relay
     succeeds but 1Click stays ``INCOMPLETE_DEPOSIT`` while ``depositedAmount < minAmountIn``.
 
-    - `mca.signer.chain` in (`near`, `near-mainnet`): `submissionMode=near_exec`, `nearExecWalletPreview` for MCA `exec`.
-    - Otherwise: `submissionMode=multichain_relayer`, `messageToSign` + `mcaRelayer` fields.
+    - MCA has bound NEAR matching ``mca.signer``: `submissionMode=near_exec`, `nearMcaWithdrawTx`.
+    - Otherwise: `submissionMode=multichain_relayer`, `messageToSign` (same JSON shape as Solana).
 
-    Requires `nearintents_build_tx` to succeed. Writes `data['mcaWithdrawToIntents']`.
+    When ``skip_1click_order`` is True (same-chain same-token withdraw to NEAR), funds go to
+    ``direct_deposit_address`` / ``recipient`` without calling 1Click build.
+
+    Writes `data['mcaWithdrawToIntents']`.
     """
     try:
         if not mca_block or not isinstance(mca_block, dict):
@@ -1537,8 +1562,6 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         if not sign_chain:
             return
 
-        is_near_signer = sign_chain in ("near", "near-mainnet")
-
         mca_acc = (
             mca_block.get("mcaAccountId")
             or mca_block.get("mca_id")
@@ -1546,6 +1569,15 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         )
         if not mca_acc:
             return
+
+        from mca_burrow_auto import resolve_mca_withdraw_near_exec_eligible
+
+        nw_early = str(Cfg.NETWORK_ID)
+        use_near_exec, _exec_near_hint = resolve_mca_withdraw_near_exec_eligible(
+            mca_block,
+            mca_account_id=str(mca_acc),
+            network_id=nw_early,
+        )
 
         tid = str((token_in or {}).get("address") or "").strip()
         if not tid:
@@ -1577,27 +1609,38 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             else str(to_chain)
         )
 
-        build_res = nearintents_build_tx(
-            from_chain=from_chain,
-            to_chain=to_chain,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=str(amt_ft_for_intents),
-            sender=sender,
-            recipient=recipient,
-            slippage=slippage,
-            oneclick_extensions=oneclick_extensions,
-        )
-        if not build_res.get("success"):
-            logger.warning(
-                f"mcaWithdrawToIntents: nearintents_build_tx failed: {build_res.get('error')}"
+        dep = ""
+        deposit_memo = ""
+        if skip_1click_order:
+            dep = str(direct_deposit_address or recipient or "").strip()
+            if not dep:
+                logger.warning(
+                    "mcaWithdrawToIntents: skip_1click_order requires recipient/direct_deposit_address"
+                )
+                return
+        else:
+            build_res = nearintents_build_tx(
+                from_chain=from_chain,
+                to_chain=to_chain,
+                token_in=token_in,
+                token_out=token_out,
+                amount_in=str(amt_ft_for_intents),
+                sender=sender,
+                recipient=recipient,
+                slippage=slippage,
+                oneclick_extensions=oneclick_extensions,
             )
-            return
-        tx_wrap = build_res.get("tx") or {}
-        dep = str(tx_wrap.get("depositAddress") or "").strip()
-        if not dep:
-            logger.warning("mcaWithdrawToIntents: empty depositAddress from nearintents_build_tx")
-            return
+            if not build_res.get("success"):
+                logger.warning(
+                    f"mcaWithdrawToIntents: nearintents_build_tx failed: {build_res.get('error')}"
+                )
+                return
+            tx_wrap = build_res.get("tx") or {}
+            dep = str(tx_wrap.get("depositAddress") or "").strip()
+            deposit_memo = str(tx_wrap.get("depositMemo") or "")
+            if not dep:
+                logger.warning("mcaWithdrawToIntents: empty depositAddress from nearintents_build_tx")
+                return
 
         from mca_withdraw_cross_intents import (
             assemble_mca_withdraw_to_intents_business,
@@ -1611,14 +1654,14 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         mca_s = str(mca_acc)
 
         relay_near_recipient = ""
-        if not is_near_signer and isinstance(mca_block, dict):
+        if not use_near_exec and isinstance(mca_block, dict):
             relay_near_recipient = str(
                 mca_block.get("relayerNearRecipient")
                 or mca_block.get("relayer_near_recipient")
                 or mca_block.get("multichainRelayerNearAccount")
                 or ""
             ).strip()
-        if not is_near_signer and not relay_near_recipient:
+        if not use_near_exec and not relay_near_recipient:
             relay_near_recipient = str(
                 getattr(Cfg, "MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID", "") or ""
             ).strip()
@@ -1640,22 +1683,22 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             amount_burrow_inner=str(amt_borrow_inner),
             intents_deposit_address=dep,
             frontend_target_chain=front_target,
-            sign_chain_is_near=is_near_signer,
+            sign_chain_is_near=use_near_exec,
             simple_withdraw_tx=None,
             simple_withdraw_recipient_for_relayer=(
-                relay_near_recipient if not is_near_signer else None
+                relay_near_recipient if not use_near_exec else None
             ),
             relayer_prepay_simple_withdraw_inner=(prepay_inner or None),
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)
 
-        submission_mode = "near_exec" if is_near_signer else "multichain_relayer"
+        submission_mode = "near_exec" if use_near_exec else "multichain_relayer"
         out: Dict[str, Any] = {
             "version": 1,
             "submissionMode": submission_mode,
             "depositAddress": dep,
-            "depositMemo": tx_wrap.get("depositMemo") or "",
+            "depositMemo": deposit_memo,
             "business": business,
             "mcaAccountId": mca_s,
             "tokenId": tid,
@@ -1665,13 +1708,14 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             "amountBurrowInner": str(amt_borrow_inner),
         }
 
-        if is_near_signer:
+        if use_near_exec:
             exec_signer_near = str(
                 mca_block.get("execSignerAccountId")
                 or mca_block.get("exec_signer_near")
                 or mca_block.get("nearSignerAccountId")
                 or signer_obj.get("identityKey")
                 or signer_obj.get("identity_key")
+                or _exec_near_hint
                 or ""
             ).strip()
             if not exec_signer_near:
@@ -1703,6 +1747,13 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             if not signer_key:
                 logger.warning("mcaWithdrawToIntents: multichain_relayer requires mca.signer.identityKey")
                 return
+            if sign_chain in ("near", "near-mainnet"):
+                logger.warning(
+                    "mcaWithdrawToIntents: multichain_relayer with mca.signer.chain=near but NEAR "
+                    "is not bound on MCA %s — quote with a bound non-NEAR wallet (EVM/Solana/Passkey).",
+                    mca_s,
+                )
+                return
             try:
                 w_obj = format_wallet_wallet_object(sign_chain, signer_key)
             except ValueError as e:
@@ -1731,8 +1782,10 @@ def _synthetic_near_same_chain_mca_quote(
     sender: str,
     recipient: str,
     mca_block: Dict,
+    *,
+    include_near_tx_preview: bool = True,
 ) -> Dict:
-    """Synthetic quote for same-chain NEAR Lending withdraw (MCA exec; deposit uses 1Click)."""
+    """Synthetic quote for same-chain NEAR Lending withdraw (MCA exec or relayer via attach)."""
     flow = _mca_flow(mca_block)
     router = ROUTER_NEAR_MCA_WITHDRAW
     est = str(amount_in)
@@ -1760,29 +1813,40 @@ def _synthetic_near_same_chain_mca_quote(
     }
 
     if flow == "withdraw":
-        try:
-            data["nearMcaWithdrawTx"] = _assemble_near_mca_withdraw_tx(
-                mca_block or {},
-                token_in,
-                str(amount_in),
-                str(recipient or "").strip(),
-            )
-            bq["txPreviewAvailable"] = True
+        if include_near_tx_preview:
+            try:
+                data["nearMcaWithdrawTx"] = _assemble_near_mca_withdraw_tx(
+                    mca_block or {},
+                    token_in,
+                    str(amount_in),
+                    str(recipient or "").strip(),
+                )
+                bq["txPreviewAvailable"] = True
+                data["nearMcaWithdraw"] = {
+                    "mode": "mca-exec",
+                    "router": ROUTER_NEAR_MCA_WITHDRAW,
+                    "note": (
+                        "Sign ONE tx on MCA contract (`exec`): `nearMcaWithdrawTx` matches in-app withdrawFromMca NEAR→NEAR. "
+                        "Pass accurate `mca.amountBurrow` when it differs from `amountIn` (Burrow internal units)."
+                    ),
+                }
+            except Exception as e:
+                logger.warning(f"_synthetic_near_same_chain_mca_quote withdraw tx: {e}")
+                data["nearMcaWithdrawTxError"] = str(e)
+                data["nearMcaWithdraw"] = {
+                    "mode": "error",
+                    "router": ROUTER_NEAR_MCA_WITHDRAW,
+                    "detail": str(e),
+                }
+        else:
+            bq["txPreviewAvailable"] = False
             data["nearMcaWithdraw"] = {
-                "mode": "mca-exec",
+                "mode": "multichain-relayer",
                 "router": ROUTER_NEAR_MCA_WITHDRAW,
                 "note": (
-                    "Sign ONE tx on MCA contract (`exec`): `nearMcaWithdrawTx` matches in-app withdrawFromMca NEAR→NEAR. "
-                    "Pass accurate `mca.amountBurrow` when it differs from `amountIn` (Burrow internal units)."
+                    "No bound NEAR on MCA: use `mcaWithdrawToIntents` (`submissionMode=multichain_relayer`, "
+                    "sign `messageToSign` with bound Passkey/EVM/Solana — same as other chains)."
                 ),
-            }
-        except Exception as e:
-            logger.warning(f"_synthetic_near_same_chain_mca_quote withdraw tx: {e}")
-            data["nearMcaWithdrawTxError"] = str(e)
-            data["nearMcaWithdraw"] = {
-                "mode": "error",
-                "router": ROUTER_NEAR_MCA_WITHDRAW,
-                "detail": str(e),
             }
 
     return {"code": 0, "msg": "success", "data": data}
@@ -2040,6 +2104,22 @@ def unified_quote(
         from_chain, to_chain, token_in_info, token_out_info, mca_enriched
     )
 
+    near_withdraw_use_near_exec = False
+    if near_withdraw_dir and isinstance(mca_enriched, dict):
+        mca_id_for_exec = str(
+            mca_enriched.get("mcaAccountId")
+            or mca_enriched.get("mca_id")
+            or ""
+        ).strip()
+        if mca_id_for_exec:
+            from mca_burrow_auto import resolve_mca_withdraw_near_exec_eligible
+
+            near_withdraw_use_near_exec, _ = resolve_mca_withdraw_near_exec_eligible(
+                mca_enriched,
+                mca_account_id=mca_id_for_exec,
+                network_id=str(Cfg.NETWORK_ID),
+            )
+
     if not _is_cross_chain(from_chain, to_chain):
         if near_dep_intents:
             crm_chk = (mca_enriched or {}).get("customRecipientMsg") or (mca_enriched or {}).get("custom_recipient_msg")
@@ -2077,6 +2157,7 @@ def unified_quote(
                 sender,
                 recipient,
                 mca_enriched if isinstance(mca_enriched, dict) else {},
+                include_near_tx_preview=near_withdraw_use_near_exec,
             )
         elif near_withdraw_intents:
             if not ((mca_enriched or {}).get("mcaAccountId") or (mca_enriched or {}).get("mca_id")):
@@ -2118,6 +2199,7 @@ def unified_quote(
         near_same_chain_mca_withdraw=near_withdraw_dir,
         near_same_chain_mca_deposit_intents=near_dep_intents,
         near_same_chain_mca_withdraw_intents=near_withdraw_intents,
+        near_withdraw_use_near_exec=near_withdraw_use_near_exec,
     )
     if mc_ctx is not None and isinstance(resp, dict) and resp.get("code") == 0:
         dat = resp.get("data")
@@ -2127,10 +2209,10 @@ def unified_quote(
     attach_mca_withdraw_intents = (
         isinstance(mca_enriched, dict)
         and _mca_flow(mca_enriched) == "withdraw"
-        and not near_withdraw_dir
         and (
             _is_cross_chain(from_chain, to_chain)
             or near_withdraw_intents
+            or (near_withdraw_dir and not near_withdraw_use_near_exec)
         )
     )
     if (
@@ -2151,6 +2233,8 @@ def unified_quote(
             recipient=str(recipient),
             mca_block=mca_enriched if isinstance(mca_enriched, dict) else None,
             oneclick_extensions=oneclick_ext,
+            skip_1click_order=bool(near_withdraw_dir and not near_withdraw_intents),
+            direct_deposit_address=str(recipient or "").strip(),
         )
         if near_withdraw_intents:
             dat = resp.get("data")
@@ -2159,6 +2243,10 @@ def unified_quote(
                 bq = dat.get("bestQuote")
                 if isinstance(bq, dict):
                     bq["mcaWithdrawViaIntents"] = True
+        elif near_withdraw_dir and not near_withdraw_use_near_exec:
+            dat = resp.get("data")
+            if isinstance(dat, dict) and dat.get("mcaWithdrawToIntents"):
+                dat["mcaWithdrawRoute"] = "near-same-chain-withdraw-relayer"
 
     return resp
 

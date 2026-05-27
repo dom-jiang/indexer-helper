@@ -372,3 +372,97 @@ def resolve_mca_withdraw_burrow_inner_amount(
     return derive_burrow_inner_amount_from_token_smallest(
         network_id, token_id, str(amount_token_smallest)
     )
+
+
+def _mca_am_contract(network_id: str) -> str:
+    oid = str(network_id or "").upper()
+    am = getattr(Cfg, "MCA_AM_CONTRACT", None)
+    if isinstance(am, str) and am.strip():
+        return am.strip()
+    return str(Cfg.NETWORK.get(oid, {}).get("AM_CONTRACT") or "").strip()
+
+
+def list_mca_bound_wallets(network_id: str, mca_account_id: str) -> List[Dict[str, Any]]:
+    """On-chain wallets bound to an MCA (`list_wallets_by_mca` on AM contract)."""
+    mca = str(mca_account_id or "").strip()
+    am = _mca_am_contract(network_id)
+    if not mca or not am:
+        return []
+    try:
+        raw = near_view_call(network_id, am, "list_wallets_by_mca", {"mca_id": mca})
+    except Exception as e:
+        logger.warning(f"list_wallets_by_mca failed for {mca}: {e}")
+        return []
+    if isinstance(raw, list):
+        return [w for w in raw if isinstance(w, dict)]
+    return []
+
+
+def bound_near_accounts_for_mca(network_id: str, mca_account_id: str) -> List[str]:
+    out: List[str] = []
+    for w in list_mca_bound_wallets(network_id, mca_account_id):
+        near_id = w.get("Near") or w.get("near")
+        if near_id is None:
+            continue
+        s = str(near_id).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def resolve_mca_withdraw_near_exec_eligible(
+    mca_block: Dict[str, Any],
+    *,
+    mca_account_id: str,
+    network_id: str,
+) -> Tuple[bool, str]:
+    """
+    True when MCA has a bound NEAR wallet and ``mca.signer`` is that account (``near_exec``).
+
+    Otherwise withdraw-to-NEAR uses ``multichain_relayer`` + ``messageToSign`` (same as Solana).
+    """
+    if not mca_block or not isinstance(mca_block, dict):
+        return False, ""
+
+    signer_obj = mca_block.get("signer") or mca_block.get("depositSigner") or {}
+    if not isinstance(signer_obj, dict):
+        return False, ""
+
+    sign_chain = str(
+        signer_obj.get("chain")
+        or signer_obj.get("signerChain")
+        or signer_obj.get("signer_chain")
+        or ""
+    ).strip().lower()
+    if sign_chain not in ("near", "near-mainnet"):
+        return False, ""
+
+    exec_near = str(
+        mca_block.get("execSignerAccountId")
+        or mca_block.get("exec_signer_near")
+        or mca_block.get("nearSignerAccountId")
+        or signer_obj.get("identityKey")
+        or signer_obj.get("identity_key")
+        or ""
+    ).strip()
+    if not exec_near:
+        return False, ""
+
+    bound = bound_near_accounts_for_mca(network_id, mca_account_id)
+    if not bound:
+        logger.info(
+            "mca withdraw near_exec skipped: no Near wallet on MCA %s (use multichain_relayer)",
+            mca_account_id,
+        )
+        return False, exec_near
+
+    for acc in bound:
+        if str(acc).strip() == exec_near:
+            return True, exec_near
+
+    logger.info(
+        "mca withdraw near_exec skipped: signer %s not in MCA Near bindings %s",
+        exec_near,
+        bound,
+    )
+    return False, exec_near
