@@ -632,9 +632,7 @@ def _parse_okx_quote(data: Dict, token_out: Dict, slippage_decimal: float) -> Op
         "gasEstimate": od.get("estimateGasFee") or od.get("estimatedGas") or "",
         "_amountOutDecimal": amount_out,
     }
-    alts = _solana_alt_pubkeys_from_provider("okx", data)
-    if alts:
-        parsed["addressLookupTableAddresses"] = alts
+    parsed["addressLookupTableAddresses"] = _solana_alt_pubkeys_from_provider("okx", data)
     return parsed
 
 
@@ -1626,9 +1624,7 @@ def _parse_titan_order(data: Dict, token_out: Dict, slippage_decimal: float) -> 
         "_amountOutDecimal": amount_out,
         "_titanRaw": data,
     }
-    alts = _solana_alt_pubkeys_from_provider("titan", data)
-    if alts:
-        parsed["addressLookupTableAddresses"] = alts
+    parsed["addressLookupTableAddresses"] = _solana_alt_pubkeys_from_provider("titan", data)
     return parsed
 
 
@@ -1688,9 +1684,7 @@ def _parse_jupiter_order(data: Dict, token_out: Dict, slippage_decimal: float) -
         "swapTransaction": data.get("swapTransaction", ""),
         "_amountOutDecimal": amount_out,
     }
-    alts = _solana_alt_pubkeys_from_provider("jupiter", data)
-    if alts:
-        parsed["addressLookupTableAddresses"] = alts
+    parsed["addressLookupTableAddresses"] = _solana_alt_pubkeys_from_provider("jupiter", data)
     return parsed
 
 

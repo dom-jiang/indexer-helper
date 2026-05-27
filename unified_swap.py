@@ -873,13 +873,11 @@ def _stage_a_aggregate_meta(aggregate_res: Dict) -> Dict[str, Any]:
             entry["amountOutReadable"] = q.get("amountOutReadable")
         if q.get("market"):
             entry["market"] = q.get("market")
-        if q.get("addressLookupTableAddresses"):
-            entry["addressLookupTableAddresses"] = q.get("addressLookupTableAddresses")
+        entry["addressLookupTableAddresses"] = q.get("addressLookupTableAddresses") or []
         stage_all.append(entry)
     if stage_all:
         meta["stageAAllQuotes"] = stage_all
-    if winner.get("addressLookupTableAddresses"):
-        meta["addressLookupTableAddresses"] = winner["addressLookupTableAddresses"]
+    meta["addressLookupTableAddresses"] = winner.get("addressLookupTableAddresses") or []
 
     stage_errors = _normalize_stage_a_errors(aggregate_res.get("errors"))
     if stage_errors:
@@ -896,8 +894,10 @@ def _merge_stage_a_meta_into_preswap(pre_swap: Dict, stage_a_meta: Optional[Dict
             pre_swap[key] = stage_a_meta[key]
     if stage_a_meta.get("market"):
         pre_swap["market"] = stage_a_meta["market"]
-    if stage_a_meta.get("addressLookupTableAddresses"):
-        pre_swap["addressLookupTableAddresses"] = stage_a_meta["addressLookupTableAddresses"]
+    if "addressLookupTableAddresses" in stage_a_meta:
+        pre_swap["addressLookupTableAddresses"] = stage_a_meta.get(
+            "addressLookupTableAddresses"
+        ) or []
 
 
 def _build_quote_provider_warnings(
@@ -3216,10 +3216,10 @@ def _preswap_cross_chain_swap(
             "amountOutTarget": str(mid_target),
             "receiver": deposit_address,
         }
-        if isinstance(stage_a_tx, dict) and stage_a_tx.get("addressLookupTableAddresses"):
-            pre_swap_resp["addressLookupTableAddresses"] = stage_a_tx[
-                "addressLookupTableAddresses"
-            ]
+        if isinstance(stage_a_tx, dict):
+            pre_swap_resp["addressLookupTableAddresses"] = (
+                stage_a_tx.get("addressLookupTableAddresses") or []
+            )
         response_data["preSwap"] = pre_swap_resp
         response_data["bridge"] = {
             "router": "nearintents",

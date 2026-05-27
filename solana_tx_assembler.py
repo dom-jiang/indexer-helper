@@ -88,7 +88,7 @@ def jupiter_alt_pubkey_strings(build_resp: Dict) -> List[str]:
 
 
 def extract_alt_pubkeys_from_versioned_tx_b64(tx_b64: str) -> List[str]:
-    """Read v0 message ALT keys from a base64 serialized VersionedTransaction."""
+    """Read v0 message ALT account keys from a base64 serialized VersionedTransaction."""
     if not _SOLDERS_AVAILABLE or not tx_b64:
         return []
     try:
@@ -96,12 +96,23 @@ def extract_alt_pubkeys_from_versioned_tx_b64(tx_b64: str) -> List[str]:
         vtx = VersionedTransaction.from_bytes(raw)
     except Exception:
         return []
-    try:
-        if vtx.message.version != 0:
-            return []
-        return [str(lut.account_key) for lut in vtx.message.address_table_lookups]
-    except Exception:
+    lookups = getattr(vtx.message, "address_table_lookups", None)
+    if not lookups:
         return []
+    return [str(lut.account_key) for lut in lookups]
+
+
+def extract_recent_blockhash_from_versioned_tx_b64(tx_b64: str) -> str:
+    """Return recent blockhash embedded in a serialized v0 VersionedTransaction."""
+    if not _SOLDERS_AVAILABLE or not tx_b64:
+        return ""
+    try:
+        raw = base64.b64decode(str(tx_b64))
+        vtx = VersionedTransaction.from_bytes(raw)
+        bh = getattr(vtx.message, "recent_blockhash", None)
+        return str(bh) if bh else ""
+    except Exception:
+        return ""
 
 
 def enrich_solana_tx_envelope(
@@ -115,8 +126,8 @@ def enrich_solana_tx_envelope(
     alts = [str(a).strip() for a in (alt_pubkeys or []) if str(a).strip()]
     if not alts and out.get("transaction"):
         alts = extract_alt_pubkeys_from_versioned_tx_b64(str(out.get("transaction")))
-    if alts:
-        out["addressLookupTableAddresses"] = alts
+    # Always emit the field so clients never branch on key presence.
+    out["addressLookupTableAddresses"] = alts
     if instructions:
         out["instructions"] = instructions
     tx_b64 = str(out.get("transaction") or "")
@@ -125,6 +136,12 @@ def enrich_solana_tx_envelope(
             out["transactionSize"] = len(base64.b64decode(tx_b64))
         except Exception:
             pass
+        if not out.get("recentBlockhash"):
+            embedded_bh = extract_recent_blockhash_from_versioned_tx_b64(tx_b64)
+            if embedded_bh:
+                out["recentBlockhash"] = embedded_bh
+    if out.get("transaction") and not out.get("txValidUntil"):
+        out["txValidUntil"] = int(time.time() * 1000) + _SOL_TX_LIFETIME_MS
     return out
 
 
@@ -392,9 +409,14 @@ def assemble_jupiter_swap_tx(
             f"Solana tx build: failed to decode Jupiter instructions: {e}"
         ) from e
 
-    alts = _fetch_address_lookup_table_accounts(
-        build_resp.get("addressLookupTableAddresses") or []
-    )
+    # Jupiter /build ships full ALT contents in addressesByLookupTableAddress
+    # (same as preswap). Do not rely on addressLookupTableAddresses alone.
+    alt_dict = build_resp.get("addressesByLookupTableAddress")
+    if alt_dict:
+        alts = _decode_alts(alt_dict)
+    else:
+        alt_pubkeys = jupiter_alt_pubkey_strings(build_resp)
+        alts = _fetch_address_lookup_table_accounts(alt_pubkeys)
 
     try:
         msg = MessageV0.try_compile(
@@ -413,12 +435,6 @@ def assemble_jupiter_swap_tx(
         ) from e
 
     alt_keys = jupiter_alt_pubkey_strings(build_resp)
-    if not alt_keys:
-        alt_keys = [
-            str(a).strip()
-            for a in (build_resp.get("addressLookupTableAddresses") or [])
-            if str(a).strip()
-        ]
     return enrich_solana_tx_envelope(
         {
             "transaction": base64.b64encode(tx_bytes).decode("ascii"),
@@ -545,20 +561,28 @@ def assemble_titan_swap_tx(
 
     prebuilt = str(titan_data.get("swapTransaction") or "").strip()
     if prebuilt:
-        bh = _fetch_latest_blockhash()
-        last_valid = bh[1] if bh else 0
-        blockhash_str = bh[0] if bh else ""
-        alt_pubkeys = list(titan_data.get("addressLookupTables") or [])
+        alt_pubkeys = [
+            str(a).strip()
+            for a in (titan_data.get("addressLookupTables") or [])
+            if str(a).strip()
+        ]
         if not alt_pubkeys:
             alt_pubkeys = extract_alt_pubkeys_from_versioned_tx_b64(prebuilt)
+        embedded_bh = extract_recent_blockhash_from_versioned_tx_b64(prebuilt)
+        envelope: Dict = {
+            "transaction": prebuilt,
+            "format": "base64",
+            "txValidUntil": int(time.time() * 1000) + _SOL_TX_LIFETIME_MS,
+        }
+        if embedded_bh:
+            envelope["recentBlockhash"] = embedded_bh
+        else:
+            bh = _fetch_latest_blockhash()
+            if bh:
+                envelope["recentBlockhash"] = bh[0]
+                envelope["lastValidBlockHeight"] = bh[1]
         return enrich_solana_tx_envelope(
-            {
-                "transaction": prebuilt,
-                "format": "base64",
-                "txValidUntil": int(time.time() * 1000) + _SOL_TX_LIFETIME_MS,
-                "lastValidBlockHeight": last_valid,
-                "recentBlockhash": blockhash_str,
-            },
+            envelope,
             alt_pubkeys=alt_pubkeys,
             instructions=titan_data.get("instructions"),
         )
