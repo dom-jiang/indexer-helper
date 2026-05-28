@@ -3516,9 +3516,11 @@ def _stage_a_build_aptos(
         return {"success": False, "error": res.get("error"), "router": router}
 
     tx = res.get("tx") or {}
-    # Frontend patches functionArguments[5] = depositAddress; ensure recipient slot.
+    # Hyperion `router_v3::swap_batch` uses arguments[5] as recipient (string).
+    # Panora `router_entry` has a different layout (arg 5 is nested byte vectors); recipient
+    # is already set via Panora API `toWalletAddress` when building (do not overwrite).
     args = tx.get("arguments")
-    if isinstance(args, list) and len(args) >= 6:
+    if router == "hyperion" and isinstance(args, list) and len(args) >= 6:
         args[5] = deposit_address
 
     return {
