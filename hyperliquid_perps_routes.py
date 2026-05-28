@@ -273,11 +273,11 @@ def _explorer_from_row(
 _ARBISCAN_TX_PREFIX = "https://arbiscan.io/tx/"
 
 
-def _explorer_for_transfer_history(
+def _explorer_for_api_response(
     row: Dict[str, Any],
     display_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """transfer-history: withdrawHash 外链固定 Arbiscan（与 depositHash 一致）。"""
+    """API 返回：withdrawHash 外链固定 Arbiscan（与 depositHash 一致）。"""
     explorer = _explorer_from_row(row, display_meta)
     if explorer.get("displayHashType") != "withdrawHash":
         return explorer
@@ -375,6 +375,33 @@ def _message_for_status(transfer_type: str, status: str, last_error: Optional[st
     return m.get(status, status)
 
 
+def _progress_for_transfer(status: str, transfer_type: str) -> int:
+    """Deposit/withdrawal 对 WAITING_BRIDGE / WAITING_LEDGER 的 progress 映射不同。"""
+    st = (status or "").strip()
+    t = (transfer_type or "").strip().lower()
+    if t == "withdrawal":
+        dmap = {
+            "SUBMITTED": 5,
+            "WAITING_SIGNATURE": 20,
+            "WAITING_LEDGER": 40,
+            "SUBMITTING_EXCHANGE": 55,
+            "WAITING_BRIDGE": 75,
+            "SUCCESS": 100,
+            "FAILED": 0,
+        }
+    else:
+        dmap = {
+            "SUBMITTED": 5,
+            "WAITING_SIGNATURE": 20,
+            "WAITING_BRIDGE": 40,
+            "SUBMITTING_PERMIT": 60,
+            "WAITING_PERMIT": 80,
+            "SUCCESS": 100,
+            "FAILED": 0,
+        }
+    return int(dmap.get(st, int(10)))
+
+
 def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
     t = row.get("transfer_type") or ""
     st = row.get("status") or ""
@@ -388,11 +415,11 @@ def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
         "destinationAddress": row.get("destination_address"),
         "status": st,
         "message": _message_for_status(t, st, row.get("last_error")),
-        "progress": int(row.get("progress") or 0),
+        "progress": _progress_for_transfer(st, t),
         "txHashes": _tx_list_from_row(row),
         "hashes": _hashes_from_row(row),
         "displayMeta": display_meta,
-        "explorer": _explorer_from_row(row, display_meta),
+        "explorer": _explorer_for_api_response(row, display_meta),
         "externalStatus": _external_from_row(row),
         "permitId": row.get("permit_id"),
         "createdAt": _dt_ms(row.get("created_at")),
@@ -742,24 +769,26 @@ def perps_hl_transfer_history():
     items = []
     for r in rows:
         display_meta = _display_meta_from_row(r)
+        t = r.get("transfer_type") or ""
+        st = r.get("status") or ""
         items.append(
             {
                 "historyId": r.get("job_id"),
                 "jobId": r.get("job_id"),
-                "transferType": r.get("transfer_type"),
+                "transferType": t,
                 "accountMode": r.get("account_mode"),
-                "status": r.get("status"),
+                "status": st,
                 "message": _message_for_status(
-                    r.get("transfer_type") or "",
-                    r.get("status") or "",
+                    t,
+                    st,
                     r.get("last_error"),
                 ),
-                "progress": int(r.get("progress") or 0),
+                "progress": _progress_for_transfer(st, t),
                 "permitId": r.get("permit_id"),
                 "txHashes": _tx_list_from_row(r),
                 "hashes": _hashes_from_row(r),
                 "displayMeta": display_meta,
-                "explorer": _explorer_for_transfer_history(r, display_meta),
+                "explorer": _explorer_for_api_response(r, display_meta),
                 "createdAt": _dt_ms(r.get("created_at")),
                 "updatedAt": _dt_ms(r.get("updated_at")),
                 "finishedAt": _dt_ms(r.get("finished_at")),
