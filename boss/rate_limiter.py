@@ -11,12 +11,14 @@ from datetime import datetime, timezone
 
 import redis
 from loguru import logger
-from cachetools import TTLCache
 
 from config import Cfg
 from boss.models import get_rate_limits
 
-_rate_limit_cache = TTLCache(maxsize=500, ttl=30)
+DEFAULT_RATE_LIMITS = {
+    "quote": {"per_minute": 60, "per_month": 300000},
+    "build": {"per_minute": 30, "per_month": 300000},
+}
 
 _redis_pool = redis.ConnectionPool(
     host=Cfg.REDIS["REDIS_HOST"],
@@ -49,40 +51,52 @@ def _seconds_until_next_month() -> int:
     return int((next_month - now).total_seconds()) + 1
 
 
-def get_cached_rate_limits(app_id: str, get_db_conn_func) -> dict:
+def resolve_rate_limits(configs: list) -> dict:
     """
-    Returns rate limit config as:
-    {
-      "quote": {"per_minute": 60, "per_month": 300000},
-      "build": {"per_minute": 30, "per_month": 300000},
+    Merge DB rows into quote/build limits. Supports endpoint_group=all as fallback.
+    """
+    result = {
+        "quote": dict(DEFAULT_RATE_LIMITS["quote"]),
+        "build": dict(DEFAULT_RATE_LIMITS["build"]),
     }
-    """
-    cache_key = f"rl:{app_id}"
-    cached = _rate_limit_cache.get(cache_key)
-    if cached:
-        return cached
+    all_limits = None
+    for cfg in configs or []:
+        group = (cfg.get("endpoint_group") or "").strip()
+        if not group:
+            continue
+        limits = {
+            "per_minute": int(cfg["per_minute"]),
+            "per_month": int(cfg["per_month"]),
+        }
+        if group == "all":
+            all_limits = limits
+        elif group in result:
+            result[group] = limits
 
+    if all_limits:
+        for group in ("quote", "build"):
+            if not any((c.get("endpoint_group") or "") == group for c in (configs or [])):
+                result[group] = dict(all_limits)
+    return result
+
+
+def rate_limits_as_list(configs: list) -> list:
+    """API-friendly list of quote/build rows (always two entries)."""
+    resolved = resolve_rate_limits(configs)
+    return [
+        {"endpoint_group": "quote", **resolved["quote"]},
+        {"endpoint_group": "build", **resolved["build"]},
+    ]
+
+
+def get_cached_rate_limits(app_id: str, get_db_conn_func) -> dict:
+    """Load rate limits from DB on every call (safe across gunicorn workers)."""
     conn = get_db_conn_func()
     try:
         configs = get_rate_limits(conn, app_id)
     finally:
         conn.close()
-
-    result = {}
-    for cfg in configs:
-        result[cfg["endpoint_group"]] = {
-            "per_minute": cfg["per_minute"],
-            "per_month": cfg["per_month"],
-        }
-
-    if not result:
-        result = {
-            "quote": {"per_minute": 60, "per_month": 300000},
-            "build": {"per_minute": 30, "per_month": 300000},
-        }
-
-    _rate_limit_cache[cache_key] = result
-    return result
+    return resolve_rate_limits(configs)
 
 
 def check_rate_limit(app_id: str, endpoint_group: str, get_db_conn_func) -> dict:
@@ -93,7 +107,10 @@ def check_rate_limit(app_id: str, endpoint_group: str, get_db_conn_func) -> dict
       {"allowed": True/False, "reason": "...", "minute_remaining": N, "month_remaining": N}
     """
     limits = get_cached_rate_limits(app_id, get_db_conn_func)
-    group_limits = limits.get(endpoint_group, limits.get("all", {"per_minute": 60, "per_month": 300000}))
+    group_limits = limits.get(
+        endpoint_group,
+        DEFAULT_RATE_LIMITS.get(endpoint_group, DEFAULT_RATE_LIMITS["quote"]),
+    )
     per_minute = group_limits["per_minute"]
     per_month = group_limits["per_month"]
 
@@ -173,6 +190,5 @@ def get_usage_stats(app_id: str) -> dict:
 
 
 def invalidate_rate_limit_cache(app_id: str):
-    """Clear cached rate limits after config change."""
-    cache_key = f"rl:{app_id}"
-    _rate_limit_cache.pop(cache_key, None)
+    """No-op placeholder kept for callers after admin updates (limits read from DB)."""
+    return None

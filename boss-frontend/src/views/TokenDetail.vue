@@ -85,10 +85,10 @@
           <template #header><strong>Usage Statistics</strong></template>
           <el-descriptions :column="1" border v-if="usage">
             <el-descriptions-item label="Quote this minute">
-              {{ usage.usage.quote_this_minute }}
+              {{ usage.usage.quote_this_minute }} / {{ effectiveLimits.quote.per_minute }}
             </el-descriptions-item>
             <el-descriptions-item label="Build this minute">
-              {{ usage.usage.build_this_minute }}
+              {{ usage.usage.build_this_minute }} / {{ effectiveLimits.build.per_minute }}
             </el-descriptions-item>
             <el-descriptions-item label="Total this month">
               {{ usage.usage.total_this_month }}
@@ -157,7 +157,22 @@ const showEdit = ref(false)
 const saving = ref(false)
 const editForm = ref({ refundAddress: '', appFee: 0 })
 
-const rateLimitList = computed(() => token.value?.rate_limits || [])
+const effectiveLimits = computed(() => {
+  const fromUsage = usage.value?.limits
+  if (fromUsage?.quote && fromUsage?.build) return fromUsage
+  const rows = token.value?.rate_limits || []
+  const quote = rows.find(r => r.endpoint_group === 'quote')
+  const build = rows.find(r => r.endpoint_group === 'build')
+  return {
+    quote: { per_minute: quote?.per_minute ?? 60, per_month: quote?.per_month ?? 300000 },
+    build: { per_minute: build?.per_minute ?? 30, per_month: build?.per_month ?? 300000 },
+  }
+})
+
+const rateLimitList = computed(() => [
+  { endpoint_group: 'quote', ...effectiveLimits.value.quote },
+  { endpoint_group: 'build', ...effectiveLimits.value.build },
+])
 const canManageKey = computed(() => auth.isUserActive && token.value?.status === 1)
 const activeJwt = computed(() => token.value?.swap_jwt || token.value?.jwt || '')
 const jwtIssueLimit = computed(() => Number(token.value?.swap_jwt_issue_limit) || 3)

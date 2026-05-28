@@ -116,10 +116,10 @@ async function openRateLimit(row) {
     const quote = configs.find(c => c.endpoint_group === 'quote') || {}
     const build = configs.find(c => c.endpoint_group === 'build') || {}
     rlForm.value = {
-      quotePerMinute: quote.per_minute || 60,
-      quotePerMonth: quote.per_month || 300000,
-      buildPerMinute: build.per_minute || 30,
-      buildPerMonth: build.per_month || 300000,
+      quotePerMinute: quote.per_minute ?? 60,
+      quotePerMonth: quote.per_month ?? 300000,
+      buildPerMinute: build.per_minute ?? 30,
+      buildPerMonth: build.per_month ?? 300000,
     }
   }
   showRateLimit.value = true
@@ -128,14 +128,20 @@ async function openRateLimit(row) {
 async function saveRateLimit() {
   saving.value = true
   try {
-    await api.put(`/admin/tokens/${editAppId.value}/rate-limits`, {
+    const res = await api.put(`/admin/tokens/${editAppId.value}/rate-limits`, {
       configs: [
         { endpointGroup: 'quote', perMinute: rlForm.value.quotePerMinute, perMonth: rlForm.value.quotePerMonth },
         { endpointGroup: 'build', perMinute: rlForm.value.buildPerMinute, perMonth: rlForm.value.buildPerMonth },
       ],
     })
+    if (res.code !== 0) {
+      ElMessage.error(res.msg || 'Failed to update rate limits')
+      return
+    }
     ElMessage.success('Rate limits updated')
     showRateLimit.value = false
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.msg || e?.message || 'Failed to update rate limits')
   } finally {
     saving.value = false
   }

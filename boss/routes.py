@@ -48,7 +48,12 @@ from boss.auth import (
     init_boss_auth,
     invalidate_api_token_cache,
 )
-from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
+from boss.rate_limiter import (
+    get_usage_stats,
+    invalidate_rate_limit_cache,
+    rate_limits_as_list,
+    resolve_rate_limits,
+)
 from boss.email_utils import send_verification_code, is_valid_email
 from config import Cfg
 
@@ -276,7 +281,7 @@ def get_token_detail(token_id):
     try:
         token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
         if token:
-            token["rate_limits"] = get_rate_limits(conn, token["app_id"])
+            token["rate_limits"] = rate_limits_as_list(get_rate_limits(conn, token["app_id"]))
     finally:
         conn.close()
     if not token:
@@ -387,9 +392,7 @@ def get_token_usage(token_id):
         return jsonify({"code": -1, "msg": "Token not found"})
 
     usage = get_usage_stats(token["app_id"])
-    limits_map = {}
-    for rl in rate_limits:
-        limits_map[rl["endpoint_group"]] = {"per_minute": rl["per_minute"], "per_month": rl["per_month"]}
+    limits_map = resolve_rate_limits(rate_limits)
 
     return jsonify({"code": 0, "msg": "success", "data": {"usage": usage, "limits": limits_map}})
 
@@ -480,7 +483,7 @@ def admin_get_rate_limits(app_id):
         limits = get_rate_limits(conn, app_id)
     finally:
         conn.close()
-    return jsonify({"code": 0, "msg": "success", "data": limits})
+    return jsonify({"code": 0, "msg": "success", "data": rate_limits_as_list(limits)})
 
 
 @boss_bp.route("/admin/tokens/<app_id>/rate-limits", methods=["PUT"])
@@ -488,18 +491,34 @@ def admin_get_rate_limits(app_id):
 def admin_set_rate_limits(app_id):
     body = request.get_json(silent=True) or {}
     configs = body.get("configs", [])
+    if not configs:
+        return jsonify({"code": -1, "msg": "configs is required"})
+
     conn = _conn()
     try:
+        token = get_api_token_by_app_id(conn, app_id)
+        if not token:
+            return jsonify({"code": -1, "msg": "API token not found for this app_id"})
+
         for cfg in configs:
-            endpoint_group = cfg.get("endpointGroup", "all")
-            per_minute = cfg.get("perMinute", 60)
-            per_month = cfg.get("perMonth", 300000)
+            endpoint_group = (cfg.get("endpointGroup") or "").strip()
+            if endpoint_group not in ("quote", "build", "all"):
+                return jsonify({"code": -1, "msg": f"Invalid endpointGroup: {endpoint_group}"})
+            try:
+                per_minute = int(cfg.get("perMinute", 60))
+                per_month = int(cfg.get("perMonth", 300000))
+            except (TypeError, ValueError):
+                return jsonify({"code": -1, "msg": "perMinute and perMonth must be integers"})
+            if per_minute < 1 or per_month < 1:
+                return jsonify({"code": -1, "msg": "perMinute and perMonth must be >= 1"})
             upsert_rate_limit(conn, app_id, endpoint_group, per_minute, per_month)
+
+        limits = get_rate_limits(conn, app_id)
     finally:
         conn.close()
 
     invalidate_rate_limit_cache(app_id)
-    return jsonify({"code": 0, "msg": "success"})
+    return jsonify({"code": 0, "msg": "success", "data": rate_limits_as_list(limits)})
 
 
 @boss_bp.route("/admin/tokens/<app_id>/usage", methods=["GET"])
@@ -512,8 +531,6 @@ def admin_get_token_usage(app_id):
         conn.close()
 
     usage = get_usage_stats(app_id)
-    limits_map = {}
-    for rl in limits:
-        limits_map[rl["endpoint_group"]] = {"per_minute": rl["per_minute"], "per_month": rl["per_month"]}
+    limits_map = resolve_rate_limits(limits)
 
     return jsonify({"code": 0, "msg": "success", "data": {"usage": usage, "limits": limits_map}})

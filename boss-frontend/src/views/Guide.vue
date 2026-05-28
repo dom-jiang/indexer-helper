@@ -49,8 +49,8 @@
     <el-card class="guide-section">
       <template #header><strong>4. Rate Limits</strong></template>
       <div class="guide-content">
-        <p>API requests are rate-limited per key on two dimensions:</p>
-        <el-table :data="rateLimits" border size="small" style="width: 100%; max-width: 500px;">
+        <p>API requests are rate-limited per key on two dimensions. Limits below are for <strong>your API key</strong> (admin may set custom values):</p>
+        <el-table :data="rateLimits" border size="small" style="width: 100%; max-width: 500px;" v-loading="limitsLoading">
           <el-table-column prop="group" label="Endpoint Group" width="150" />
           <el-table-column prop="perMinute" label="Per Minute" />
           <el-table-column prop="perMonth" label="Per Month" />
@@ -395,9 +395,48 @@ print(swap_resp.json())</pre>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import api from '../api'
 
 const baseUrl = computed(() => window.location.origin)
+const limitsLoading = ref(false)
+const rateLimits = ref([
+  { group: 'Quote', perMinute: '—', perMonth: '—' },
+  { group: 'Build', perMinute: '—', perMonth: '—' },
+])
+
+function formatLimitRow(groupLabel, row) {
+  if (!row) return { group: groupLabel, perMinute: '—', perMonth: '—' }
+  const pm = Number(row.per_minute)
+  const pmo = Number(row.per_month)
+  return {
+    group: groupLabel,
+    perMinute: `${pm} requests`,
+    perMonth: `${pmo.toLocaleString()} requests`,
+  }
+}
+
+async function loadMyRateLimits() {
+  limitsLoading.value = true
+  try {
+    const listRes = await api.get('/api-tokens')
+    if (listRes.code !== 0 || !listRes.data?.length) return
+    const tokenId = listRes.data[0].id
+    const detailRes = await api.get(`/api-tokens/${tokenId}`)
+    if (detailRes.code !== 0) return
+    const rows = detailRes.data?.rate_limits || []
+    const quote = rows.find(r => r.endpoint_group === 'quote')
+    const build = rows.find(r => r.endpoint_group === 'build')
+    rateLimits.value = [
+      formatLimitRow('Quote', quote),
+      formatLimitRow('Build', build),
+    ]
+  } finally {
+    limitsLoading.value = false
+  }
+}
+
+onMounted(loadMyRateLimits)
 
 const endpoints = [
   { method: 'POST', path: '/api/swap/quote', group: 'Quote', description: 'Unified quote — same-chain & cross-chain, returns best price from multiple providers' },
@@ -405,11 +444,6 @@ const endpoints = [
   { method: 'GET', path: '/api/swap/order-status', group: 'Quote', description: 'Cross-chain order status — query by orderId and router' },
   { method: 'POST', path: '/api/swap/report', group: 'Build', description: 'Report a user-signed swap tx so backend persists history and polls cross-chain status' },
   { method: 'GET', path: '/api/swap/history', group: 'Quote', description: "Query a sender's swap history (paginated, newest first)" },
-]
-
-const rateLimits = [
-  { group: 'Quote', perMinute: '60 requests', perMonth: '300,000 requests' },
-  { group: 'Build', perMinute: '30 requests', perMonth: '300,000 requests' },
 ]
 
 const paramDocs = [
