@@ -128,15 +128,39 @@ def create_user(conn, email: str, password: str, role: str = "user") -> dict:
         cursor.close()
 
 
-def authenticate_user(conn, email: str, password: str) -> dict | None:
+def get_user_by_email(conn, email: str) -> dict | None:
     cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute("SELECT * FROM boss_user WHERE email = %s AND status = 1", (email,))
+    cursor.execute("SELECT * FROM boss_user WHERE email = %s", ((email or "").strip().lower(),))
     user = cursor.fetchone()
     cursor.close()
-    if user and _check_password(password, user["password_hash"]):
-        user.pop("password_hash", None)
-        return user
-    return None
+    return user
+
+
+def authenticate_user(conn, email: str, password: str) -> dict | None:
+    """Returns user dict on success, None if invalid credentials or account disabled."""
+    user = get_user_by_email(conn, email)
+    if not user or not _check_password(password, user["password_hash"]):
+        return None
+    if int(user.get("status") or 0) != 1:
+        return None
+    user.pop("password_hash", None)
+    return user
+
+
+def login_boss_user(conn, email: str, password: str) -> tuple[dict | None, str | None]:
+    """
+    Returns (user, error_reason).
+    error_reason: 'invalid' | 'disabled' | None
+    """
+    user = get_user_by_email(conn, email)
+    if not user:
+        return None, "invalid"
+    if not _check_password(password, user["password_hash"]):
+        return None, "invalid"
+    if int(user.get("status") or 0) != 1:
+        return None, "disabled"
+    user.pop("password_hash", None)
+    return user, None
 
 
 def get_user_by_id(conn, user_id: int) -> dict | None:
@@ -163,7 +187,14 @@ def list_users(conn, page: int = 1, page_size: int = 20) -> dict:
 
 def update_user(conn, user_id: int, **kwargs) -> bool:
     allowed = {"role", "status"}
-    fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    fields = {}
+    for k in allowed:
+        if k not in kwargs:
+            continue
+        if k == "status":
+            fields[k] = int(kwargs[k])
+        elif kwargs[k] is not None:
+            fields[k] = kwargs[k]
     if not fields:
         return False
     set_clause = ", ".join(f"{k} = %s" for k in fields)

@@ -30,7 +30,7 @@ from loguru import logger
 
 import redis as redis_lib
 from boss.models import (
-    create_user, authenticate_user, get_user_by_id,
+    create_user, authenticate_user, login_boss_user, get_user_by_id,
     list_users, update_user,
     create_api_token, list_api_tokens_by_user, list_all_api_tokens,
     get_api_token_detail, update_api_token, reset_api_key,
@@ -183,10 +183,12 @@ def login():
 
     conn = _conn()
     try:
-        user = authenticate_user(conn, email, password)
+        user, err = login_boss_user(conn, email, password)
     finally:
         conn.close()
 
+    if err == "disabled":
+        return jsonify({"code": -1, "msg": "Account is disabled"})
     if not user:
         return jsonify({"code": -1, "msg": "Invalid email or password"})
 
@@ -378,12 +380,28 @@ def admin_list_users():
 @boss_admin_required(BOSS_SESSION_SECRET)
 def admin_update_user(user_id):
     body = request.get_json(silent=True) or {}
+    updates = {}
+    if "role" in body and body.get("role") is not None:
+        updates["role"] = body.get("role")
+    if "status" in body:
+        try:
+            updates["status"] = int(body["status"])
+        except (TypeError, ValueError):
+            return jsonify({"code": -1, "msg": "status must be 0 or 1"})
+    if not updates:
+        return jsonify({"code": -1, "msg": "No fields to update"})
+
     conn = _conn()
     try:
-        update_user(conn, user_id, role=body.get("role"), status=body.get("status"))
+        ok = update_user(conn, user_id, **updates)
+        if not ok:
+            return jsonify({"code": -1, "msg": "Update failed"})
+        user = get_user_by_id(conn, user_id)
     finally:
         conn.close()
-    return jsonify({"code": 0, "msg": "success"})
+    if not user:
+        return jsonify({"code": -1, "msg": "User not found"})
+    return jsonify({"code": 0, "msg": "success", "data": user})
 
 
 # ── Admin: Token management ──────────────────────────────

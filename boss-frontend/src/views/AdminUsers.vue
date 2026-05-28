@@ -11,7 +11,7 @@
       </el-table-column>
       <el-table-column prop="status" label="Status" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">{{ row.status === 1 ? 'Active' : 'Disabled' }}</el-tag>
+          <el-tag :type="userStatusActive(row.status) ? 'success' : 'danger'" size="small">{{ userStatusActive(row.status) ? 'Active' : 'Disabled' }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="created_at" label="Created" min-width="160" />
@@ -20,8 +20,8 @@
           <el-button text size="small" @click="toggleRole(row)">
             {{ row.role === 'admin' ? 'Set User' : 'Set Admin' }}
           </el-button>
-          <el-button text size="small" :type="row.status === 1 ? 'danger' : 'success'" @click="toggleStatus(row)">
-            {{ row.status === 1 ? 'Disable' : 'Enable' }}
+          <el-button text size="small" :type="userStatusActive(row.status) ? 'danger' : 'success'" @click="toggleStatus(row)">
+            {{ userStatusActive(row.status) ? 'Disable' : 'Enable' }}
           </el-button>
         </template>
       </el-table-column>
@@ -49,6 +49,10 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 
+function userStatusActive(status) {
+  return Number(status) === 1
+}
+
 async function fetchUsers() {
   loading.value = true
   try {
@@ -70,8 +74,12 @@ async function toggleRole(row) {
 }
 
 async function toggleStatus(row) {
-  const newStatus = row.status === 1 ? 0 : 1
-  await api.put(`/admin/users/${row.id}`, { status: newStatus })
+  const newStatus = userStatusActive(row.status) ? 0 : 1
+  const res = await api.put(`/admin/users/${row.id}`, { status: newStatus })
+  if (res.code !== 0) {
+    ElMessage.error(res.msg || 'Update failed')
+    return
+  }
   ElMessage.success(newStatus === 1 ? 'Enabled' : 'Disabled')
   fetchUsers()
 }
