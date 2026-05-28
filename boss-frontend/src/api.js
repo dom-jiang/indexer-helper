@@ -16,7 +16,7 @@ api.interceptors.request.use(config => {
 api.interceptors.response.use(
   res => res.data,
   err => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 || err.response?.status === 403) {
       localStorage.removeItem('boss_token')
       localStorage.removeItem('boss_user')
       window.location.hash = '#/login'

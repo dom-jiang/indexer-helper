@@ -2922,7 +2922,7 @@ CREATE TABLE IF NOT EXISTS swap_transactions (
     estimated_out     VARCHAR(64)  DEFAULT NULL,
     actual_out        VARCHAR(64)  DEFAULT NULL,
     router            VARCHAR(32)  DEFAULT NULL,
-    tx_type           VARCHAR(16)  DEFAULT 'same-chain',
+    tx_type           VARCHAR(32)  DEFAULT 'same-chain',
     is_cross_chain    TINYINT(1)   DEFAULT 0,
     status            VARCHAR(32)  DEFAULT 'PENDING',
     to_hash           VARCHAR(128) DEFAULT NULL,

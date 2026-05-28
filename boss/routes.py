@@ -38,7 +38,12 @@ from boss.models import (
     init_boss_tables,
 )
 from boss.auth import (
-    generate_jwt, generate_boss_session_token, boss_login_required, boss_admin_required,
+    generate_jwt,
+    generate_boss_session_token,
+    boss_login_required,
+    boss_admin_required,
+    init_boss_auth,
+    invalidate_api_token_cache,
 )
 from boss.rate_limiter import get_usage_stats, invalidate_rate_limit_cache
 from boss.email_utils import send_verification_code, is_valid_email
@@ -67,6 +72,7 @@ def init_boss_routes(app, get_db_conn_func):
     """Register boss blueprint and initialize tables."""
     global _get_db_conn
     _get_db_conn = get_db_conn_func
+    init_boss_auth(get_db_conn_func)
     app.register_blueprint(boss_bp)
 
     try:
@@ -80,6 +86,14 @@ def init_boss_routes(app, get_db_conn_func):
 
 def _conn():
     return _get_db_conn()
+
+
+def _reject_disabled_api_token(token: dict | None):
+    if not token:
+        return jsonify({"code": -1, "msg": "Token not found"}), 404
+    if int(token.get("status") or 0) != 1:
+        return jsonify({"code": -1, "msg": "API key is disabled"}), 403
+    return None
 
 
 # ── Public: Config / Email verification / Register / Login ─
@@ -190,6 +204,8 @@ def me():
         conn.close()
     if not user:
         return jsonify({"code": -1, "msg": "User not found"})
+    if int(user.get("status") or 0) != 1:
+        return jsonify({"code": -1, "msg": "Account is disabled"}), 403
     return jsonify({"code": 0, "msg": "success", "data": user})
 
 
@@ -262,8 +278,9 @@ def update_my_token(token_id):
     conn = _conn()
     try:
         token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
-        if not token:
-            return jsonify({"code": -1, "msg": "Token not found"})
+        blocked = _reject_disabled_api_token(token)
+        if blocked:
+            return blocked
 
         updates = {}
         if "refundAddress" in body:
@@ -290,8 +307,9 @@ def reset_token_key(token_id):
     conn = _conn()
     try:
         token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
-        if not token:
-            return jsonify({"code": -1, "msg": "Token not found"})
+        blocked = _reject_disabled_api_token(token)
+        if blocked:
+            return blocked
         reset_api_key(conn, token_id)
     finally:
         conn.close()
@@ -311,7 +329,9 @@ def generate_api_jwt(token_id):
         conn.close()
 
     if not token:
-        return jsonify({"code": -1, "msg": "Token not found"})
+        return jsonify({"code": -1, "msg": "Token not found"}), 404
+    if int(token.get("status") or 0) != 1:
+        return jsonify({"code": -1, "msg": "API key is disabled"}), 403
 
     jwt_token = generate_jwt(token["app_id"], token["app_secret"], expires_in=int(expires_in))
     return jsonify({"code": 0, "msg": "success", "data": {"jwt": jwt_token, "expiresIn": expires_in}})
@@ -387,7 +407,15 @@ def admin_update_token(token_id):
     body = request.get_json(silent=True) or {}
     conn = _conn()
     try:
+        before = get_api_token_detail(conn, token_id)
         update_api_token(conn, token_id, app_name=body.get("appName"), status=body.get("status"))
+        after = get_api_token_detail(conn, token_id)
+        app_id = (after or before or {}).get("app_id")
+        if app_id and (
+            body.get("status") is not None
+            or (before and after and before.get("status") != after.get("status"))
+        ):
+            invalidate_api_token_cache(str(app_id))
     finally:
         conn.close()
     return jsonify({"code": 0, "msg": "success"})

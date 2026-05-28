@@ -1,8 +1,16 @@
 <template>
   <div>
+    <el-alert
+      v-if="!auth.isUserActive"
+      type="error"
+      :closable="false"
+      title="Your account has been disabled. You cannot create API keys or generate JWT tokens."
+      style="margin-bottom: 16px"
+    />
+
     <div class="page-header">
       <h2>My API Keys</h2>
-      <el-button type="primary" @click="showCreate = true">+ New Key</el-button>
+      <el-button type="primary" :disabled="!auth.isUserActive" @click="showCreate = true">+ New Key</el-button>
     </div>
 
     <el-table :data="tokens" v-loading="loading" stripe style="width: 100%; margin-top: 16px">
@@ -21,19 +29,25 @@
       </el-table-column>
       <el-table-column label="Actions" width="180">
         <template #default="{ row }">
-          <el-button text type="primary" size="small" @click="handleGenerateJwt(row)">Get JWT</el-button>
+          <el-button
+            text
+            type="primary"
+            size="small"
+            :disabled="!auth.isUserActive || row.status !== 1"
+            @click="handleGenerateJwt(row)"
+          >Get JWT</el-button>
           <el-button text type="primary" size="small" @click="$router.push(`/tokens/${row.id}`)">Detail</el-button>
         </template>
       </el-table-column>
     </el-table>
 
     <el-dialog v-model="showCreate" title="Create New API Key" width="480px">
-      <el-form @submit.prevent="createToken" label-position="top">
+      <el-form ref="createFormRef" :model="newForm" :rules="createRules" @submit.prevent="createToken" label-position="top">
         <el-form-item label="App Name">
           <el-input v-model="newForm.appName" placeholder="My Application" />
         </el-form-item>
-        <el-form-item label="Refund Address">
-          <el-input v-model="newForm.refundAddress" placeholder="0x... (wallet address for refunds)" />
+        <el-form-item label="Recipient" prop="refundAddress">
+          <el-input v-model="newForm.refundAddress" placeholder="0x... (recipient wallet address)" />
         </el-form-item>
         <el-form-item label="App Fee (%)">
           <el-input-number
@@ -71,6 +85,16 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
+import { useAuthStore } from '../store'
+
+const auth = useAuthStore()
+const createFormRef = ref(null)
+const createRules = {
+  refundAddress: [
+    { required: true, message: 'Recipient is required', trigger: 'blur' },
+    { min: 1, message: 'Recipient is required', trigger: 'blur' },
+  ],
+}
 
 const tokens = ref([])
 const loading = ref(false)
@@ -92,6 +116,12 @@ async function fetchTokens() {
 }
 
 async function createToken() {
+  if (!auth.isUserActive) {
+    ElMessage.error('Your account is disabled')
+    return
+  }
+  const valid = await createFormRef.value?.validate().catch(() => false)
+  if (!valid) return
   if (newForm.value.appFee !== 0 && (newForm.value.appFee < 1 || newForm.value.appFee > 10)) {
     ElMessage.warning('App Fee must be between 1% and 10%, or 0 to disable')
     return
@@ -122,6 +152,14 @@ async function createToken() {
 }
 
 async function handleGenerateJwt(row) {
+  if (!auth.isUserActive) {
+    ElMessage.error('Your account is disabled')
+    return
+  }
+  if (row.status !== 1) {
+    ElMessage.error('This API key is disabled')
+    return
+  }
   try {
     const res = await api.post(`/api-tokens/${row.id}/generate-jwt`, { expiresIn: 86400 * 30 })
     if (res.code === 0) {

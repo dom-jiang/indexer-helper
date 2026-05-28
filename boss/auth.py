@@ -22,6 +22,30 @@ from boss.models import get_api_token_by_app_id, authenticate_user, get_user_by_
 
 _token_cache = TTLCache(maxsize=1000, ttl=60)
 
+_boss_get_db_conn = None
+
+
+def init_boss_auth(get_db_conn_func):
+    """Register DB accessor for session guards (active user checks)."""
+    global _boss_get_db_conn
+    _boss_get_db_conn = get_db_conn_func
+
+
+def invalidate_api_token_cache(app_id: str) -> None:
+    if app_id:
+        _token_cache.pop(f"token:{app_id}", None)
+
+
+def _boss_user_is_active(user_id: int) -> bool:
+    if not _boss_get_db_conn:
+        return True
+    conn = _boss_get_db_conn()
+    try:
+        user = get_user_by_id(conn, user_id)
+    finally:
+        conn.close()
+    return bool(user and int(user.get("status") or 0) == 1)
+
 
 def generate_jwt(app_id: str, app_secret: str, expires_in: int = 86400) -> str:
     now = int(time.time())
@@ -118,6 +142,8 @@ def boss_login_required(secret: str):
             payload = decode_boss_session_token(token_str, secret)
             if not payload:
                 return jsonify({"code": 401, "msg": "Invalid or expired token"}), 401
+            if not _boss_user_is_active(int(payload["user_id"])):
+                return jsonify({"code": -1, "msg": "Account is disabled"}), 403
             g.boss_user_id = payload["user_id"]
             g.boss_role = payload.get("role", "user")
             return f(*args, **kwargs)
@@ -139,6 +165,8 @@ def boss_admin_required(secret: str):
                 return jsonify({"code": 401, "msg": "Invalid or expired token"}), 401
             if payload.get("role") != "admin":
                 return jsonify({"code": 403, "msg": "Admin access required"}), 403
+            if not _boss_user_is_active(int(payload["user_id"])):
+                return jsonify({"code": -1, "msg": "Account is disabled"}), 403
             g.boss_user_id = payload["user_id"]
             g.boss_role = payload.get("role", "user")
             return f(*args, **kwargs)

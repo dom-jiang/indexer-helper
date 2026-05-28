@@ -9,7 +9,7 @@
           <el-descriptions :column="1" border>
             <el-descriptions-item label="App Name">{{ token.app_name || '—' }}</el-descriptions-item>
             <el-descriptions-item label="App ID"><span class="mono">{{ token.app_id }}</span></el-descriptions-item>
-            <el-descriptions-item label="Refund Address">
+            <el-descriptions-item label="Recipient">
               <span class="mono">{{ token.refund_address || '—' }}</span>
             </el-descriptions-item>
             <el-descriptions-item label="App Fee">
@@ -20,12 +20,26 @@
             </el-descriptions-item>
             <el-descriptions-item label="Created">{{ token.created_at }}</el-descriptions-item>
           </el-descriptions>
+          <el-alert
+            v-if="!auth.isUserActive"
+            type="error"
+            :closable="false"
+            title="Your account has been disabled."
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-else-if="token.status !== 1"
+            type="warning"
+            :closable="false"
+            title="This API key is disabled. Swap API JWTs for this key will not work."
+            style="margin-bottom: 12px"
+          />
           <div style="margin-top: 16px; display: flex; gap: 8px">
-            <el-button type="primary" @click="generateJwt">Generate JWT Token</el-button>
-            <el-button @click="openEditDialog">Edit Settings</el-button>
+            <el-button type="primary" :disabled="!canManageKey" @click="generateJwt">Generate JWT Token</el-button>
+            <el-button :disabled="!canManageKey" @click="openEditDialog">Edit Settings</el-button>
             <el-popconfirm title="This will invalidate all existing JWT tokens for this key. Continue?" @confirm="resetSecret">
               <template #reference>
-                <el-button type="warning">Reset Secret</el-button>
+                <el-button type="warning" :disabled="!canManageKey">Reset Secret</el-button>
               </template>
             </el-popconfirm>
           </div>
@@ -52,9 +66,9 @@
     </el-row>
 
     <el-dialog v-model="showEdit" title="Edit Settings" width="480px">
-      <el-form label-position="top">
-        <el-form-item label="Refund Address">
-          <el-input v-model="editForm.refundAddress" placeholder="0x... (wallet address for refunds)" />
+      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
+        <el-form-item label="Recipient" prop="refundAddress">
+          <el-input v-model="editForm.refundAddress" placeholder="0x... (recipient wallet address)" />
         </el-form-item>
         <el-form-item label="App Fee (%)">
           <el-input-number
@@ -90,13 +104,22 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../api'
+import { useAuthStore } from '../store'
 
 const route = useRoute()
-const router = useRouter()
+const auth = useAuthStore()
 const tokenId = computed(() => route.params.id)
+
+const editFormRef = ref(null)
+const editRules = {
+  refundAddress: [
+    { required: true, message: 'Recipient is required', trigger: 'blur' },
+    { min: 1, message: 'Recipient is required', trigger: 'blur' },
+  ],
+}
 
 const token = ref(null)
 const usage = ref(null)
@@ -108,6 +131,9 @@ const saving = ref(false)
 const editForm = ref({ refundAddress: '', appFee: 0 })
 
 const rateLimitList = computed(() => token.value?.rate_limits || [])
+const canManageKey = computed(
+  () => auth.isUserActive && token.value?.status === 1
+)
 
 async function fetchDetail() {
   loading.value = true
@@ -132,6 +158,12 @@ function openEditDialog() {
 }
 
 async function saveSettings() {
+  if (!canManageKey.value) {
+    ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
+    return
+  }
+  const valid = await editFormRef.value?.validate().catch(() => false)
+  if (!valid) return
   const fee = editForm.value.appFee
   if (fee !== 0 && (fee < 1 || fee > 10)) {
     ElMessage.warning('App Fee must be between 1% and 10%, or 0 to disable')
@@ -158,6 +190,10 @@ async function saveSettings() {
 }
 
 async function resetSecret() {
+  if (!canManageKey.value) {
+    ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
+    return
+  }
   try {
     const res = await api.post(`/api-tokens/${tokenId.value}/reset-key`)
     if (res.code === 0) {
@@ -170,6 +206,10 @@ async function resetSecret() {
 }
 
 async function generateJwt() {
+  if (!canManageKey.value) {
+    ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
+    return
+  }
   try {
     const res = await api.post(`/api-tokens/${tokenId.value}/generate-jwt`, { expiresIn: 86400 * 30 })
     if (res.code === 0) {

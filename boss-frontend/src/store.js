@@ -7,6 +7,12 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
+  const isUserActive = computed(() => user.value?.status === 1 || user.value?.status === undefined)
+
+  function setUser(userData) {
+    user.value = userData
+    localStorage.setItem('boss_user', JSON.stringify(userData))
+  }
 
   function setAuth(userData, tokenStr) {
     user.value = userData
@@ -22,5 +28,5 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('boss_user')
   }
 
-  return { token, user, isLoggedIn, isAdmin, setAuth, logout }
+  return { token, user, isLoggedIn, isAdmin, isUserActive, setAuth, setUser, logout }
 })

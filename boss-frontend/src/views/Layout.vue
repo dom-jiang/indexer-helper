@@ -39,10 +39,12 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { HomeFilled, User, Key, Document } from '@element-plus/icons-vue'
 import { useAuthStore } from '../store'
+import api from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,10 +52,23 @@ const auth = useAuthStore()
 
 const activeMenu = computed(() => route.path)
 
+async function refreshMe() {
+  try {
+    const res = await api.get('/me')
+    if (res.code === 0 && res.data) {
+      auth.setUser(res.data)
+    }
+  } catch {
+    /* 401/403 handled by api interceptor */
+  }
+}
+
 function handleLogout() {
   auth.logout()
   router.push('/login')
 }
+
+onMounted(refreshMe)
 </script>
 
 <style scoped>
