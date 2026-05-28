@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS `boss_api_token` (
   `app_key` VARCHAR(128) NOT NULL,
   `app_secret` VARCHAR(128) NOT NULL COMMENT 'HS256 signing secret for JWT',
   `refund_address` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Refund wallet address for swap transactions',
-  `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (1.00 ~ 10.00)',
+  `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (0.00 ~ 10.00)',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '1=active 0=disabled',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS `boss_rate_limit_config` (
 
 _MIGRATE_SQL = [
     "ALTER TABLE `boss_api_token` ADD COLUMN `refund_address` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Refund wallet address for swap transactions' AFTER `app_secret`",
-    "ALTER TABLE `boss_api_token` ADD COLUMN `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (1.00 ~ 10.00)' AFTER `refund_address`",
+    "ALTER TABLE `boss_api_token` ADD COLUMN `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (0.00 ~ 10.00)' AFTER `refund_address`",
     "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt` TEXT NULL COMMENT 'Active API JWT (single per key)' AFTER `app_fee`",
     "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt_issued_at` DATETIME NULL COMMENT 'When swap_jwt was last issued' AFTER `swap_jwt`",
     "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt_issue_count` INT NOT NULL DEFAULT 0 COMMENT 'Total JWT issues (create + regenerate), max 3' AFTER `swap_jwt_issued_at`",

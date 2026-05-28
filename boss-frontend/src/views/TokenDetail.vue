@@ -115,12 +115,12 @@
             v-model="editForm.appFee"
             :min="0"
             :max="10"
-            :step="0.5"
+            :step="0.01"
             :precision="2"
             controls-position="right"
             style="width: 100%"
           />
-          <div class="form-tip">Set between 1% ~ 10%. Leave 0 to disable.</div>
+          <div class="form-tip">Set between 0% ~ 10%. Use 0 to disable.</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -203,9 +203,9 @@ async function saveSettings() {
   }
   const valid = await editFormRef.value?.validate().catch(() => false)
   if (!valid) return
-  const fee = editForm.value.appFee
-  if (fee !== 0 && (fee < 1 || fee > 10)) {
-    ElMessage.warning('App Fee must be between 1% and 10%, or 0 to disable')
+  const fee = Number(editForm.value.appFee)
+  if (Number.isNaN(fee) || fee < 0 || fee > 10) {
+    ElMessage.warning('App Fee must be between 0% and 10%')
     return
   }
   saving.value = true

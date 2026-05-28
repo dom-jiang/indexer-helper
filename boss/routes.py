@@ -232,8 +232,6 @@ def create_token():
             return jsonify({"code": -1, "msg": "appFee must be a number"})
         if app_fee < 0 or app_fee > 10:
             return jsonify({"code": -1, "msg": "appFee must be between 0 and 10 (percent)"})
-        if app_fee != 0 and (app_fee < 1 or app_fee > 10):
-            return jsonify({"code": -1, "msg": "appFee must be between 1 and 10 (percent), or 0 to disable"})
 
     conn = _conn()
     try:
@@ -306,8 +304,8 @@ def update_my_token(token_id):
                 fee = float(body["appFee"])
             except (ValueError, TypeError):
                 return jsonify({"code": -1, "msg": "appFee must be a number"})
-            if fee != 0 and (fee < 1 or fee > 10):
-                return jsonify({"code": -1, "msg": "appFee must be between 1 and 10 (percent), or 0 to disable"})
+            if fee < 0 or fee > 10:
+                return jsonify({"code": -1, "msg": "appFee must be between 0 and 10 (percent)"})
             updates["app_fee"] = fee
 
         if updates:

@@ -186,7 +186,7 @@ def enrich_mca_deposit_block(mca: Dict[str, Any], network_id: str) -> Tuple[Dict
             try:
                 fee_int = int(fee_val)
             except (TypeError, ValueError):
-                fee_int = 5
+                fee_int = 2
             out["appFees"] = [{"recipient": recipient_cfg, "fee": fee_int}]
 
     referral_default = getattr(Cfg, "MCA_DEFAULT_REFERRAL", "") or ""
