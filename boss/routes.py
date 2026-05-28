@@ -33,12 +33,15 @@ from boss.models import (
     create_user, authenticate_user, login_boss_user, get_user_by_id,
     list_users, update_user,
     create_api_token, list_api_tokens_by_user, list_all_api_tokens,
-    get_api_token_detail, update_api_token, reset_api_key,
+    get_api_token_detail, get_user_api_token, user_has_api_token,
+    update_api_token, reset_api_key, issue_swap_jwt, enrich_token_jwt_meta,
+    swap_jwt_issue_count, MAX_SWAP_JWT_ISSUE_COUNT,
     get_rate_limits, upsert_rate_limit, get_api_token_by_app_id,
     init_boss_tables,
 )
 from boss.auth import (
     generate_jwt,
+    generate_swap_jwt,
     generate_boss_session_token,
     boss_login_required,
     boss_admin_required,
@@ -234,16 +237,23 @@ def create_token():
 
     conn = _conn()
     try:
+        if user_has_api_token(conn, g.boss_user_id):
+            return jsonify({
+                "code": -1,
+                "msg": "Each account may only have one API key. Open your existing key to view or regenerate the JWT.",
+            })
         token = create_api_token(conn, g.boss_user_id, app_name, refund_address, app_fee)
+        jwt_token = generate_swap_jwt(token["app_id"], token["app_secret"])
+        ok, err = issue_swap_jwt(conn, token["id"], jwt_token)
+        if not ok:
+            return jsonify({"code": -1, "msg": err or "Failed to store JWT"})
+        invalidate_api_token_cache(token["app_id"])
+        refreshed = get_api_token_detail(conn, token["id"], user_id=g.boss_user_id)
+        out = enrich_token_jwt_meta(refreshed)
     finally:
         conn.close()
 
-    expires_in = 86400 * 30
-    jwt_token = generate_jwt(token["app_id"], token["app_secret"], expires_in=expires_in)
-    token.pop("app_secret", None)
-    token["jwt"] = jwt_token
-    token["jwt_expires_in"] = expires_in
-    return jsonify({"code": 0, "msg": "success", "data": token})
+    return jsonify({"code": 0, "msg": "success", "data": out})
 
 
 @boss_bp.route("/api-tokens", methods=["GET"])
@@ -251,7 +261,11 @@ def create_token():
 def list_my_tokens():
     conn = _conn()
     try:
-        tokens = list_api_tokens_by_user(conn, g.boss_user_id)
+        tokens = [
+            enrich_token_jwt_meta(t)
+            for t in list_api_tokens_by_user(conn, g.boss_user_id)
+        ]
+        tokens = [t for t in tokens if t]
     finally:
         conn.close()
     return jsonify({"code": 0, "msg": "success", "data": tokens})
@@ -270,9 +284,7 @@ def get_token_detail(token_id):
     if not token:
         return jsonify({"code": -1, "msg": "Token not found"})
 
-    token.pop("app_secret", None)
-    token.pop("app_key", None)
-    return jsonify({"code": 0, "msg": "success", "data": token})
+    return jsonify({"code": 0, "msg": "success", "data": enrich_token_jwt_meta(token)})
 
 
 @boss_bp.route("/api-tokens/<int:token_id>", methods=["PUT"])
@@ -315,30 +327,51 @@ def reset_token_key(token_id):
         if blocked:
             return blocked
         reset_api_key(conn, token_id)
+        invalidate_api_token_cache(token.get("app_id"))
     finally:
         conn.close()
-    return jsonify({"code": 0, "msg": "success"})
+    return jsonify({
+        "code": 0,
+        "msg": "success",
+        "data": {"note": "Secret rotated and stored JWT cleared. Regenerate JWT to use Swap API again."},
+    })
 
 
 @boss_bp.route("/api-tokens/<int:token_id>/generate-jwt", methods=["POST"])
 @boss_login_required(BOSS_SESSION_SECRET)
 def generate_api_jwt(token_id):
-    body = request.get_json(silent=True) or {}
-    expires_in = body.get("expiresIn", 86400 * 30)
-
     conn = _conn()
     try:
         token = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
+        if not token:
+            return jsonify({"code": -1, "msg": "Token not found"}), 404
+        blocked = _reject_disabled_api_token(token)
+        if blocked:
+            return blocked
+
+        if swap_jwt_issue_count(token) >= MAX_SWAP_JWT_ISSUE_COUNT:
+            return jsonify({
+                "code": -1,
+                "msg": (
+                    f"JWT can only be issued {MAX_SWAP_JWT_ISSUE_COUNT} times for this API key "
+                    "(including the initial issue on key creation)"
+                ),
+            })
+
+        jwt_token = generate_swap_jwt(token["app_id"], token["app_secret"])
+        ok, err = issue_swap_jwt(conn, token["id"], jwt_token)
+        if not ok:
+            return jsonify({"code": -1, "msg": err or "Failed to store JWT"})
+        invalidate_api_token_cache(token["app_id"])
+        refreshed = get_api_token_detail(conn, token_id, user_id=g.boss_user_id)
     finally:
         conn.close()
 
-    if not token:
-        return jsonify({"code": -1, "msg": "Token not found"}), 404
-    if int(token.get("status") or 0) != 1:
-        return jsonify({"code": -1, "msg": "API key is disabled"}), 403
-
-    jwt_token = generate_jwt(token["app_id"], token["app_secret"], expires_in=int(expires_in))
-    return jsonify({"code": 0, "msg": "success", "data": {"jwt": jwt_token, "expiresIn": expires_in}})
+    return jsonify({
+        "code": 0,
+        "msg": "success",
+        "data": enrich_token_jwt_meta(refreshed),
+    })
 
 
 @boss_bp.route("/api-tokens/<int:token_id>/usage", methods=["GET"])

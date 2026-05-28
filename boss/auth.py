@@ -9,6 +9,7 @@ Flow:
   5. Middleware validates JWT signature and checks token status
 """
 
+import secrets
 import time
 from functools import wraps
 from typing import Optional
@@ -48,6 +49,7 @@ def _boss_user_is_active(user_id: int) -> bool:
 
 
 def generate_jwt(app_id: str, app_secret: str, expires_in: int = 86400) -> str:
+    """Legacy helper with expiry (Boss session / old callers). Prefer generate_swap_jwt."""
     now = int(time.time())
     payload = {
         "sub": app_id,
@@ -57,11 +59,34 @@ def generate_jwt(app_id: str, app_secret: str, expires_in: int = 86400) -> str:
     return jwt.encode(payload, app_secret, algorithm="HS256")
 
 
+def generate_swap_jwt(app_id: str, app_secret: str) -> str:
+    """API JWT — no expiry; validity is DB-backed (single active token per API key)."""
+    now = int(time.time())
+    payload = {
+        "sub": app_id,
+        "iat": now,
+        "jti": secrets.token_hex(16),
+    }
+    return jwt.encode(payload, app_secret, algorithm="HS256")
+
+
 def decode_jwt(token_str: str, app_secret: str) -> dict | None:
     try:
         return jwt.decode(token_str, app_secret, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
         return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+def decode_swap_jwt(token_str: str, app_secret: str) -> dict | None:
+    try:
+        return jwt.decode(
+            token_str,
+            app_secret,
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
     except jwt.InvalidTokenError:
         return None
 
@@ -102,8 +127,12 @@ def validate_swap_jwt(get_db_conn_func) -> Optional[dict]:
     if not api_token or api_token.get("status") != 1:
         return None
 
-    payload = decode_jwt(token_str, api_token["app_secret"])
+    payload = decode_swap_jwt(token_str, api_token["app_secret"])
     if not payload:
+        return None
+
+    stored = str(api_token.get("swap_jwt") or "").strip()
+    if not stored or token_str != stored:
         return None
 
     g.app_id = app_id

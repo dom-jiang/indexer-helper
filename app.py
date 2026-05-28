@@ -2737,6 +2737,21 @@ def api_swap_mca_withdraw_jobs():
         return jsonify({"code": -1, "msg": str(e)})
 
 
+def _order_status_with_top_level_status(data):
+    """Copy 1Click status to data.status when it only exists under intentsStatus (e.g. mca_relayer)."""
+    if not isinstance(data, dict):
+        return data if data is not None else {}
+    out = dict(data)
+    intents = out.get("intentsStatus")
+    if isinstance(intents, dict):
+        st = intents.get("status")
+        if st is None:
+            st = intents.get("state")
+        if st is not None:
+            out["status"] = st
+    return out
+
+
 @app.route('/api/swap/order-status', methods=['GET'])
 def api_swap_order_status():
     """
@@ -2810,31 +2825,28 @@ def api_swap_order_status():
                 else:
                     intents_err = ns.get("error", "NearIntents status query failed")
 
-            return jsonify(
+            payload = _order_status_with_top_level_status(
                 {
-                    "code": 0,
-                    "msg": "success",
-                    "data": {
-                        "orderId": bid,
-                        "batchId": bid,
-                        "relayer": {
-                            "pending": bool(s.get("pending")),
-                            "complete": bool(s.get("complete")),
-                            "success": bool(s.get("success")),
-                            "txHashes": s.get("tx_hashes") or [],
-                            "error": s.get("error") or "",
-                            "rowCount": len(rows),
-                        },
-                        "intentsDepositAddress": deposit_addr or None,
-                        "intentsStatus": intents_payload,
-                        **(
-                            {"intentsStatusError": intents_err}
-                            if intents_err and not intents_payload
-                            else {}
-                        ),
+                    "orderId": bid,
+                    "batchId": bid,
+                    "relayer": {
+                        "pending": bool(s.get("pending")),
+                        "complete": bool(s.get("complete")),
+                        "success": bool(s.get("success")),
+                        "txHashes": s.get("tx_hashes") or [],
+                        "error": s.get("error") or "",
+                        "rowCount": len(rows),
                     },
+                    "intentsDepositAddress": deposit_addr or None,
+                    "intentsStatus": intents_payload,
+                    **(
+                        {"intentsStatusError": intents_err}
+                        if intents_err and not intents_payload
+                        else {}
+                    ),
                 }
             )
+            return jsonify({"code": 0, "msg": "success", "data": payload})
         else:
             return jsonify(
                 {
@@ -2847,7 +2859,8 @@ def api_swap_order_status():
             )
 
         if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result.get("data", {})})
+            payload = _order_status_with_top_level_status(result.get("data", {}) or {})
+            return jsonify({"code": 0, "msg": "success", "data": payload})
         else:
             return jsonify({"code": -1, "msg": result.get("error", "Query failed")})
     except Exception as e:

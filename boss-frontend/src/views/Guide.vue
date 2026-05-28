@@ -7,13 +7,13 @@
       <div class="guide-content">
         <p>To use the Swap API, you need a <strong>JWT Token</strong> for authentication. Follow these steps:</p>
         <ol>
-          <li>Go to <el-link type="primary" @click="$router.push('/dashboard')">Dashboard</el-link> and click <strong>+ New Key</strong> to create an API key.</li>
-          <li>A JWT Token (valid for 30 days) will be automatically generated and displayed.</li>
-          <li>Copy and securely store the JWT Token — it is your credential for API access.</li>
-          <li>When your token expires, go to the key's Detail page and click <strong>Generate JWT Token</strong> to get a new one.</li>
+          <li>Go to <el-link type="primary" @click="$router.push('/dashboard')">Dashboard</el-link> and click <strong>Create API Key</strong> (one key per account).</li>
+          <li>An API JWT is created automatically and stored on the server. You can view it anytime on Dashboard or Detail.</li>
+          <li>Use <code>Authorization: Bearer &lt;jwt&gt;</code> on all <code>/api/swap/*</code> requests.</li>
+          <li>Click <strong>Regenerate JWT</strong> to rotate the token. The previous JWT stops working immediately. JWTs do not expire by calendar time.</li>
         </ol>
         <el-alert type="info" :closable="false" style="margin-top: 12px">
-          <strong>Important:</strong> If you click "Reset Secret", all previously generated JWT tokens for that key will be invalidated immediately.
+          <strong>Important:</strong> Each account has one API key and one active JWT. You may issue a JWT at most 3 times per key (including creation).
         </el-alert>
       </div>
     </el-card>

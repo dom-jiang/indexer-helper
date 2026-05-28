@@ -65,7 +65,12 @@ CREATE TABLE IF NOT EXISTS `boss_rate_limit_config` (
 _MIGRATE_SQL = [
     "ALTER TABLE `boss_api_token` ADD COLUMN `refund_address` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Refund wallet address for swap transactions' AFTER `app_secret`",
     "ALTER TABLE `boss_api_token` ADD COLUMN `app_fee` DECIMAL(5,2) NOT NULL DEFAULT 0.00 COMMENT 'App fee rate in percent (1.00 ~ 10.00)' AFTER `refund_address`",
+    "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt` TEXT NULL COMMENT 'Active API JWT (single per key)' AFTER `app_fee`",
+    "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt_issued_at` DATETIME NULL COMMENT 'When swap_jwt was last issued' AFTER `swap_jwt`",
+    "ALTER TABLE `boss_api_token` ADD COLUMN `swap_jwt_issue_count` INT NOT NULL DEFAULT 0 COMMENT 'Total JWT issues (create + regenerate), max 3' AFTER `swap_jwt_issued_at`",
 ]
+
+MAX_SWAP_JWT_ISSUE_COUNT = 3
 
 
 def init_boss_tables(conn):
@@ -208,6 +213,105 @@ def update_user(conn, user_id: int, **kwargs) -> bool:
 
 # ── api token CRUD ───────────────────────────────────────
 
+def user_has_api_token(conn, user_id: int) -> bool:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT 1 FROM boss_api_token WHERE user_id = %s LIMIT 1",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    return bool(row)
+
+
+def get_user_api_token(conn, user_id: int) -> dict | None:
+    """At most one API key per Boss user (latest row if legacy duplicates exist)."""
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    cursor.execute(
+        "SELECT id, user_id, app_name, app_id, refund_address, app_fee, status, "
+        "swap_jwt, swap_jwt_issued_at, swap_jwt_issue_count, created_at, updated_at "
+        "FROM boss_api_token WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    )
+    token = cursor.fetchone()
+    cursor.close()
+    return token
+
+
+def _public_token_row(token: dict | None) -> dict | None:
+    if not token:
+        return None
+    out = dict(token)
+    out.pop("app_secret", None)
+    out.pop("app_key", None)
+    return out
+
+
+def swap_jwt_issue_count(token: dict | None) -> int:
+    if not token:
+        return 0
+    return int(token.get("swap_jwt_issue_count") or 0)
+
+
+def swap_jwt_issues_remaining(token: dict | None) -> int:
+    return max(0, MAX_SWAP_JWT_ISSUE_COUNT - swap_jwt_issue_count(token))
+
+
+def enrich_token_jwt_meta(token: dict | None) -> dict | None:
+    out = _public_token_row(token)
+    if not out:
+        return None
+    cnt = swap_jwt_issue_count(token)
+    out["swap_jwt_issue_count"] = cnt
+    out["swap_jwt_issues_remaining"] = max(0, MAX_SWAP_JWT_ISSUE_COUNT - cnt)
+    out["swap_jwt_issue_limit"] = MAX_SWAP_JWT_ISSUE_COUNT
+    if out.get("swap_jwt"):
+        out["jwt"] = out["swap_jwt"]
+    return out
+
+
+def issue_swap_jwt(conn, token_id: int, jwt_str: str) -> tuple[bool, str | None]:
+    """
+    Store a new Swap JWT and increment issue count.
+    Returns (ok, error_message). Each API key may issue at most MAX_SWAP_JWT_ISSUE_COUNT JWTs.
+    """
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    cursor.execute(
+        "SELECT swap_jwt_issue_count FROM boss_api_token WHERE id = %s FOR UPDATE",
+        (token_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        return False, "Token not found"
+    count = int(row.get("swap_jwt_issue_count") or 0)
+    if count >= MAX_SWAP_JWT_ISSUE_COUNT:
+        cursor.close()
+        return False, (
+            f"JWT can only be issued {MAX_SWAP_JWT_ISSUE_COUNT} times for this API key "
+            "(including the initial issue on key creation)"
+        )
+    cursor.execute(
+        "UPDATE boss_api_token SET swap_jwt = %s, swap_jwt_issued_at = UTC_TIMESTAMP(), "
+        "swap_jwt_issue_count = swap_jwt_issue_count + 1 WHERE id = %s",
+        (jwt_str, token_id),
+    )
+    conn.commit()
+    ok = cursor.rowcount > 0
+    cursor.close()
+    return (True, None) if ok else (False, "Failed to store JWT")
+
+
+def clear_swap_jwt(conn, token_id: int) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE boss_api_token SET swap_jwt = NULL, swap_jwt_issued_at = NULL WHERE id = %s",
+        (token_id,),
+    )
+    conn.commit()
+    cursor.close()
+
+
 def create_api_token(conn, user_id: int, app_name: str = "", refund_address: str = "", app_fee: float = 0.0) -> dict:
     app_id = _gen_app_id()
     app_key = _gen_app_key()
@@ -238,15 +342,8 @@ def create_api_token(conn, user_id: int, app_name: str = "", refund_address: str
 
 
 def list_api_tokens_by_user(conn, user_id: int) -> list:
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute(
-        "SELECT id, user_id, app_name, app_id, refund_address, app_fee, status, created_at, updated_at "
-        "FROM boss_api_token WHERE user_id = %s ORDER BY id DESC",
-        (user_id,),
-    )
-    tokens = cursor.fetchall()
-    cursor.close()
-    return tokens
+    token = get_user_api_token(conn, user_id)
+    return [token] if token else []
 
 
 def list_all_api_tokens(conn, page: int = 1, page_size: int = 20) -> dict:
@@ -302,7 +399,11 @@ def reset_api_key(conn, token_id: int) -> dict | None:
     new_key = _gen_app_key()
     new_secret = _gen_app_secret()
     cursor = conn.cursor()
-    cursor.execute("UPDATE boss_api_token SET app_key = %s, app_secret = %s WHERE id = %s", (new_key, new_secret, token_id))
+    cursor.execute(
+        "UPDATE boss_api_token SET app_key = %s, app_secret = %s, swap_jwt = NULL, "
+        "swap_jwt_issued_at = NULL WHERE id = %s",
+        (new_key, new_secret, token_id),
+    )
     conn.commit()
     cursor.close()
     return {"app_key": new_key, "app_secret": new_secret}

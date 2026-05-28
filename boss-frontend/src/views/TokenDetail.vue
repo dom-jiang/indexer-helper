@@ -1,6 +1,6 @@
 <template>
   <div v-loading="loading">
-    <el-page-header @back="$router.push('/dashboard')" :title="'Back'" :content="token?.app_name || 'Token Detail'" />
+    <el-page-header @back="$router.push('/dashboard')" :title="'Back'" :content="token?.app_name || 'API Key Detail'" />
 
     <el-row :gutter="20" style="margin-top: 24px" v-if="token">
       <el-col :span="12">
@@ -8,7 +8,9 @@
           <template #header><strong>Key Information</strong></template>
           <el-descriptions :column="1" border>
             <el-descriptions-item label="App Name">{{ token.app_name || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="App ID"><span class="mono">{{ token.app_id }}</span></el-descriptions-item>
+            <el-descriptions-item label="App ID">
+              <span class="mono">{{ token.app_id }}</span>
+            </el-descriptions-item>
             <el-descriptions-item label="Recipient">
               <span class="mono">{{ token.refund_address || '—' }}</span>
             </el-descriptions-item>
@@ -16,32 +18,64 @@
               {{ token.app_fee ? `${token.app_fee}%` : 'Not set' }}
             </el-descriptions-item>
             <el-descriptions-item label="Status">
-              <el-tag :type="token.status === 1 ? 'success' : 'danger'" size="small">{{ token.status === 1 ? 'Active' : 'Disabled' }}</el-tag>
+              <el-tag :type="token.status === 1 ? 'success' : 'danger'" size="small">
+                {{ token.status === 1 ? 'Active' : 'Disabled' }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="JWT issued">
+              {{ token.swap_jwt_issued_at || '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="JWT issues">
+              {{ jwtIssueCount }} / {{ jwtIssueLimit }} used
+              <span v-if="jwtIssuesRemaining === 0" class="warn-text"> (limit reached)</span>
             </el-descriptions-item>
             <el-descriptions-item label="Created">{{ token.created_at }}</el-descriptions-item>
           </el-descriptions>
+
           <el-alert
             v-if="!auth.isUserActive"
             type="error"
             :closable="false"
             title="Your account has been disabled."
-            style="margin-bottom: 12px"
+            style="margin-top: 12px"
           />
           <el-alert
             v-else-if="token.status !== 1"
             type="warning"
             :closable="false"
-            title="This API key is disabled. Swap API JWTs for this key will not work."
-            style="margin-bottom: 12px"
+            title="This API key is disabled. Swap API requests will be rejected."
+            style="margin-top: 12px"
           />
-          <div style="margin-top: 16px; display: flex; gap: 8px">
-            <el-button type="primary" :disabled="!canManageKey" @click="generateJwt">Generate JWT Token</el-button>
-            <el-button :disabled="!canManageKey" @click="openEditDialog">Edit Settings</el-button>
-            <el-popconfirm title="This will invalidate all existing JWT tokens for this key. Continue?" @confirm="resetSecret">
-              <template #reference>
-                <el-button type="warning" :disabled="!canManageKey">Reset Secret</el-button>
-              </template>
-            </el-popconfirm>
+
+          <div style="margin-top: 16px">
+            <h4 style="margin-bottom: 8px">API JWT</h4>
+            <el-input
+              v-if="activeJwt"
+              type="textarea"
+              :model-value="activeJwt"
+              :rows="5"
+              readonly
+              class="mono"
+            />
+            <el-empty v-else description="No JWT stored. Regenerate to create one." :image-size="48" />
+            <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap">
+              <el-button type="primary" :disabled="!activeJwt" @click="copyText(activeJwt)">
+                Copy JWT
+              </el-button>
+              <el-popconfirm
+                :title="regenerateConfirmTitle"
+                @confirm="regenerateJwt"
+              >
+                <template #reference>
+                  <el-button type="warning" :disabled="!canRegenerateJwt">Regenerate JWT</el-button>
+                </template>
+              </el-popconfirm>
+              <el-button :disabled="!canManageKey" @click="openEditDialog">Edit Settings</el-button>
+            </div>
+            <p class="hint">
+              JWT does not expire by time. Each API key may issue a JWT at most {{ jwtIssueLimit }} times
+              (including creation). Regenerating invalidates the previous token.
+            </p>
           </div>
         </el-card>
       </el-col>
@@ -50,9 +84,15 @@
         <el-card>
           <template #header><strong>Usage Statistics</strong></template>
           <el-descriptions :column="1" border v-if="usage">
-            <el-descriptions-item label="Quote this minute">{{ usage.usage.quote_this_minute }}</el-descriptions-item>
-            <el-descriptions-item label="Build this minute">{{ usage.usage.build_this_minute }}</el-descriptions-item>
-            <el-descriptions-item label="Total this month">{{ usage.usage.total_this_month }}</el-descriptions-item>
+            <el-descriptions-item label="Quote this minute">
+              {{ usage.usage.quote_this_minute }}
+            </el-descriptions-item>
+            <el-descriptions-item label="Build this minute">
+              {{ usage.usage.build_this_minute }}
+            </el-descriptions-item>
+            <el-descriptions-item label="Total this month">
+              {{ usage.usage.total_this_month }}
+            </el-descriptions-item>
           </el-descriptions>
           <el-divider />
           <h4 style="margin-bottom: 12px">Rate Limits</h4>
@@ -73,30 +113,19 @@
         <el-form-item label="App Fee (%)">
           <el-input-number
             v-model="editForm.appFee"
-            :min="0" :max="10" :step="0.5" :precision="2"
+            :min="0"
+            :max="10"
+            :step="0.5"
+            :precision="2"
             controls-position="right"
             style="width: 100%"
           />
-          <div style="font-size: 12px; color: #909399; margin-top: 4px;">Set between 1% ~ 10%. Leave 0 to disable.</div>
+          <div class="form-tip">Set between 1% ~ 10%. Leave 0 to disable.</div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showEdit = false">Cancel</el-button>
         <el-button type="primary" :loading="saving" @click="saveSettings">Save</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showJwt" title="Generated JWT Token" width="620px">
-      <el-alert type="warning" :closable="false" style="margin-bottom: 12px">
-        This JWT is valid for 30 days. Store it securely — it will not be shown again.
-      </el-alert>
-      <el-input type="textarea" :model-value="jwtToken" :rows="6" readonly />
-      <div style="margin-top: 12px; color: #909399; font-size: 13px;">
-        Use this token in your API requests:<br/>
-        <code style="background: #f5f7fa; padding: 2px 6px; border-radius: 3px;">Authorization: Bearer &lt;your_jwt_token&gt;</code>
-      </div>
-      <template #footer>
-        <el-button @click="copyText(jwtToken); showJwt = false" type="primary">Copy & Close</el-button>
       </template>
     </el-dialog>
   </div>
@@ -124,15 +153,25 @@ const editRules = {
 const token = ref(null)
 const usage = ref(null)
 const loading = ref(false)
-const showJwt = ref(false)
-const jwtToken = ref('')
 const showEdit = ref(false)
 const saving = ref(false)
 const editForm = ref({ refundAddress: '', appFee: 0 })
 
 const rateLimitList = computed(() => token.value?.rate_limits || [])
-const canManageKey = computed(
-  () => auth.isUserActive && token.value?.status === 1
+const canManageKey = computed(() => auth.isUserActive && token.value?.status === 1)
+const activeJwt = computed(() => token.value?.swap_jwt || token.value?.jwt || '')
+const jwtIssueLimit = computed(() => Number(token.value?.swap_jwt_issue_limit) || 3)
+const jwtIssueCount = computed(() => Number(token.value?.swap_jwt_issue_count) || 0)
+const jwtIssuesRemaining = computed(
+  () => Number(token.value?.swap_jwt_issues_remaining ?? Math.max(0, jwtIssueLimit.value - jwtIssueCount.value))
+)
+const canRegenerateJwt = computed(
+  () => canManageKey.value && jwtIssuesRemaining.value > 0
+)
+const regenerateConfirmTitle = computed(() =>
+  jwtIssuesRemaining.value <= 1
+    ? 'Generate a new JWT? This is your last allowed issue; the current JWT will stop working.'
+    : 'Generate a new JWT? The current JWT will stop working immediately.'
 )
 
 async function fetchDetail() {
@@ -189,39 +228,30 @@ async function saveSettings() {
   }
 }
 
-async function resetSecret() {
-  if (!canManageKey.value) {
-    ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
+async function regenerateJwt() {
+  if (!canRegenerateJwt.value) {
+    if (!canManageKey.value) {
+      ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
+    } else {
+      ElMessage.warning(`JWT issue limit reached (${jwtIssueLimit.value} times per API key)`)
+    }
     return
   }
   try {
-    const res = await api.post(`/api-tokens/${tokenId.value}/reset-key`)
+    const res = await api.post(`/api-tokens/${tokenId.value}/generate-jwt`, {})
     if (res.code === 0) {
-      ElMessage.success('Secret reset successfully. All existing JWT tokens have been invalidated.')
-      fetchDetail()
+      ElMessage.success('JWT regenerated')
+      token.value = res.data || token.value
+    } else {
+      ElMessage.error(res.msg || 'Failed to regenerate JWT')
     }
   } catch {
-    ElMessage.error('Reset failed')
-  }
-}
-
-async function generateJwt() {
-  if (!canManageKey.value) {
-    ElMessage.error(token.value?.status !== 1 ? 'This API key is disabled' : 'Your account is disabled')
-    return
-  }
-  try {
-    const res = await api.post(`/api-tokens/${tokenId.value}/generate-jwt`, { expiresIn: 86400 * 30 })
-    if (res.code === 0) {
-      jwtToken.value = res.data.jwt
-      showJwt.value = true
-    }
-  } catch {
-    ElMessage.error('Generate JWT failed')
+    ElMessage.error('Failed to regenerate JWT')
   }
 }
 
 function copyText(text) {
+  if (!text) return
   navigator.clipboard.writeText(text)
   ElMessage.success('Copied')
 }
@@ -234,5 +264,15 @@ onMounted(fetchDetail)
   font-family: 'Courier New', monospace;
   font-size: 13px;
   word-break: break-all;
+}
+.form-tip,
+.hint {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 8px;
+}
+.warn-text {
+  color: #e6a23c;
+  font-size: 12px;
 }
 </style>
