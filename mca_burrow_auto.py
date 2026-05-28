@@ -162,9 +162,9 @@ def _resolve_burrow_action(
 
 def enrich_mca_deposit_block(mca: Dict[str, Any], network_id: str) -> Tuple[Dict[str, Any], Optional[str]]:
     """
-    If `flow` is deposit and `customRecipientMsg` is absent, fills:
-      - default `appFees`, `referral` (Cfg)
-      - `customRecipientMsg` from signer + Burrow logic (and optional proofs)
+    If `flow` is deposit and `customRecipientMsg` is absent, fills
+      `customRecipientMsg` from signer + Burrow logic (and optional proofs).
+      Default `appFees` / `referral` for 1Click are applied in `nearintents_utils`.
 
     Returns (new_mca_dict, error_string).
     """
@@ -176,22 +176,6 @@ def enrich_mca_deposit_block(mca: Dict[str, Any], network_id: str) -> Tuple[Dict
         return mca, None
 
     out = dict(mca)
-
-    # Defaults for 1Click (apply even when customRecipientMsg is pre-filled)
-    recipient_cfg = getattr(Cfg, "MCA_INTENTS_APP_FEES_RECIPIENT", "") or ""
-    fee_val = getattr(Cfg, "MCA_INTENTS_APP_FEES", None)
-    if recipient_cfg and fee_val is not None:
-        fees = out.get("appFees") or out.get("app_fees")
-        if not (isinstance(fees, list) and len(fees) > 0):
-            try:
-                fee_int = int(fee_val)
-            except (TypeError, ValueError):
-                fee_int = 2
-            out["appFees"] = [{"recipient": recipient_cfg, "fee": fee_int}]
-
-    referral_default = getattr(Cfg, "MCA_DEFAULT_REFERRAL", "") or ""
-    if referral_default and not (out.get("referral")):
-        out["referral"] = referral_default
 
     cr_existing = out.get("customRecipientMsg") or out.get("custom_recipient_msg")
     if isinstance(cr_existing, str) and cr_existing.strip():

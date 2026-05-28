@@ -92,16 +92,37 @@ _ONECLICK_QUOTE_OPTIONAL_KEYS = frozenset({
 })
 
 
+def _apply_default_intents_app_fees_and_referral(body: Dict[str, Any]) -> None:
+    """
+    Apply INTENTS_APP_FEES_* / INTENTS_DEFAULT_REFERRAL when not already on the 1Click body.
+    Fee is basis points (100 = 1%). Called for every POST /v0/quote from this module.
+    """
+    fees = body.get("appFees") or body.get("app_fees")
+    if not (isinstance(fees, list) and len(fees) > 0):
+        recipient = (getattr(Cfg, "INTENTS_APP_FEES_RECIPIENT", "") or "").strip()
+        fee_val = getattr(Cfg, "INTENTS_APP_FEES", None)
+        if recipient and fee_val is not None:
+            try:
+                fee_int = int(fee_val)
+            except (TypeError, ValueError):
+                fee_int = 2
+            body["appFees"] = [{"recipient": recipient, "fee": fee_int}]
+    if not body.get("referral"):
+        referral = (getattr(Cfg, "INTENTS_DEFAULT_REFERRAL", "") or "").strip()
+        if referral:
+            body["referral"] = referral
+
+
 def merge_oneclick_quote_extensions(
     body: Dict[str, Any],
     oneclick_extensions: Optional[Dict[str, Any]],
 ) -> None:
     """Merge whitelisted NearIntents 1Click fields into an outgoing quote body (mutates `body`)."""
-    if not oneclick_extensions or not isinstance(oneclick_extensions, dict):
-        return
-    for key, val in oneclick_extensions.items():
-        if key in _ONECLICK_QUOTE_OPTIONAL_KEYS and val is not None:
-            body[key] = val
+    if oneclick_extensions and isinstance(oneclick_extensions, dict):
+        for key, val in oneclick_extensions.items():
+            if key in _ONECLICK_QUOTE_OPTIONAL_KEYS and val is not None:
+                body[key] = val
+    _apply_default_intents_app_fees_and_referral(body)
 
 
 CHAIN_TO_1CLICK = {

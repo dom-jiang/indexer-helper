@@ -13,16 +13,16 @@ try:
     from db_info import (
         MCA_BURROW_LOGIC_CONTRACT,
         MCA_AM_CONTRACT,
-        MCA_INTENTS_APP_FEES_RECIPIENT,
-        MCA_INTENTS_APP_FEES,
-        MCA_DEFAULT_REFERRAL,
+        INTENTS_APP_FEES_RECIPIENT,
+        INTENTS_APP_FEES,
+        INTENTS_DEFAULT_REFERRAL,
     )
 except ImportError:
     MCA_BURROW_LOGIC_CONTRACT = None
     MCA_AM_CONTRACT = None
-    MCA_INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
-    MCA_INTENTS_APP_FEES = 5
-    MCA_DEFAULT_REFERRAL = "rhea_lending"
+    INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
+    INTENTS_APP_FEES = 2
+    INTENTS_DEFAULT_REFERRAL = "rhea"
 
 try:
     from db_info import MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
@@ -240,12 +240,12 @@ class Cfg:
     TITAN_API_JWT = TITAN_API_JWT
     TITAN_API_ORIGIN = TITAN_API_ORIGIN
     TITAN_QUOTE_TIMEOUT_SEC = TITAN_QUOTE_TIMEOUT_SEC
-    # MCA deposit → NearIntents defaults (swap API server-side CRM fill).
+    # Near Intents 1Click: default appFees + referral on every /v0/quote (see nearintents_utils).
     MCA_BURROW_LOGIC_CONTRACT = MCA_BURROW_LOGIC_CONTRACT
     MCA_AM_CONTRACT = MCA_AM_CONTRACT
-    MCA_INTENTS_APP_FEES_RECIPIENT = MCA_INTENTS_APP_FEES_RECIPIENT
-    MCA_INTENTS_APP_FEES = MCA_INTENTS_APP_FEES
-    MCA_DEFAULT_REFERRAL = MCA_DEFAULT_REFERRAL
+    INTENTS_APP_FEES_RECIPIENT = INTENTS_APP_FEES_RECIPIENT
+    INTENTS_APP_FEES = INTENTS_APP_FEES
+    INTENTS_DEFAULT_REFERRAL = INTENTS_DEFAULT_REFERRAL
     MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
     # Burrow-inner amount sent via Logic `simple_withdraw` to the multichain relayer BEFORE
     # `execute(Withdraw)` in MCA withdraw batches (staging relayers often require this leg).

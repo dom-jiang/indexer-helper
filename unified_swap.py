@@ -1419,8 +1419,9 @@ def _mca_context_for_quote(
             )
         else:
             ctx["note"] = (
-                "When NearIntents 1Click is selected (two-stage Stage-B counts), extras from "
-                "`mca` are merged into 1Click /v0/quote. OmniBridge-only quotes ignore them."
+                "Near Intents 1Click quotes always include appFees and referral from server config "
+                "(INTENTS_APP_FEES_* / INTENTS_DEFAULT_REFERRAL). Optional `mca` fields (e.g. "
+                "customRecipientMsg) merge when flow=deposit. OmniBridge-only quotes ignore 1Click extras."
             )
     elif flow == "withdraw":
         if ctx.get("mcaAccountId"):
