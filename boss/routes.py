@@ -30,7 +30,7 @@ from loguru import logger
 
 import redis as redis_lib
 from boss.models import (
-    create_user, authenticate_user, login_boss_user, get_user_by_id,
+    create_user, authenticate_user, login_boss_user, get_user_by_id, get_user_by_email,
     list_users, update_user,
     create_api_token, list_api_tokens_by_user, list_all_api_tokens,
     get_api_token_detail, get_user_api_token, user_has_api_token,
@@ -49,6 +49,7 @@ from boss.auth import (
     invalidate_api_token_cache,
 )
 from boss.rate_limiter import (
+    DEFAULT_RATE_LIMITS,
     get_usage_stats,
     invalidate_rate_limit_cache,
     rate_limits_as_list,
@@ -127,6 +128,13 @@ def send_code():
 
     if not is_valid_email(email):
         return jsonify({"code": -1, "msg": "Invalid email format"})
+
+    conn = _conn()
+    try:
+        if get_user_by_email(conn, email):
+            return jsonify({"code": -1, "msg": "Email already registered"})
+    finally:
+        conn.close()
 
     r = _boss_redis()
     lock_key = f"boss:email_code_lock:{email}"
@@ -504,9 +512,10 @@ def admin_set_rate_limits(app_id):
             endpoint_group = (cfg.get("endpointGroup") or "").strip()
             if endpoint_group not in ("quote", "build", "all"):
                 return jsonify({"code": -1, "msg": f"Invalid endpointGroup: {endpoint_group}"})
+            group_defaults = DEFAULT_RATE_LIMITS.get(endpoint_group, DEFAULT_RATE_LIMITS["quote"])
             try:
-                per_minute = int(cfg.get("perMinute", 60))
-                per_month = int(cfg.get("perMonth", 300000))
+                per_minute = int(cfg.get("perMinute", group_defaults["per_minute"]))
+                per_month = int(cfg.get("perMonth", group_defaults["per_month"]))
             except (TypeError, ValueError):
                 return jsonify({"code": -1, "msg": "perMinute and perMonth must be integers"})
             if per_minute < 1 or per_month < 1:

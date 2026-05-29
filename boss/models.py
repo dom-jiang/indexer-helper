@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS `boss_rate_limit_config` (
   `app_id` VARCHAR(64) NOT NULL,
   `endpoint_group` VARCHAR(32) NOT NULL DEFAULT 'all' COMMENT 'quote / build / all',
   `per_minute` INT NOT NULL DEFAULT 60,
-  `per_month` INT NOT NULL DEFAULT 300000,
+  `per_month` INT NOT NULL DEFAULT 2592000,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -326,11 +326,11 @@ def create_api_token(conn, user_id: int, app_name: str = "", refund_address: str
     token_id = cursor.lastrowid
 
     cursor.execute(
-        "INSERT INTO boss_rate_limit_config (app_id, endpoint_group, per_minute, per_month) VALUES (%s, 'quote', 60, 300000)",
+        "INSERT INTO boss_rate_limit_config (app_id, endpoint_group, per_minute, per_month) VALUES (%s, 'quote', 60, 2592000)",
         (app_id,),
     )
     cursor.execute(
-        "INSERT INTO boss_rate_limit_config (app_id, endpoint_group, per_minute, per_month) VALUES (%s, 'build', 30, 300000)",
+        "INSERT INTO boss_rate_limit_config (app_id, endpoint_group, per_minute, per_month) VALUES (%s, 'build', 30, 1290000)",
         (app_id,),
     )
     conn.commit()

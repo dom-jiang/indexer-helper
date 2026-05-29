@@ -82,7 +82,7 @@ const total = ref(0)
 const showRateLimit = ref(false)
 const editAppId = ref('')
 const saving = ref(false)
-const rlForm = ref({ quotePerMinute: 60, quotePerMonth: 300000, buildPerMinute: 30, buildPerMonth: 300000 })
+const rlForm = ref({ quotePerMinute: 60, quotePerMonth: 2592000, buildPerMinute: 30, buildPerMonth: 1290000 })
 
 const showUsage = ref(false)
 const usageAppId = ref('')
@@ -117,9 +117,9 @@ async function openRateLimit(row) {
     const build = configs.find(c => c.endpoint_group === 'build') || {}
     rlForm.value = {
       quotePerMinute: quote.per_minute ?? 60,
-      quotePerMonth: quote.per_month ?? 300000,
+      quotePerMonth: quote.per_month ?? 2592000,
       buildPerMinute: build.per_minute ?? 30,
-      buildPerMonth: build.per_month ?? 300000,
+      buildPerMonth: build.per_month ?? 1290000,
     }
   }
   showRateLimit.value = true

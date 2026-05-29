@@ -16,8 +16,8 @@ from config import Cfg
 from boss.models import get_rate_limits
 
 DEFAULT_RATE_LIMITS = {
-    "quote": {"per_minute": 60, "per_month": 300000},
-    "build": {"per_minute": 30, "per_month": 300000},
+    "quote": {"per_minute": 60, "per_month": 2592000},
+    "build": {"per_minute": 30, "per_month": 1290000},
 }
 
 _redis_pool = redis.ConnectionPool(

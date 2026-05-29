@@ -11,6 +11,16 @@
         <el-form-item prop="password">
           <el-input v-model="form.password" placeholder="Password" type="password" size="large" prefix-icon="Lock" show-password />
         </el-form-item>
+        <el-form-item v-if="isRegister" prop="confirmPassword">
+          <el-input
+            v-model="form.confirmPassword"
+            placeholder="Confirm Password"
+            type="password"
+            size="large"
+            prefix-icon="Lock"
+            show-password
+          />
+        </el-form-item>
         <el-form-item v-if="isRegister && emailVerify" prop="code">
           <div class="code-row">
             <el-input v-model="form.code" placeholder="Verification Code" size="large" maxlength="6" />
@@ -56,7 +66,7 @@ const sendingCode = ref(false)
 const countdown = ref(0)
 const emailVerify = ref(true)
 const formRef = ref(null)
-const form = ref({ email: '', password: '', code: '' })
+const form = ref({ email: '', password: '', confirmPassword: '', code: '' })
 
 const EMAIL_PATTERN = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/
 
@@ -74,6 +84,26 @@ const rules = {
         } else {
           callback()
         }
+      },
+      trigger: 'blur',
+    },
+  ],
+  confirmPassword: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!isRegister.value) {
+          callback()
+          return
+        }
+        if (!value) {
+          callback(new Error('Please confirm your password'))
+          return
+        }
+        if (value !== form.value.password) {
+          callback(new Error('Passwords do not match'))
+          return
+        }
+        callback()
       },
       trigger: 'blur',
     },
@@ -105,8 +135,18 @@ onMounted(async () => {
 
 watch(isRegister, () => {
   form.value.code = ''
+  form.value.confirmPassword = ''
   formRef.value?.clearValidate()
 })
+
+watch(
+  () => form.value.password,
+  () => {
+    if (isRegister.value && form.value.confirmPassword && formRef.value) {
+      formRef.value.validateField('confirmPassword').catch(() => {})
+    }
+  },
+)
 
 async function validateEmailField() {
   if (!formRef.value) return false

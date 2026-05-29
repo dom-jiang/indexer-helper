@@ -164,8 +164,8 @@ const effectiveLimits = computed(() => {
   const quote = rows.find(r => r.endpoint_group === 'quote')
   const build = rows.find(r => r.endpoint_group === 'build')
   return {
-    quote: { per_minute: quote?.per_minute ?? 60, per_month: quote?.per_month ?? 300000 },
-    build: { per_minute: build?.per_minute ?? 30, per_month: build?.per_month ?? 300000 },
+    quote: { per_minute: quote?.per_minute ?? 60, per_month: quote?.per_month ?? 2592000 },
+    build: { per_minute: build?.per_minute ?? 30, per_month: build?.per_month ?? 1290000 },
   }
 })
 
