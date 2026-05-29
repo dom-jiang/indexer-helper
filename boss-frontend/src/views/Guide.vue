@@ -25,7 +25,7 @@
         <div class="code-block">
           <pre>Authorization: Bearer &lt;your_jwt_token&gt;</pre>
         </div>
-        <p>If the token is missing, invalid, or expired, the API will return a <code>401</code> error.</p>
+        <p>If authentication fails, the API returns <code>401</code> with <code>msg</code> and <code>reason</code> (e.g. <code>jwt_revoked</code>, <code>jwt_not_issued</code>, <code>invalid_signature</code>). Swap API JWTs do not expire by calendar time.</p>
       </div>
     </el-card>
 

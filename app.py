@@ -99,9 +99,15 @@ def before_request():
     # Swap API: JWT auth + rate limiting
     endpoint_group = _get_swap_endpoint_group(path)
     if endpoint_group:
-        api_token = validate_swap_jwt(lambda: get_db_connect(Cfg.NETWORK_ID))
+        api_token, jwt_error = validate_swap_jwt(lambda: get_db_connect(Cfg.NETWORK_ID))
         if not api_token:
-            return jsonify({"code": 401, "msg": "Valid JWT token required in Authorization header"}), 401
+            body = {
+                "code": 401,
+                "msg": (jwt_error or {}).get("msg") or "JWT authentication failed",
+            }
+            if jwt_error and jwt_error.get("reason"):
+                body["reason"] = jwt_error["reason"]
+            return jsonify(body), 401
         rl = check_rate_limit(g.app_id, endpoint_group, lambda: get_db_connect(Cfg.NETWORK_ID))
         if not rl["allowed"]:
             return jsonify({"code": 429, "msg": rl["reason"]}), 429

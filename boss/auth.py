@@ -12,7 +12,7 @@ Flow:
 import secrets
 import time
 from functools import wraps
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import jwt
 from flask import request, jsonify, g
@@ -91,27 +91,52 @@ def decode_swap_jwt(token_str: str, app_secret: str) -> dict | None:
         return None
 
 
-def validate_swap_jwt(get_db_conn_func) -> Optional[dict]:
+def _swap_jwt_error(reason: str, msg: str) -> Dict[str, str]:
+    return {"reason": reason, "msg": msg}
+
+
+def validate_swap_jwt(get_db_conn_func) -> Tuple[Optional[dict], Optional[Dict[str, str]]]:
     """
     Validate JWT from Authorization header for swap API calls.
-    Returns the api_token record on success, or None.
-    Sets g.app_id on success.
+
+    Returns:
+      (api_token, None) on success — sets g.app_id and g.api_token.
+      (None, {"reason": "<code>", "msg": "<detail>"}) on failure.
     """
     auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        return None, _swap_jwt_error(
+            "missing_authorization",
+            "Authorization header is required (format: Bearer <jwt>)",
+        )
     if not auth_header.startswith("Bearer "):
-        return None
+        return None, _swap_jwt_error(
+            "invalid_authorization_scheme",
+            "Authorization header must use Bearer scheme (Bearer <jwt>)",
+        )
 
     token_str = auth_header[7:].strip()
     if not token_str:
-        return None
+        return None, _swap_jwt_error(
+            "empty_token",
+            "Bearer token is empty",
+        )
 
     try:
         unverified = jwt.decode(token_str, options={"verify_signature": False})
-        app_id = unverified.get("sub")
-        if not app_id:
-            return None
     except jwt.InvalidTokenError:
-        return None
+        return None, _swap_jwt_error(
+            "malformed_token",
+            "JWT is malformed or cannot be parsed",
+        )
+
+    app_id = unverified.get("sub")
+    if not app_id:
+        return None, _swap_jwt_error(
+            "missing_subject",
+            "JWT payload is missing subject (sub)",
+        )
+    app_id = str(app_id).strip()
 
     cache_key = f"token:{app_id}"
     api_token = _token_cache.get(cache_key)
@@ -124,20 +149,40 @@ def validate_swap_jwt(get_db_conn_func) -> Optional[dict]:
         if api_token:
             _token_cache[cache_key] = api_token
 
-    if not api_token or api_token.get("status") != 1:
-        return None
+    if not api_token:
+        return None, _swap_jwt_error(
+            "unknown_app_id",
+            f"API key not found for app_id {app_id}",
+        )
+
+    if int(api_token.get("status") or 0) != 1:
+        return None, _swap_jwt_error(
+            "api_key_disabled",
+            f"API key is disabled for app_id {app_id}",
+        )
 
     payload = decode_swap_jwt(token_str, api_token["app_secret"])
     if not payload:
-        return None
+        return None, _swap_jwt_error(
+            "invalid_signature",
+            "JWT signature is invalid (wrong app_secret, tampered token, or API key was reset)",
+        )
 
     stored = str(api_token.get("swap_jwt") or "").strip()
-    if not stored or token_str != stored:
-        return None
+    if not stored:
+        return None, _swap_jwt_error(
+            "jwt_not_issued",
+            "No active API JWT on file; create or regenerate JWT in Boss dashboard",
+        )
+    if token_str != stored:
+        return None, _swap_jwt_error(
+            "jwt_revoked",
+            "JWT is not the current active token (regenerate JWT or reset API key invalidates the previous JWT)",
+        )
 
     g.app_id = app_id
     g.api_token = api_token
-    return api_token
+    return api_token, None
 
 
 def generate_boss_session_token(user_id: int, role: str, secret: str, expires_in: int = 86400) -> str:
