@@ -1,0 +1,953 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+"""
+Advances `hyperliquid_transfer_jobs` for Perps Hyperliquid API.
+
+Usage: python hyperliquid_perps_worker.py MAINNET
+"""
+
+import json
+import sys
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+
+sys.path.append("../")
+from config import Cfg
+
+STEP_GATE_SEC = 300
+STEP_PERMIT_SEC = 300
+STEP_CONFIRM_SEC = 300
+STEP_LEDGER_SEC = 300
+STEP_BRIDGE_SEC = 600
+
+from hyperliquid_deposit_worker import (  # noqa: E402
+    HL_TERMINAL_HISTORY,
+    build_permit_body_from_lending_first_row,
+    extract_origin_tx_hash_from_oneclick,
+    get_permit_records,
+    poll_oneclick_status,
+    post_permit,
+    _format_history_status,
+)
+from mca_evm_signature import (  # noqa: E402
+    build_permit_body_from_mca_request,
+    extract_deposit_hash_from_permit_records,
+    extract_withdraw_hash_from_ledger,
+    lending_batch_complete,
+    lending_batch_error,
+    resolve_mca_evm_rsv,
+)
+
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+def _parse_dt(val) -> Optional[datetime]:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.strptime(val[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+    return None
+
+
+def _loads_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = row.get("request_payload") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _ext(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = row.get("external_status_json")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return {}
+
+
+def _merge_ext(row: Dict[str, Any], patch: Dict[str, Any]) -> str:
+    base = _ext(row)
+    base.update(patch)
+    return json.dumps(base, ensure_ascii=False, default=str)[:65000]
+
+
+def _progress_for(status: str, transfer_type: str) -> int:
+    t = (transfer_type or "").strip().lower()
+    if t == "withdrawal":
+        dmap = {
+            "SUBMITTED": 5,
+            "WAITING_SIGNATURE": 20,
+            "WAITING_LEDGER": 40,
+            "SUBMITTING_EXCHANGE": 55,
+            "WAITING_BRIDGE": 75,
+            "SUCCESS": 100,
+            "FAILED": 0,
+        }
+    else:
+        dmap = {
+            "SUBMITTED": 5,
+            "WAITING_SIGNATURE": 20,
+            "WAITING_BRIDGE": 40,
+            "SUBMITTING_PERMIT": 60,
+            "WAITING_PERMIT": 80,
+            "SUCCESS": 100,
+            "FAILED": 0,
+        }
+    return int(dmap.get(status, 10))
+
+
+def _fail_job(
+    network_id: str,
+    job_id: str,
+    msg: str,
+    *,
+    ext_patch: Optional[Dict[str, Any]] = None,
+) -> None:
+    from db_provider import get_hyperliquid_transfer_job_by_job_id, update_hyperliquid_transfer_job
+
+    cur = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or {}
+    ex = _ext(cur)
+    if ext_patch:
+        ex.update(ext_patch)
+    patch: Dict[str, Any] = {
+        "status": "FAILED",
+        "message": "Failed",
+        "progress": 0,
+        "last_error": (msg or "")[:4000],
+        "finished_at": _utcnow(),
+        "external_status_json": json.dumps(ex, ensure_ascii=False, default=str)[:65000],
+    }
+    update_hyperliquid_transfer_job(network_id, job_id, patch)
+
+
+def _update_job(
+    network_id: str,
+    job_id: str,
+    fields: Dict[str, Any],
+    *,
+    transfer_type: Optional[str] = None,
+) -> None:
+    from db_provider import update_hyperliquid_transfer_job
+
+    if "status" in fields:
+        tt = transfer_type
+        if not tt:
+            from db_provider import get_hyperliquid_transfer_job_by_job_id
+
+            row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or {}
+            tt = row.get("transfer_type") or ""
+        fields["progress"] = _progress_for(str(fields["status"]), tt)
+    update_hyperliquid_transfer_job(network_id, job_id, fields)
+
+
+def build_permit_body_from_deposit_payload(
+    payload: Dict[str, Any], owner: str, token: str, spender: str
+) -> Dict[str, Any]:
+    ps = payload.get("permitSignature")
+    if isinstance(ps, dict):
+        return build_permit_body_from_lending_first_row(
+            {"request": ps},
+            owner,
+            token,
+            spender,
+        )
+    return build_permit_body_from_lending_first_row(
+        {"request": payload},
+        owner,
+        token,
+        spender,
+    )
+
+
+def _hl_info_post(url: str, body: Dict[str, Any]) -> Any:
+    r = requests.post(
+        url,
+        json=body,
+        headers={"Content-Type": "application/json"},
+        timeout=45,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _hl_exchange_post(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    r = requests.post(
+        url,
+        json=body,
+        headers={"Content-Type": "application/json"},
+        timeout=45,
+    )
+    text = r.text
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": text}
+    if not r.ok:
+        raise RuntimeError(str(data)[:2000])
+    if data.get("status") == "err":
+        resp = data.get("response")
+        err = resp if isinstance(resp, str) else (resp or {}).get("error") or str(resp)
+        raise RuntimeError(str(err)[:2000])
+    if data.get("status") == "ok":
+        resp = data.get("response")
+        if isinstance(resp, dict):
+            st = resp.get("data", {}).get("statuses") if isinstance(resp.get("data"), dict) else None
+            if isinstance(st, list):
+                for item in st:
+                    if isinstance(item, dict) and "error" in item:
+                        raise RuntimeError(str(item.get("error"))[:2000])
+    return data
+
+
+def _has_withdraw_ledger(updates: Any) -> bool:
+    if isinstance(updates, dict):
+        for k in ("updates", "data"):
+            v = updates.get(k)
+            if isinstance(v, list):
+                updates = v
+                break
+        else:
+            updates = []
+    if not isinstance(updates, list):
+        return False
+    for item in updates:
+        delta = item.get("delta") if isinstance(item, dict) else None
+        d = delta if isinstance(delta, dict) else item
+        if not isinstance(d, dict):
+            continue
+        t = str(d.get("type") or "").lower()
+        if "withdraw" in t:
+            return True
+    return False
+
+
+def _poll_withdraw_hash_via_oneclick(
+    deposit_address: str,
+    ext: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Dict[str, Any]]:
+    """Return (withdraw_hash, oneclick_status, ext_patch)."""
+    patch: Dict[str, Any] = {}
+    try:
+        oc_st, oc_data = poll_oneclick_status(deposit_address)
+    except Exception as e:
+        patch["bridgeOneClickPollError"] = str(e)[:500]
+        return None, None, patch
+
+    patch["bridgeOneClickPoll"] = oc_st
+    if oc_st == "SUCCESS":
+        wh = extract_origin_tx_hash_from_oneclick(oc_data)
+        if wh:
+            patch["withdrawHashSource"] = "oneclick_status"
+            return wh, oc_st, patch
+    return None, oc_st, patch
+
+
+def _advance_withdraw_after_hash(
+    network_id: str,
+    job_id: str,
+    *,
+    withdraw_hash: str,
+    updates: Any,
+    ext: Dict[str, Any],
+    needs_bridge: bool,
+    deposit_address: str,
+) -> None:
+    if updates is not None:
+        ext["ledgerUpdates"] = json.dumps(updates, default=str)[:4000]
+    ext["withdrawHash"] = withdraw_hash
+
+    if needs_bridge and deposit_address:
+        try:
+            oc_st, oc_data = poll_oneclick_status(deposit_address)
+        except Exception as e:
+            ext["bridgeOneClickPollError"] = str(e)[:500]
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BRIDGE",
+                    "message": "Waiting for bridge settlement",
+                    "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+                },
+            )
+            return
+
+        ext["bridgeOneClick"] = oc_st
+        if oc_st == "SUCCESS":
+            dest_hashes = []
+            sd = oc_data.get("swapDetails") if isinstance(oc_data.get("swapDetails"), dict) else {}
+            for item in sd.get("destinationChainTxHashes") or []:
+                if isinstance(item, dict) and item.get("hash"):
+                    dest_hashes.append(str(item["hash"]))
+            if dest_hashes:
+                ext["bridgeDestinationTxHashes"] = dest_hashes[:5]
+            fin = _utcnow()
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "SUCCESS",
+                    "message": "Success",
+                    "progress": 100,
+                    "finished_at": fin,
+                    "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+                },
+            )
+            return
+        if oc_st in ("FAILED", "REFUNDED", "EXPIRED"):
+            _fail_job(network_id, job_id, f"bridge 1Click terminal: {oc_st}", ext_patch=ext)
+            return
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "status": "WAITING_BRIDGE",
+                "message": "Waiting for bridge settlement",
+                "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+            },
+        )
+        return
+
+    fin = _utcnow()
+    _update_job(
+        network_id,
+        job_id,
+        {
+            "status": "SUCCESS",
+            "message": "Success",
+            "progress": 100,
+            "finished_at": fin,
+            "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+        },
+    )
+
+
+def _deposit_skip_lending(payload: Dict[str, Any], account_mode: str) -> bool:
+    ps = payload.get("permitSignature")
+    if not isinstance(ps, dict) or not ps:
+        return False
+    return account_mode in ("evm", "mca")
+
+
+def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
+    from db_provider import (
+        get_hyperliquid_transfer_job_by_job_id,
+        query_multichain_lending_data,
+    )
+
+    job_id = str(row["job_id"])
+    row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+    st = row.get("status") or ""
+    if st in ("SUCCESS", "FAILED"):
+        return
+
+    payload = _loads_payload(row)
+    q = payload.get("quote") or {}
+    needs_bridge = bool(q.get("needsBridge"))
+    deposit_address = (
+        row.get("deposit_address")
+        or (q.get("depositAddress") if isinstance(q, dict) else None)
+        or ""
+    )
+    deposit_address = str(deposit_address).strip()
+    batch_id = row.get("batch_id") or (payload.get("signatureTask") or {}).get("batchId")
+    batch_id = str(batch_id).strip() if batch_id else ""
+
+    account_mode = str(row.get("account_mode") or "").lower()
+    hl_user = str(row.get("hyperliquid_user_address") or "").strip()
+    skip_lending = _deposit_skip_lending(payload, account_mode)
+    base = Cfg.HYPERLIQUID_PERMIT_API_BASE
+    token = Cfg.HYPERLIQUID_USDC_TOKEN_ARBITRUM
+    spender = Cfg.HYPERLIQUID_PERMIT_SPENDER
+
+    created = _parse_dt(row.get("created_at")) or _utcnow()
+    now = _utcnow()
+
+    def _timeout_gate(msg: str) -> bool:
+        if (now - created).total_seconds() > STEP_GATE_SEC:
+            _fail_job(network_id, job_id, msg)
+            return True
+        return False
+
+    permit_id = row.get("permit_id")
+    if st == "WAITING_PERMIT" and permit_id:
+        ex = _ext(row)
+        ckey = "depositConfirmStartedAt"
+        if ckey not in ex:
+            ex[ckey] = now.strftime("%Y-%m-%d %H:%M:%S")
+            _update_job(
+                network_id,
+                job_id,
+                {"external_status_json": json.dumps(ex, ensure_ascii=False)[:65000]},
+            )
+            row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+            ex = _ext(row)
+        c0 = _parse_dt(ex.get(ckey)) or now
+        if (now - c0).total_seconds() > STEP_CONFIRM_SEC:
+            _fail_job(network_id, job_id, "timeout waiting for deposit confirmation (5m)")
+            return
+        try:
+            rec = get_permit_records(base, str(permit_id))
+        except Exception:
+            return
+        deposit_hash = extract_deposit_hash_from_permit_records(rec)
+        ext_patch: Dict[str, Any] = {"permitRecords": json.dumps(rec, default=str)[:4000]}
+        if deposit_hash:
+            ext_patch["depositHash"] = deposit_hash
+        _update_job(
+            network_id,
+            job_id,
+            {"external_status_json": _merge_ext(row, ext_patch)},
+        )
+        item = None
+        data = rec.get("data")
+        if isinstance(data, list) and data:
+            item = data[0]
+        hist_st = _format_history_status(item)
+        if hist_st == "TRANSFER_SUCCESS":
+            fin = _utcnow()
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "SUCCESS",
+                    "message": "Success",
+                    "progress": 100,
+                    "finished_at": fin,
+                    "last_error": None,
+                },
+            )
+        elif hist_st in HL_TERMINAL_HISTORY and hist_st != "TRANSFER_SUCCESS":
+            _fail_job(
+                network_id,
+                job_id,
+                f"deposit history terminal: {hist_st}",
+                ext_patch=ext_patch,
+            )
+        return
+
+    if st in ("SUBMITTING_PERMIT",) and not permit_id:
+        ps0 = _parse_dt(row.get("permit_submitted_at")) or created
+        if (now - ps0).total_seconds() > STEP_PERMIT_SEC:
+            _fail_job(network_id, job_id, "timeout submitting permit (5m)")
+            return
+
+    if st in (
+        "SUBMITTED",
+        "WAITING_BRIDGE",
+        "WAITING_SIGNATURE",
+        "SUBMITTING_PERMIT",
+    ):
+        if needs_bridge and deposit_address:
+            if _timeout_gate("timeout waiting for bridge / prerequisites (5m)"):
+                return
+            try:
+                oc_st, oc_data = poll_oneclick_status(deposit_address)
+            except Exception:
+                return
+            snap = json.dumps(oc_data, ensure_ascii=False, default=str)[:65000]
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BRIDGE",
+                    "message": "Waiting for bridge settlement",
+                    "external_status_json": _merge_ext(
+                        row,
+                        {"oneClickStatus": oc_st, "oneClickSnapshot": snap[:5000]},
+                    ),
+                },
+            )
+            row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+            if oc_st in ("FAILED", "REFUNDED", "EXPIRED"):
+                _fail_job(
+                    network_id,
+                    job_id,
+                    f"1Click terminal status: {oc_st}",
+                    ext_patch={"oneClickSnapshot": snap[:5000]},
+                )
+                return
+            if oc_st != "SUCCESS":
+                return
+        elif needs_bridge and not deposit_address:
+            _fail_job(network_id, job_id, "depositAddress missing for bridge deposit")
+            return
+
+        if not skip_lending:
+            stask = payload.get("signatureTask") or {}
+            tx_hash_direct = stask.get("txHash")
+            if not batch_id and not tx_hash_direct:
+                _fail_job(network_id, job_id, "batch_id or signatureTask.txHash is required for mca deposit path")
+                return
+            if _timeout_gate("timeout waiting for relayer signature (5m)"):
+                return
+            lending_rows: List[Dict[str, Any]] = []
+            if batch_id:
+                try:
+                    lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+                except Exception:
+                    return
+                if not lending_rows:
+                    _fail_job(network_id, job_id, "multichain_lending_data empty for batch_id")
+                    return
+                relayer_err = lending_batch_error(lending_rows)
+                if relayer_err:
+                    _fail_job(network_id, job_id, f"relayer batch failed: {relayer_err}")
+                    return
+                if not lending_batch_complete(lending_rows):
+                    first = lending_rows[0] or {}
+                    bs_raw = first.get("batch_status")
+                    try:
+                        bs = int(bs_raw) if bs_raw is not None else -1
+                    except Exception:
+                        bs = -1
+                    _update_job(
+                        network_id,
+                        job_id,
+                        {
+                            "status": "WAITING_SIGNATURE",
+                            "message": "Waiting for relayer signature",
+                            "external_status_json": _merge_ext(row, {"batchStatus": bs}),
+                        },
+                    )
+                    return
+            elif tx_hash_direct:
+                rsv_probe = resolve_mca_evm_rsv(
+                    network_id,
+                    lending_rows=[],
+                    signature_task=stask if isinstance(stask, dict) else {},
+                )
+                if not rsv_probe:
+                    _update_job(
+                        network_id,
+                        job_id,
+                        {
+                            "status": "WAITING_SIGNATURE",
+                            "message": "Waiting for relayer signature",
+                        },
+                    )
+                    return
+
+        row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+        st = row.get("status") or ""
+        permit_id = row.get("permit_id")
+        if st in ("FAILED", "SUCCESS"):
+            return
+        if permit_id or st == "WAITING_PERMIT":
+            return
+
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "status": "SUBMITTING_PERMIT",
+                "message": "Submitting permit",
+                "permit_submitted_at": now,
+            },
+        )
+        row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+        try:
+            if skip_lending:
+                permit_body = build_permit_body_from_deposit_payload(
+                    payload, hl_user, token, spender
+                )
+            else:
+                stask = payload.get("signatureTask") or {}
+                if batch_id:
+                    lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+                else:
+                    lending_rows = []
+                rsv = resolve_mca_evm_rsv(
+                    network_id,
+                    lending_rows=lending_rows,
+                    signature_task=stask if isinstance(stask, dict) else {},
+                )
+                if not rsv:
+                    _fail_job(network_id, job_id, "failed to resolve MCA permit signature from relayer")
+                    return
+                permit_request = payload.get("permitRequest")
+                if not isinstance(permit_request, dict):
+                    _fail_job(network_id, job_id, "permitRequest is required for mca deposit")
+                    return
+                permit_body = build_permit_body_from_mca_request(
+                    permit_request,
+                    rsv,
+                    token,
+                    spender,
+                )
+            result = post_permit(base, permit_body)
+        except Exception as e:
+            _fail_job(network_id, job_id, f"permit API error: {e}")
+            return
+
+        pid = result.get("data")
+        if pid is None or pid == "":
+            _fail_job(
+                network_id,
+                job_id,
+                "permit response missing data (permit_id)",
+                ext_patch={"permitResponse": str(result)[:2000]},
+            )
+            return
+        ex2 = _ext(row)
+        ex2["depositConfirmStartedAt"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "status": "WAITING_PERMIT",
+                "message": "Confirming deposit",
+                "permit_id": str(pid),
+                "external_status_json": json.dumps(
+                    {**ex2, "permitResponse": json.dumps(result, default=str)[:4000]},
+                    ensure_ascii=False,
+                )[:65000],
+            },
+        )
+
+
+def _normalize_sig_v(v: Any) -> int:
+    if isinstance(v, bool):
+        raise ValueError("v")
+    if isinstance(v, int):
+        return int(v)
+    s = str(v).strip()
+    if s.startswith("0x") or s.startswith("0X"):
+        return int(s, 16)
+    return int(s)
+
+
+def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
+    from db_provider import get_hyperliquid_transfer_job_by_job_id, query_multichain_lending_data
+
+    job_id = str(row["job_id"])
+    row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+    st = row.get("status") or ""
+    if st in ("SUCCESS", "FAILED"):
+        return
+
+    payload = _loads_payload(row)
+    account_mode = str(row.get("account_mode") or "").lower()
+    hl_user = str(row.get("hyperliquid_user_address") or "").strip()
+    q = payload.get("quote") or {}
+    needs_bridge = bool(q.get("needsBridge"))
+    deposit_address = (
+        str(row.get("deposit_address") or q.get("depositAddress") or "").strip()
+    )
+    batch_id = str(
+        row.get("batch_id") or (payload.get("signatureTask") or {}).get("batchId") or ""
+    ).strip()
+    wa = payload.get("withdrawAction") or {}
+    if not isinstance(wa, dict):
+        _fail_job(network_id, job_id, "invalid withdrawAction")
+        return
+
+    info_url = Cfg.HYPERLIQUID_MAINNET_INFO_URL
+    ex_url = Cfg.HYPERLIQUID_MAINNET_EXCHANGE_URL
+
+    created = _parse_dt(row.get("created_at")) or _utcnow()
+    now = _utcnow()
+    ext = _ext(row)
+
+    def _gate_timeout(msg: str) -> bool:
+        if (now - created).total_seconds() > STEP_GATE_SEC:
+            _fail_job(network_id, job_id, msg)
+            return True
+        return False
+
+    if st in ("SUBMITTED", "WAITING_SIGNATURE"):
+        stask = payload.get("signatureTask") or {}
+        tx_hash_direct = stask.get("txHash") if isinstance(stask, dict) else None
+        sig = payload.get("signature")
+        has_frontend_sig = isinstance(sig, dict) and bool(sig.get("r"))
+        if account_mode == "mca" and has_frontend_sig:
+            _update_job(
+                network_id,
+                job_id,
+                {"status": "SUBMITTING_EXCHANGE", "message": "Submitting withdrawal"},
+            )
+        elif account_mode == "mca" and (batch_id or tx_hash_direct):
+            if _gate_timeout("timeout waiting for withdraw signature (5m)"):
+                return
+            lending_rows: List[Dict[str, Any]] = []
+            if batch_id:
+                lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+                if not lending_rows:
+                    _fail_job(network_id, job_id, "multichain_lending_data empty for withdraw")
+                    return
+                relayer_err = lending_batch_error(lending_rows)
+                if relayer_err:
+                    _fail_job(network_id, job_id, f"relayer batch failed: {relayer_err}")
+                    return
+                if not lending_batch_complete(lending_rows):
+                    _update_job(
+                        network_id,
+                        job_id,
+                        {
+                            "status": "WAITING_SIGNATURE",
+                            "message": "Waiting for relayer signature",
+                        },
+                    )
+                    return
+            rsv = resolve_mca_evm_rsv(
+                network_id,
+                lending_rows=lending_rows,
+                signature_task=stask if isinstance(stask, dict) else {},
+            )
+            if not rsv:
+                _update_job(
+                    network_id,
+                    job_id,
+                    {
+                        "status": "WAITING_SIGNATURE",
+                        "message": "Waiting for relayer signature",
+                    },
+                )
+                return
+            ext = _ext(row)
+            ext["withdrawSignature"] = rsv
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+                    "status": "SUBMITTING_EXCHANGE",
+                    "message": "Submitting withdrawal",
+                },
+            )
+        else:
+            _update_job(
+                network_id,
+                job_id,
+                {"status": "SUBMITTING_EXCHANGE", "message": "Submitting withdrawal"},
+            )
+        row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+        st = row.get("status") or ""
+
+    if st == "SUBMITTING_EXCHANGE":
+        ext = _ext(row)
+        try:
+            nonce = int(wa.get("time"))
+        except Exception:
+            _fail_job(network_id, job_id, "withdrawAction.time must be integer nonce")
+            return
+
+        sig = ext.get("withdrawSignature") or payload.get("signature")
+        if not isinstance(sig, dict) or not sig.get("r"):
+            _fail_job(network_id, job_id, "missing exchange signature")
+            return
+        try:
+            vv = _normalize_sig_v(sig.get("v"))
+        except Exception:
+            _fail_job(network_id, job_id, "invalid signature.v")
+            return
+        body = {
+            "action": wa,
+            "nonce": nonce,
+            "signature": {
+                "r": str(sig.get("r")),
+                "s": str(sig.get("s")),
+                "v": vv,
+            },
+            "vaultAddress": None,
+            "expiresAfter": None,
+        }
+        try:
+            ex_resp = _hl_exchange_post(ex_url, body)
+        except Exception as e:
+            _fail_job(network_id, job_id, f"Hyperliquid exchange error: {e}")
+            return
+
+        ex = _ext(row)
+        ex["withdrawExchangePostedNonce"] = nonce
+        ex["exchangeResponse"] = json.dumps(ex_resp, default=str)[:4000]
+        t0 = int(wa.get("time") or nonce) - 120_000
+        ex["ledgerStartTime"] = t0
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "status": "WAITING_LEDGER",
+                "message": "Waiting for ledger confirmation",
+                "exchange_submitted_at": now,
+                "external_status_json": json.dumps(ex, ensure_ascii=False)[:65000],
+            },
+        )
+        row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+        st = row.get("status") or ""
+
+    if st == "WAITING_LEDGER":
+        ext = _ext(row)
+        t0 = int(ext.get("ledgerStartTime") or 0)
+        es = _parse_dt(row.get("exchange_submitted_at")) or now
+        ledger_timed_out = (now - es).total_seconds() > STEP_LEDGER_SEC
+
+        updates = None
+        ledger_err = None
+        try:
+            updates = _hl_info_post(
+                info_url,
+                {"type": "userNonFundingLedgerUpdates", "user": hl_user, "startTime": t0},
+            )
+        except Exception as e:
+            ledger_err = str(e)[:500]
+
+        withdraw_hash = None
+        if updates is not None:
+            withdraw_hash = extract_withdraw_hash_from_ledger(updates, wa.get("time"))
+            if withdraw_hash:
+                ext["withdrawHashSource"] = "hyperliquid_ledger"
+
+        if not withdraw_hash and needs_bridge and deposit_address:
+            wh_oc, oc_st, oc_patch = _poll_withdraw_hash_via_oneclick(deposit_address, ext)
+            ext.update(oc_patch)
+            if wh_oc:
+                withdraw_hash = wh_oc
+            elif oc_st in ("FAILED", "REFUNDED", "EXPIRED"):
+                _fail_job(
+                    network_id,
+                    job_id,
+                    f"bridge 1Click terminal: {oc_st}",
+                    ext_patch=ext,
+                )
+                return
+
+        if ledger_err:
+            ext["ledgerPollError"] = ledger_err
+
+        if withdraw_hash:
+            _advance_withdraw_after_hash(
+                network_id,
+                job_id,
+                withdraw_hash=withdraw_hash,
+                updates=updates,
+                ext=ext,
+                needs_bridge=needs_bridge,
+                deposit_address=deposit_address,
+            )
+            row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+            st = row.get("status") or ""
+        elif ledger_timed_out:
+            if needs_bridge and deposit_address:
+                wh_oc, oc_st, oc_patch = _poll_withdraw_hash_via_oneclick(deposit_address, ext)
+                ext.update(oc_patch)
+                if wh_oc and oc_st == "SUCCESS":
+                    _advance_withdraw_after_hash(
+                        network_id,
+                        job_id,
+                        withdraw_hash=wh_oc,
+                        updates=updates,
+                        ext=ext,
+                        needs_bridge=needs_bridge,
+                        deposit_address=deposit_address,
+                    )
+                    row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+                    st = row.get("status") or ""
+                else:
+                    _fail_job(
+                        network_id,
+                        job_id,
+                        "timeout waiting for ledger withdraw (5m)",
+                        ext_patch=ext,
+                    )
+                    return
+            else:
+                _fail_job(
+                    network_id,
+                    job_id,
+                    "timeout waiting for ledger withdraw (5m)",
+                    ext_patch=ext,
+                )
+                return
+        else:
+            if updates is not None and not _has_withdraw_ledger(updates):
+                _update_job(
+                    network_id,
+                    job_id,
+                    {
+                        "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+                    },
+                )
+            return
+
+    if st == "WAITING_BRIDGE":
+        if not deposit_address:
+            _fail_job(network_id, job_id, "depositAddress missing for bridge")
+            return
+        bs = _parse_dt(row.get("exchange_submitted_at")) or created
+        if (now - bs).total_seconds() > STEP_BRIDGE_SEC:
+            _fail_job(network_id, job_id, "timeout waiting for bridge after withdraw (10m)")
+            return
+        try:
+            oc_st, oc_data = poll_oneclick_status(deposit_address)
+        except Exception:
+            return
+        ex = _ext(row)
+        ex["bridgeOneClick"] = oc_st
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "external_status_json": json.dumps(ex, ensure_ascii=False)[:65000],
+            },
+        )
+        if oc_st in ("FAILED", "REFUNDED", "EXPIRED"):
+            _fail_job(network_id, job_id, f"bridge 1Click terminal: {oc_st}")
+            return
+        if oc_st == "SUCCESS":
+            fin = _utcnow()
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "SUCCESS",
+                    "message": "Success",
+                    "progress": 100,
+                    "finished_at": fin,
+                },
+            )
+
+
+def run_worker(network_id: str) -> None:
+    from db_provider import ensure_hyperliquid_transfer_jobs_table, fetch_hyperliquid_transfer_jobs_active
+
+    ensure_hyperliquid_transfer_jobs_table(network_id)
+    rows = fetch_hyperliquid_transfer_jobs_active(network_id, limit=50)
+    if not rows:
+        return
+    print(f"[hyperliquid_perps_worker] processing {len(rows)} job(s)")
+    for row in rows:
+        try:
+            t = (row.get("transfer_type") or "").lower()
+            if t == "deposit":
+                process_deposit_row(network_id, row)
+            elif t == "withdrawal":
+                process_withdraw_row(network_id, row)
+        except Exception as e:
+            print(f"[hyperliquid_perps_worker] job {row.get('job_id')} error: {e}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python hyperliquid_perps_worker.py MAINNET|TESTNET|DEVNET")
+        sys.exit(1)
+    nid = str(sys.argv[1]).upper()
+    if nid not in ("MAINNET", "TESTNET", "DEVNET"):
+        print("Invalid NETWORK_ID")
+        sys.exit(1)
+    print(f"--- hyperliquid_perps_worker ({nid}) ---")
+    run_worker(nid)
+    print("--- done ---")

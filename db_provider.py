@@ -2193,6 +2193,235 @@ def ack_force_close_alert_by_token(network_id, token):
         db_conn.close()
 
 
+HYPERLIQUID_TRANSFER_JOBS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS hyperliquid_transfer_jobs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    job_id VARCHAR(64) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    transfer_type VARCHAR(16) NOT NULL,
+    account_mode VARCHAR(8) NOT NULL,
+    hyperliquid_user_address VARCHAR(128) NOT NULL,
+    destination_address VARCHAR(256) DEFAULT NULL,
+    status VARCHAR(40) NOT NULL,
+    message VARCHAR(512) DEFAULT NULL,
+    progress TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    request_payload LONGTEXT NOT NULL,
+    tx_hashes_json TEXT,
+    external_status_json TEXT,
+    last_error TEXT,
+    permit_id VARCHAR(64) DEFAULT NULL,
+    deposit_address VARCHAR(256) DEFAULT NULL,
+    batch_id VARCHAR(64) DEFAULT NULL,
+    intent_nonces_json TEXT,
+    display_meta_json TEXT,
+    permit_submitted_at DATETIME DEFAULT NULL,
+    exchange_submitted_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    finished_at DATETIME DEFAULT NULL,
+    UNIQUE KEY uk_hlt_client_request (client_request_id),
+    UNIQUE KEY uk_hlt_job_id (job_id),
+    KEY idx_hlt_hl_user (hyperliquid_user_address(64), id DESC),
+    KEY idx_hlt_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_hyperliquid_transfer_jobs_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(HYPERLIQUID_TRANSFER_JOBS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("ensure_hyperliquid_transfer_jobs_table error:", e.args)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_hyperliquid_deposit_order(network_id, hl_deposit_order_id, fields: dict):
+    """Partial update by id. `fields` maps column_name -> value."""
+    if not fields:
+        return
+    nullable_keys = {
+        "permit_id", "error_message", "oneclick_status_snapshot",
+        "permit_response_snapshot", "records_snapshot",
+        "permit_started_at", "confirm_started_at",
+    }
+    cols = []
+    vals = []
+    for k, v in fields.items():
+        if v is None and k not in nullable_keys:
+            continue
+        cols.append("`%s` = %%s" % str(k).replace("`", ""))
+        vals.append(v)
+    if not cols:
+        return
+    sql = "UPDATE hyperliquid_deposit_orders SET " + ", ".join(cols) + ", updated_at = NOW() WHERE id = %s"
+    vals.append(hl_deposit_order_id)
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(vals))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_hyperliquid_deposit_order error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_deposit_order_by_id(network_id, hl_deposit_order_id):
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM hyperliquid_deposit_orders WHERE id = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (hl_deposit_order_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_deposit_order_by_id error:", e)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_multichain_lending_data(network_id, batch_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select * from (select * from multichain_lending_requests where `batch_id` = %s " \
+                "union all select * from multichain_lending_requests_history where `batch_id` = %s) as all_data "
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, (batch_id, batch_id))
+        data_list = cursor.fetchall()
+        return data_list
+    except Exception as e:
+        print("query_multichain_lending_data to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
+def update_hyperliquid_deposit_order(network_id, hl_deposit_order_id, fields: dict):
+    """Partial update by id. `fields` maps column_name -> value."""
+    if not fields:
+        return
+    nullable_keys = {
+        "permit_id", "error_message", "oneclick_status_snapshot",
+        "permit_response_snapshot", "records_snapshot",
+        "permit_started_at", "confirm_started_at",
+    }
+    cols = []
+    vals = []
+    for k, v in fields.items():
+        if v is None and k not in nullable_keys:
+            continue
+        cols.append("`%s` = %%s" % str(k).replace("`", ""))
+        vals.append(v)
+    if not cols:
+        return
+    sql = "UPDATE hyperliquid_deposit_orders SET " + ", ".join(cols) + ", updated_at = NOW() WHERE id = %s"
+    vals.append(hl_deposit_order_id)
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(vals))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_hyperliquid_deposit_order error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def fetch_hyperliquid_deposit_orders_active(network_id, limit=30):
+    """Rows still in progress (not 7 SUCCESS / 91 FAILED)."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT * FROM hyperliquid_deposit_orders
+             WHERE hl_status NOT IN (7, 91)
+             ORDER BY id ASC
+             LIMIT %s"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (int(limit),))
+        return cursor.fetchall()
+    except Exception as e:
+        print("fetch_hyperliquid_deposit_orders_active error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_transfer_job_by_job_id(network_id, job_id):
+    sql = "SELECT * FROM hyperliquid_transfer_jobs WHERE job_id = %s LIMIT 1"
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (job_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_transfer_job_by_job_id error:", e.args)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_hyperliquid_transfer_job(network_id, job_id, updates):
+    if not updates:
+        return False
+    sets = []
+    values = []
+    for k, v in updates.items():
+        col = k.replace("`", "").replace(" ", "")
+        sets.append("`%s` = %%s" % col)
+        values.append(v)
+    values.append(job_id)
+    sql = (
+        "UPDATE hyperliquid_transfer_jobs SET "
+        + ", ".join(sets)
+        + " WHERE job_id = %s"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        db_conn.rollback()
+        print("update_hyperliquid_transfer_job error:", e.args)
+        return False
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def fetch_hyperliquid_transfer_jobs_active(network_id, limit=50):
+    sql = (
+        "SELECT * FROM hyperliquid_transfer_jobs WHERE status NOT IN "
+        "('SUCCESS', 'FAILED') ORDER BY id ASC LIMIT %s"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (int(limit),))
+        return cursor.fetchall()
+    except Exception as e:
+        print("fetch_hyperliquid_transfer_jobs_active error:", e.args)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
