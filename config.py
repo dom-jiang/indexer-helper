@@ -4,7 +4,7 @@ __author__ = 'Marco'
 
 # load private info
 try:
-    from rpc_info import TESTNET_RPC_URL, MAINNET_RPC_URL
+    from db_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
     TESTNET_RPC_URL= ["https://rpc.testnet.near.org", ]
     MAINNET_RPC_URL= ["https://rpc.mainnet.near.org", ]
@@ -115,6 +115,11 @@ except ImportError:
 
 ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
 
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
 HYPERLIQUID_PERMIT_API_BASE = "https://mainnet-indexer.ref-finance.com"
 HYPERLIQUID_USDC_TOKEN_ARBITRUM = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
 HYPERLIQUID_PERMIT_SPENDER = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7"
@@ -174,6 +179,7 @@ class Cfg:
     BSC_WALLET_PRIVATE_KEY = BSC_WALLET_PRIVATE_KEY
     BSC_RPC_URL = BSC_RPC_URL
     ONECLICK_BASE_URL = ONECLICK_BASE_URL
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     HYPERLIQUID_PERMIT_API_BASE = HYPERLIQUID_PERMIT_API_BASE
     HYPERLIQUID_USDC_TOKEN_ARBITRUM = HYPERLIQUID_USDC_TOKEN_ARBITRUM
