@@ -483,9 +483,22 @@ def _validate_mca_signature_task(stask: Any) -> Optional[str]:
         return "signatureTask object is required"
     if (stask.get("type") or "").strip() != "mca_relayer":
         return "signatureTask.type must be mca_relayer for accountMode mca"
-    if not stask.get("batchId") and not stask.get("txHash"):
-        return "signatureTask.batchId or signatureTask.txHash is required for accountMode mca"
-    return None
+    batch_id = stask.get("batchId")
+    tx_hash = stask.get("txHash")
+    zcash_addr = stask.get("zcashDepositAddress")
+    signer_chain = (stask.get("signerChain") or "").strip().lower()
+    if batch_id or tx_hash or zcash_addr:
+        if signer_chain == "zcash":
+            if not tx_hash and not zcash_addr:
+                return (
+                    "signatureTask.zcashDepositAddress or txHash is required "
+                    "for signerChain zcash"
+                )
+        return None
+    return (
+        "signatureTask.batchId, txHash, or zcashDepositAddress is required "
+        "for accountMode mca"
+    )
 
 
 def _validate_permit_request(pr: Any, hyperliquid_user_address: str) -> Optional[str]:
@@ -524,7 +537,11 @@ def _validate_deposit(body: Dict[str, Any]) -> Optional[str]:
         has_ps = isinstance(ps, dict) and bool(ps)
         has_relayer = isinstance(pr, dict) and (
             isinstance(stask, dict)
-            and (stask.get("batchId") or stask.get("txHash"))
+            and (
+                stask.get("batchId")
+                or stask.get("txHash")
+                or stask.get("zcashDepositAddress")
+            )
         )
         if not has_ps and not has_relayer:
             return (
@@ -590,7 +607,11 @@ def _validate_withdraw(body: Dict[str, Any]) -> Optional[str]:
     sig = body.get("signature")
     if am == "mca":
         has_sig = isinstance(sig, dict) and bool(sig.get("r"))
-        has_stask = isinstance(stask, dict) and (stask.get("batchId") or stask.get("txHash"))
+        has_stask = isinstance(stask, dict) and (
+            stask.get("batchId")
+            or stask.get("txHash")
+            or stask.get("zcashDepositAddress")
+        )
         if not has_sig and not has_stask:
             return "signature or signatureTask is required for accountMode mca"
         if has_sig:
