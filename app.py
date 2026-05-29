@@ -33,7 +33,7 @@ from db_provider import query_recent_transaction_swap, query_recent_transaction_
     query_multichain_lending_history, add_multichain_lending_report, query_dcl_bin_points, \
     query_multichain_lending_account, add_multichain_lending_whitelist, query_multichain_lending_zcash_data, zcash_get_public_key, \
     query_evm_mpc_call_cache, add_evm_mpc_call_cache, query_supported_chains, \
-    check_supported_chains_expired, refresh_supported_chains, \
+    check_supported_chains_expired, refresh_supported_chains, get_oneclick_order_by_deposit_address, \
     insert_random_record, get_one_pending_random_record, update_random_record, get_random_record_by_request_id, \
     get_pending_random_records_page, add_multichain_lending_report_lsd, query_multichain_lending_history_lsd
 from loguru import logger
