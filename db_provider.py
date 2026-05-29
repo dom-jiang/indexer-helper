@@ -2422,6 +2422,21 @@ def fetch_hyperliquid_transfer_jobs_active(network_id, limit=50):
         db_conn.close()
 
 
+def query_multichain_lending_zcash_data(network_id, mca_id):
+    db_conn = get_db_connect(network_id)
+    query_sql = "select * from multichain_lending_zcash_data where deposit_address = %s"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(query_sql, (mca_id, ))
+        ret_data = cursor.fetchone()
+        return ret_data
+    except Exception as e:
+        print("query multichain_lending_zcash_data to db error:", e)
+    finally:
+        cursor.close()
+    return
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
