@@ -35,9 +35,12 @@ from mca_evm_signature import (  # noqa: E402
     build_permit_body_from_mca_request,
     extract_deposit_hash_from_permit_records,
     extract_withdraw_hash_from_ledger,
+    is_zcash_bridge_deposit_body,
+    is_zcash_mca_signature_task,
     lending_batch_complete,
     lending_batch_error,
     resolve_mca_evm_rsv,
+    resolve_zcash_signature_task,
 )
 
 
@@ -342,6 +345,202 @@ def _deposit_skip_lending(payload: Dict[str, Any], account_mode: str) -> bool:
     return account_mode in ("evm", "mca")
 
 
+def _deposit_prereq_timeout_sec(payload: Dict[str, Any]) -> int:
+    """Zcash bridge deposits allow longer for 1Click / business signature polling."""
+    if is_zcash_bridge_deposit_body(payload):
+        return STEP_BRIDGE_SEC
+    return STEP_GATE_SEC
+
+
+def _deposit_prereq_timeout_fail(
+    network_id: str,
+    job_id: str,
+    payload: Dict[str, Any],
+    created: datetime,
+    now: datetime,
+) -> bool:
+    limit = _deposit_prereq_timeout_sec(payload)
+    if (now - created).total_seconds() > limit:
+        mins = max(1, limit // 60)
+        _fail_job(
+            network_id,
+            job_id,
+            "timeout waiting for deposit prerequisites ({0}m)".format(mins),
+        )
+        return True
+    return False
+
+
+def _refresh_zcash_signature_external_status(
+    network_id: str,
+    job_id: str,
+    row: Dict[str, Any],
+    signature_task: Dict[str, Any],
+) -> None:
+    """Merge Zcash business poll into externalStatus while bridge is still pending."""
+    if not is_zcash_mca_signature_task(signature_task):
+        return
+    zr = resolve_zcash_signature_task(network_id, signature_task)
+    ext_patch = dict(zr.get("ext_patch") or {})
+    existing_oc = (_ext(row).get("oneClickStatus") or "").strip()
+    if existing_oc:
+        ext_patch["oneClickStatus"] = existing_oc
+    if not ext_patch:
+        return
+    _update_job(
+        network_id,
+        job_id,
+        {"external_status_json": _merge_ext(row, ext_patch)},
+        transfer_type="deposit",
+    )
+
+
+def _resolve_mca_b_path_rsv(
+    network_id: str,
+    signature_task: Dict[str, Any],
+    batch_id: str,
+    lending_rows: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve r/s/v for MCA B-path (batch, Zcash deposit address, or txHash)."""
+    stask = signature_task if isinstance(signature_task, dict) else {}
+    if is_zcash_mca_signature_task(stask):
+        zr = resolve_zcash_signature_task(network_id, stask)
+        if zr.get("error_msg"):
+            raise ValueError(str(zr["error_msg"]))
+        return zr.get("rsv")
+    rows = lending_rows or []
+    if batch_id and not rows:
+        rows = []
+    return resolve_mca_evm_rsv(
+        network_id,
+        lending_rows=rows,
+        signature_task=stask,
+    )
+
+
+def _wait_for_mca_signature(
+    network_id: str,
+    job_id: str,
+    row: Dict[str, Any],
+    signature_task: Dict[str, Any],
+    batch_id: str,
+    *,
+    transfer_type: str,
+    timeout_gate,
+) -> bool:
+    """
+    Handle WAITING_SIGNATURE polling for MCA B-path.
+
+    Returns True if caller should return early (pending or failed).
+    """
+    from db_provider import query_multichain_lending_data
+
+    stask = signature_task if isinstance(signature_task, dict) else {}
+    tx_hash_direct = (stask.get("txHash") or "").strip()
+    zcash_deposit = (stask.get("zcashDepositAddress") or "").strip()
+
+    if not batch_id and not tx_hash_direct and not zcash_deposit:
+        _fail_job(
+            network_id,
+            job_id,
+            "batch_id, signatureTask.txHash, or zcashDepositAddress is required for mca path",
+        )
+        return True
+
+    if timeout_gate():
+        return True
+
+    if is_zcash_mca_signature_task(stask):
+        zr = resolve_zcash_signature_task(network_id, stask)
+        ext_patch = zr.get("ext_patch") or {}
+        if zr.get("error_msg"):
+            _fail_job(network_id, job_id, str(zr["error_msg"]), ext_patch=ext_patch)
+            return True
+        if zr.get("pending"):
+            sig_msg = (
+                "Waiting for Zcash business signature"
+                if is_zcash_mca_signature_task(stask)
+                else "Waiting for relayer signature"
+            )
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": sig_msg,
+                    "external_status_json": _merge_ext(row, ext_patch),
+                },
+                transfer_type=transfer_type,
+            )
+            return True
+        return False
+
+    if batch_id:
+        lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+        if not lending_rows:
+            _fail_job(network_id, job_id, "multichain_lending_data empty for batch_id")
+            return True
+        relayer_err = lending_batch_error(lending_rows)
+        if relayer_err:
+            _fail_job(network_id, job_id, "relayer batch failed: {0}".format(relayer_err))
+            return True
+        if not lending_batch_complete(lending_rows):
+            first = lending_rows[0] or {}
+            bs_raw = first.get("batch_status")
+            try:
+                bs = int(bs_raw) if bs_raw is not None else -1
+            except Exception:
+                bs = -1
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": "Waiting for relayer signature",
+                    "external_status_json": _merge_ext(row, {"batchStatus": bs}),
+                },
+                transfer_type=transfer_type,
+            )
+            return True
+        if not resolve_mca_evm_rsv(
+            network_id,
+            lending_rows=lending_rows,
+            signature_task=stask,
+        ):
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": "Waiting for relayer signature",
+                },
+                transfer_type=transfer_type,
+            )
+            return True
+        return False
+
+    if tx_hash_direct:
+        rsv_probe = resolve_mca_evm_rsv(
+            network_id,
+            lending_rows=[],
+            signature_task=stask,
+        )
+        if not rsv_probe:
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": "Waiting for relayer signature",
+                },
+                transfer_type=transfer_type,
+            )
+            return True
+        return False
+
+    return False
+
+
 def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
     from db_provider import (
         get_hyperliquid_transfer_job_by_job_id,
@@ -452,7 +651,7 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
         "SUBMITTING_PERMIT",
     ):
         if needs_bridge and deposit_address:
-            if _timeout_gate("timeout waiting for bridge / prerequisites (5m)"):
+            if _deposit_prereq_timeout_fail(network_id, job_id, payload, created, now):
                 return
             try:
                 oc_st, oc_data = poll_oneclick_status(deposit_address)
@@ -481,6 +680,12 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
                 )
                 return
             if oc_st != "SUCCESS":
+                if not skip_lending:
+                    stask = payload.get("signatureTask") or {}
+                    if isinstance(stask, dict):
+                        _refresh_zcash_signature_external_status(
+                            network_id, job_id, row, stask
+                        )
                 return
         elif needs_bridge and not deposit_address:
             _fail_job(network_id, job_id, "depositAddress missing for bridge deposit")
@@ -488,58 +693,20 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
 
         if not skip_lending:
             stask = payload.get("signatureTask") or {}
-            tx_hash_direct = stask.get("txHash")
-            if not batch_id and not tx_hash_direct:
-                _fail_job(network_id, job_id, "batch_id or signatureTask.txHash is required for mca deposit path")
+            if not isinstance(stask, dict):
+                stask = {}
+            if _wait_for_mca_signature(
+                network_id,
+                job_id,
+                row,
+                stask,
+                batch_id,
+                transfer_type="deposit",
+                timeout_gate=lambda: _deposit_prereq_timeout_fail(
+                    network_id, job_id, payload, created, now
+                ),
+            ):
                 return
-            if _timeout_gate("timeout waiting for relayer signature (5m)"):
-                return
-            lending_rows: List[Dict[str, Any]] = []
-            if batch_id:
-                try:
-                    lending_rows = query_multichain_lending_data(network_id, batch_id) or []
-                except Exception:
-                    return
-                if not lending_rows:
-                    _fail_job(network_id, job_id, "multichain_lending_data empty for batch_id")
-                    return
-                relayer_err = lending_batch_error(lending_rows)
-                if relayer_err:
-                    _fail_job(network_id, job_id, f"relayer batch failed: {relayer_err}")
-                    return
-                if not lending_batch_complete(lending_rows):
-                    first = lending_rows[0] or {}
-                    bs_raw = first.get("batch_status")
-                    try:
-                        bs = int(bs_raw) if bs_raw is not None else -1
-                    except Exception:
-                        bs = -1
-                    _update_job(
-                        network_id,
-                        job_id,
-                        {
-                            "status": "WAITING_SIGNATURE",
-                            "message": "Waiting for relayer signature",
-                            "external_status_json": _merge_ext(row, {"batchStatus": bs}),
-                        },
-                    )
-                    return
-            elif tx_hash_direct:
-                rsv_probe = resolve_mca_evm_rsv(
-                    network_id,
-                    lending_rows=[],
-                    signature_task=stask if isinstance(stask, dict) else {},
-                )
-                if not rsv_probe:
-                    _update_job(
-                        network_id,
-                        job_id,
-                        {
-                            "status": "WAITING_SIGNATURE",
-                            "message": "Waiting for relayer signature",
-                        },
-                    )
-                    return
 
         row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
         st = row.get("status") or ""
@@ -566,15 +733,21 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
                 )
             else:
                 stask = payload.get("signatureTask") or {}
-                if batch_id:
+                if not isinstance(stask, dict):
+                    stask = {}
+                lending_rows: List[Dict[str, Any]] = []
+                if batch_id and not is_zcash_mca_signature_task(stask):
                     lending_rows = query_multichain_lending_data(network_id, batch_id) or []
-                else:
-                    lending_rows = []
-                rsv = resolve_mca_evm_rsv(
-                    network_id,
-                    lending_rows=lending_rows,
-                    signature_task=stask if isinstance(stask, dict) else {},
-                )
+                try:
+                    rsv = _resolve_mca_b_path_rsv(
+                        network_id,
+                        stask,
+                        batch_id,
+                        lending_rows=lending_rows,
+                    )
+                except ValueError as e:
+                    _fail_job(network_id, job_id, str(e))
+                    return
                 if not rsv:
                     _fail_job(network_id, job_id, "failed to resolve MCA permit signature from relayer")
                     return
@@ -670,7 +843,6 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
 
     if st in ("SUBMITTED", "WAITING_SIGNATURE"):
         stask = payload.get("signatureTask") or {}
-        tx_hash_direct = stask.get("txHash") if isinstance(stask, dict) else None
         sig = payload.get("signature")
         has_frontend_sig = isinstance(sig, dict) and bool(sig.get("r"))
         if account_mode == "mca" and has_frontend_sig:
@@ -679,20 +851,39 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
                 job_id,
                 {"status": "SUBMITTING_EXCHANGE", "message": "Submitting withdrawal"},
             )
-        elif account_mode == "mca" and (batch_id or tx_hash_direct):
-            if _gate_timeout("timeout waiting for withdraw signature (5m)"):
-                return
-            lending_rows: List[Dict[str, Any]] = []
-            if batch_id:
-                lending_rows = query_multichain_lending_data(network_id, batch_id) or []
-                if not lending_rows:
-                    _fail_job(network_id, job_id, "multichain_lending_data empty for withdraw")
+        elif account_mode == "mca":
+            stask = payload.get("signatureTask") or {}
+            if not isinstance(stask, dict):
+                stask = {}
+            tx_hash_direct = (stask.get("txHash") or "").strip()
+            zcash_deposit = (stask.get("zcashDepositAddress") or "").strip()
+            if batch_id or tx_hash_direct or zcash_deposit:
+                if _wait_for_mca_signature(
+                    network_id,
+                    job_id,
+                    row,
+                    stask,
+                    batch_id,
+                    transfer_type="withdrawal",
+                    timeout_gate=lambda: _gate_timeout(
+                        "timeout waiting for withdraw signature (5m)"
+                    ),
+                ):
                     return
-                relayer_err = lending_batch_error(lending_rows)
-                if relayer_err:
-                    _fail_job(network_id, job_id, f"relayer batch failed: {relayer_err}")
+                lending_rows: List[Dict[str, Any]] = []
+                if batch_id and not is_zcash_mca_signature_task(stask):
+                    lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+                try:
+                    rsv = _resolve_mca_b_path_rsv(
+                        network_id,
+                        stask,
+                        batch_id,
+                        lending_rows=lending_rows,
+                    )
+                except ValueError as e:
+                    _fail_job(network_id, job_id, str(e))
                     return
-                if not lending_batch_complete(lending_rows):
+                if not rsv:
                     _update_job(
                         network_id,
                         job_id,
@@ -700,40 +891,33 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
                             "status": "WAITING_SIGNATURE",
                             "message": "Waiting for relayer signature",
                         },
+                        transfer_type="withdrawal",
                     )
                     return
-            rsv = resolve_mca_evm_rsv(
-                network_id,
-                lending_rows=lending_rows,
-                signature_task=stask if isinstance(stask, dict) else {},
-            )
-            if not rsv:
+                ext = _ext(row)
+                ext["withdrawSignature"] = rsv
+                if is_zcash_mca_signature_task(stask):
+                    zr = resolve_zcash_signature_task(network_id, stask)
+                    zpatch = zr.get("ext_patch") or {}
+                    if zpatch:
+                        ext.update(zpatch)
                 _update_job(
                     network_id,
                     job_id,
                     {
-                        "status": "WAITING_SIGNATURE",
-                        "message": "Waiting for relayer signature",
+                        "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
+                        "status": "SUBMITTING_EXCHANGE",
+                        "message": "Submitting withdrawal",
                     },
+                    transfer_type="withdrawal",
                 )
-                return
-            ext = _ext(row)
-            ext["withdrawSignature"] = rsv
-            _update_job(
-                network_id,
-                job_id,
-                {
-                    "external_status_json": json.dumps(ext, ensure_ascii=False)[:65000],
-                    "status": "SUBMITTING_EXCHANGE",
-                    "message": "Submitting withdrawal",
-                },
-            )
-        else:
-            _update_job(
-                network_id,
-                job_id,
-                {"status": "SUBMITTING_EXCHANGE", "message": "Submitting withdrawal"},
-            )
+            else:
+                _update_job(
+                    network_id,
+                    job_id,
+                    {"status": "SUBMITTING_EXCHANGE", "message": "Submitting withdrawal"},
+                    transfer_type="withdrawal",
+                )
         row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
         st = row.get("status") or ""
 

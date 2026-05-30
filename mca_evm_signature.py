@@ -299,6 +299,32 @@ def extract_mca_evm_rsv_from_lending_batch(
     return None
 
 
+def is_zcash_bridge_deposit_body(body: Any) -> bool:
+    """
+    Hyper Zcash deposit: transfer.skipped=false without transfer.txHash.
+
+    Matches PLAN-zcash-v2 — bridge poll uses quote.depositAddress; signature uses
+    signatureTask.zcashDepositAddress.
+    """
+    if not isinstance(body, dict):
+        return False
+    tr = body.get("transfer")
+    if not isinstance(tr, dict) or tr.get("skipped") is not False:
+        return False
+    q = body.get("quote")
+    if not isinstance(q, dict) or not q.get("needsBridge"):
+        return False
+    if not (q.get("depositAddress") or "").strip():
+        return False
+    dm = body.get("displayMeta")
+    if not isinstance(dm, dict):
+        return False
+    src = dm.get("source")
+    if not isinstance(src, dict):
+        return False
+    return (src.get("chain") or "").strip().lower() == "zcash"
+
+
 def is_zcash_mca_signature_task(signature_task: Any) -> bool:
     st = signature_task if isinstance(signature_task, dict) else {}
     chain = (st.get("signerChain") or "").strip().lower()
