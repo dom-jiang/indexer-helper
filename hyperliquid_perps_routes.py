@@ -23,6 +23,7 @@ from db_provider import (
     insert_hyperliquid_transfer_job,
     list_hyperliquid_transfer_history,
 )
+from mca_evm_signature import is_zcash_bridge_deposit_body
 
 bp = Blueprint("hyperliquid_perps", __name__, url_prefix="/api/v1/perps/hyperliquid")
 
@@ -428,7 +429,11 @@ def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _validate_transfer_block(body: Dict[str, Any]) -> Optional[str]:
+def _validate_transfer_block(
+    body: Dict[str, Any],
+    *,
+    allow_zcash_bridge_no_tx: bool = False,
+) -> Optional[str]:
     tr = body.get("transfer")
     if tr is None:
         return "transfer is required"
@@ -438,6 +443,8 @@ def _validate_transfer_block(body: Dict[str, Any]) -> Optional[str]:
     if not isinstance(sk, bool):
         return "transfer.skipped must be a boolean"
     if not sk:
+        if allow_zcash_bridge_no_tx and is_zcash_bridge_deposit_body(body):
+            return None
         h = tr.get("txHash")
         if not h or not str(h).strip():
             return "transfer.txHash is required when transfer.skipped is false"
@@ -525,7 +532,7 @@ def _validate_deposit(body: Dict[str, Any]) -> Optional[str]:
     err = _validate_quote(body)
     if err:
         return err
-    err = _validate_transfer_block(body)
+    err = _validate_transfer_block(body, allow_zcash_bridge_no_tx=True)
     if err:
         return err
 
@@ -675,6 +682,14 @@ def _create_or_get_job(
         tx_hashes.append(str(tr.get("txHash")).strip())
 
     payload = json.dumps(body, ensure_ascii=False, default=str)
+    if transfer_type == "deposit" and is_zcash_bridge_deposit_body(body):
+        init_status = "WAITING_BRIDGE"
+        init_message = "Waiting for bridge settlement"
+        init_progress = 40
+    else:
+        init_status = "SUBMITTED"
+        init_message = "Job accepted"
+        init_progress = 5
     row_in = {
         "job_id": _new_job_id(transfer_type),
         "client_request_id": cid[:128],
@@ -682,9 +697,9 @@ def _create_or_get_job(
         "account_mode": am,
         "hyperliquid_user_address": hl[:128],
         "destination_address": (destination_address or "")[:256] or None,
-        "status": "SUBMITTED",
-        "message": "Job accepted",
-        "progress": 5,
+        "status": init_status,
+        "message": init_message,
+        "progress": init_progress,
         "request_payload": payload,
         "tx_hashes_json": json.dumps(tx_hashes) if tx_hashes else None,
         "external_status_json": None,
