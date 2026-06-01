@@ -1,5 +1,6 @@
 import json
 import time
+from typing import Dict
 
 from config import Cfg
 import redis
