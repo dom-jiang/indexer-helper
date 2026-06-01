@@ -2579,6 +2579,22 @@ def update_swap_mca_withdraw_job_row(network_id, job_id, *, fields):
         cursor.close()
 
 
+def get_swap_transaction_by_hash(network_id, from_hash):
+    """Fetch a swap record by its source-chain transaction hash."""
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM swap_transactions WHERE from_hash = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (from_hash,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"get_swap_transaction_by_hash error: {e}")
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 def insert_swap_transaction(network_id, **fields):
     """
     Insert a swap transaction record reported by frontend after a user signed tx.
