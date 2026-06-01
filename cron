@@ -35,3 +35,5 @@
 #* * * * * /indexer-helper/backends/backend_burrow_force_close_alert.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_hyperliquid_deposit_worker.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_hyperliquid_perps_worker.sh > /dev/null
+* * * * * /indexer-helper/backends/backend_mca_withdraw_job.sh > /dev/null
+* * * * * /indexer-helper/backends/backend_near_intents_status_checker.sh > /dev/null
