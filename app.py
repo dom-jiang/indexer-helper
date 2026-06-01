@@ -6,6 +6,7 @@ from flask import Flask
 from flask import request
 from flask import jsonify
 from flask import Response
+from flask import g
 import json
 import math
 import logging
@@ -16,15 +17,16 @@ from redis_provider import list_token_price_by_id_list, get_proposal_hash_by_id,
 from redis_provider import get_dcl_pools_volume_list, get_24h_pool_volume_list, get_dcl_pools_tvl_list, \
     get_token_price_ratio_report, get_history_token_price_report, get_market_token_price, get_burrow_total_fee, \
     get_burrow_total_revenue, get_nbtc_total_supply, list_burrow_asset_token_metadata, get_whitelist_tokens, \
-    get_rnear_apy, add_rnear_apy, get_dcl_point_data, add_dcl_point_data, set_dcl_point_ttl, add_dcl_bin_point_data, \
+    get_rnear_apy, add_rnear_apy, add_dcl_point_data, set_dcl_point_ttl, add_dcl_bin_point_data, \
     get_dcl_bin_point_data, get_multichain_lending_tokens_data, get_multichain_lending_token_icon, get_lst_total_fee_24h, \
     get_lst_total_revenue_24h, get_cross_chain_total_fee_24h, get_cross_chain_total_revenue_24h, get_cross_chain_total_volume_24h, get_chain_tokens_with_prices
-from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, is_base64, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
+from utils import combine_pools_info, compress_response_content, get_ip_address, pools_filter, combine_dcl_pool_log, handle_dcl_point_bin, handle_point_data, handle_top_bin_fee, handle_dcl_point_bin_by_account, get_circulating_supply, get_lp_lock_info, get_rnear_price
 from config import Cfg
-from db_provider import get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, query_burrow_liquidate_log, update_burrow_liquidate_log, get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
+from db_provider import get_db_connect, get_history_token_price, query_limit_order_log, query_limit_order_swap, get_liquidity_pools, get_actions, query_dcl_pool_log, \
+    get_burrow_total_revenue_by_time_range, get_burrow_total_fee_by_time_range
 from db_provider import query_recent_transaction_swap, query_recent_transaction_dcl_swap, \
     query_recent_transaction_liquidity, query_recent_transaction_dcl_liquidity, query_recent_transaction_limit_order, query_dcl_points, query_dcl_points_by_account, \
-    query_dcl_user_unclaimed_fee, query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
+    query_dcl_user_claimed_fee, query_dcl_user_unclaimed_fee_24h, query_dcl_user_claimed_fee_24h, \
     query_dcl_user_tvl, query_dcl_user_change_log, query_burrow_log, get_history_token_price_by_token, add_orderly_trading_data, \
     add_liquidation_result, get_liquidation_result, update_liquidation_result, add_user_wallet_info, get_pools_volume_24h, \
     query_meme_burrow_log, get_whitelisted_tokens_to_db, query_conversion_token_record, get_token_day_data_list, \
@@ -49,19 +51,23 @@ from s3_client import AwsS3Config, download_and_upload_image_to_s3
 from zcash_utils import get_deposit_address, verify_add_zcash, ZcashRPC, call_evm_mpc_contract
 from bitget_utils import proxy_bitget_request, proxy_okx_request
 from proxy_api_utils import proxy_api_request
-from swap_utils import aggregate_quote, build_swap_tx, build_approve_tx, get_supported_routers
+from unified_swap import unified_quote, unified_swap
+from boss.routes import init_boss_routes
+from boss.auth import validate_swap_jwt
+from boss.rate_limiter import check_rate_limit
 from trxx_utils import (
     trxx_create_order, trxx_query_order, trxx_estimate_price, trxx_get_index_data,
-    trxx_reclaim_order, trxx_transfer_activate, verify_trxx_webhook_signature,
-    verify_frontend_signature, VALID_PERIODS, PERIOD_MAP, start_trxx_scheduler,
+    trxx_reclaim_order, verify_trxx_webhook_signature,
+    verify_frontend_signature, VALID_PERIODS, PERIOD_MAP, start_trxx_scheduler_once,
     _notify_third_party,
 )
 from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_by_serial, \
-    update_trxx_order_status as db_update_trxx_order_status, get_pending_trxx_orders, \
+    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions, \
+    update_trxx_order_status as db_update_trxx_order_status, \
     trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
-    ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
+    ensure_near_intents_orders_table, insert_near_intents_order, \
     query_near_intents_orders_merged_meta, \
     get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
     ensure_hyperliquid_deposit_orders_table, get_hyperliquid_deposit_by_unique_key, \
@@ -75,8 +81,24 @@ service_version = "20260519.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
-app = Flask(__name__)
+app = Flask(__name__, static_folder="boss-frontend/dist", static_url_path="/boss-ui")
+
+init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
 register_hyperliquid_perps(app)
+
+
+def _get_swap_endpoint_group(path: str) -> str | None:
+    if (
+        "/api/swap/quote" in path
+        or "/api/swap/order-status" in path
+        or "/api/swap/history" in path
+        or "/api/swap/mca-withdraw-jobs" in path
+    ):
+        return "quote"
+    if "/api/swap/swap" in path or "/api/swap/report" in path:
+        return "build"
+    return None
+
 # limiter = Limiter(
 #     app,
 #     key_func=get_ip_address,
@@ -88,8 +110,30 @@ register_hyperliquid_perps(app)
 
 @app.before_request
 def before_request():
-    # Processing get requests
     path = request.path
+
+    # Boss UI and API routes skip legacy auth
+    if path.startswith("/boss") or path.startswith("/boss-ui"):
+        return None
+
+    # Swap API: JWT auth + rate limiting
+    endpoint_group = _get_swap_endpoint_group(path)
+    if endpoint_group:
+        api_token, jwt_error = validate_swap_jwt(lambda: get_db_connect(Cfg.NETWORK_ID))
+        if not api_token:
+            body = {
+                "code": 401,
+                "msg": (jwt_error or {}).get("msg") or "JWT authentication failed",
+            }
+            if jwt_error and jwt_error.get("reason"):
+                body["reason"] = jwt_error["reason"]
+            return jsonify(body), 401
+        rl = check_rate_limit(g.app_id, endpoint_group, lambda: get_db_connect(Cfg.NETWORK_ID))
+        if not rl["allowed"]:
+            return jsonify({"code": 429, "msg": rl["reason"]}), 429
+        return None
+
+    # Legacy AES-based auth for non-swap routes
     if Cfg.NETWORK[Cfg.NETWORK_ID]["AUTH_SWITCH"] and path not in Cfg.NETWORK[Cfg.NETWORK_ID]["NOT_AUTH_LIST"]:
         try:
             headers_authentication = request.headers.get("Authentication")
@@ -1682,8 +1726,17 @@ def handel_user_swap_record():
 @app.route('/multichain_lending_requests', methods=['POST', 'PUT'])
 def handel_multichain_lending_requests():
     try:
+        from mca_relayer_payload import canonicalize_multichain_lending_requests_body
+
         multichain_lending_data = request.json
-        batch_id = add_multichain_lending_requests(Cfg.NETWORK_ID, multichain_lending_data["mca_id"], multichain_lending_data["wallet"], multichain_lending_data["request"], multichain_lending_data["page_display_data"])
+        canon = canonicalize_multichain_lending_requests_body(multichain_lending_data)
+        batch_id = add_multichain_lending_requests(
+            Cfg.NETWORK_ID,
+            canon["mca_id"],
+            canon["wallet"],
+            canon["request"],
+            canon["page_display_data"],
+        )
         ret = {
             "code": 0,
             "msg": "success",
@@ -2542,25 +2595,28 @@ def handle_get_supported_chains():
 
 
 # ============================================================
-# EVM DEX Aggregation API (Quote + Build-TX for frontend wallet signing)
+# Unified Swap API (same-chain + cross-chain)
 # ============================================================
 
 @app.route('/api/swap/quote', methods=['POST'])
 def api_swap_quote():
     """
-    Aggregated DEX quote from Bitget/OKX.
-    Queries multiple DEX routers in parallel and returns the best quote.
+    Unified swap quote — supports both same-chain and cross-chain.
 
     Request body:
     {
-        "chainId": 1,
-        "tokenIn": {"address": "0x...", "symbol": "USDT", "decimals": 6},
-        "tokenOut": {"address": "0x...", "symbol": "USDC", "decimals": 6},
+        "fromChain": "1",
+        "toChain": "42161",
+        "tokenIn": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "tokenOut": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
-        "recipient": "0x..."  // optional, defaults to sender
+        "recipient": "0x..."
     }
+
+    Same-chain (fromChain == toChain): routes to multi-aggregator (Bitget/OKX/Jupiter/Panora).
+    Cross-chain (fromChain != toChain): parallel OmniBridge + NearIntents 1Click, returns best price.
     """
     try:
         if not request.is_json:
@@ -2570,133 +2626,46 @@ def api_swap_quote():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
-        chain_id = body.get("chainId")
-        token_in = body.get("tokenIn")
-        token_out = body.get("tokenOut")
-        amount_in = body.get("amountIn")
-        slippage = body.get("slippage", 0.5)
-        sender = body.get("sender")
-        recipient = body.get("recipient")
-
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
-        if not token_in or not isinstance(token_in, dict):
-            return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
-        if not token_out or not isinstance(token_out, dict):
-            return jsonify({"code": -1, "msg": "tokenOut is required and must be a JSON object", "data": None})
-        if not amount_in:
-            return jsonify({"code": -1, "msg": "amountIn is required", "data": None})
-        if not sender:
-            return jsonify({"code": -1, "msg": "sender address is required", "data": None})
-
-        result = aggregate_quote(
-            chain_id=chain_id,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=str(amount_in),
-            slippage=float(slippage),
-            sender=sender,
-            recipient=recipient,
+        mca = body.get("mca") if isinstance(body.get("mca"), dict) else None
+        result = unified_quote(
+            from_chain=body.get("fromChain", body.get("chainId", "")),
+            to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
+            token_in_address=body.get("tokenIn", ""),
+            token_out_address=body.get("tokenOut", ""),
+            amount_in=str(body.get("amountIn", "")),
+            slippage=float(body.get("slippage", 0.5)),
+            sender=body.get("sender", ""),
+            recipient=body.get("recipient", ""),
+            mca=mca,
         )
 
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Quote failed"), "data": result})
+        return jsonify(result)
     except Exception as e:
         logger.error(f"api_swap_quote error: {e}")
         return jsonify({"code": -1, "msg": str(e), "data": None})
 
 
-@app.route('/api/swap/build-tx', methods=['POST'])
-def api_swap_build_tx():
+@app.route('/api/swap/swap', methods=['POST'])
+def api_swap_build():
     """
-    Build swap transaction parameters for wallet signing.
-    Frontend calls this after getting a quote, then sends the tx via wallet.
+    Unified swap (build transaction) — supports both same-chain and cross-chain.
 
     Request body:
     {
-        "chainId": 1,
-        "router": "bitget",
-        "tokenIn": {"address": "0x...", "symbol": "USDT", "decimals": 6},
-        "tokenOut": {"address": "0x...", "symbol": "USDC", "decimals": 6},
+        "fromChain": "1",
+        "toChain": "42161",
+        "tokenIn": "0x...",
+        "tokenOut": "0x...",
         "amountIn": "1000000",
         "slippage": 0.5,
         "sender": "0x...",
         "recipient": "0x...",
-        "market": "..."  // required for Bitget (from quote response)
-    }
-    """
-    try:
-        if not request.is_json:
-            return jsonify({"code": -1, "msg": "Request must be JSON format", "data": None})
-
-        body = request.get_json()
-        if not body or not isinstance(body, dict):
-            return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
-
-        chain_id = body.get("chainId")
-        router = body.get("router")
-        token_in = body.get("tokenIn")
-        token_out = body.get("tokenOut")
-        amount_in = body.get("amountIn")
-        slippage = body.get("slippage", 0.5)
-        sender = body.get("sender")
-        recipient = body.get("recipient")
-        market = body.get("market")
-
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
-        if not router or router not in ("bitget", "okx"):
-            return jsonify({"code": -1, "msg": "router is required and must be 'bitget' or 'okx'", "data": None})
-        if not token_in or not isinstance(token_in, dict):
-            return jsonify({"code": -1, "msg": "tokenIn is required and must be a JSON object", "data": None})
-        if not token_out or not isinstance(token_out, dict):
-            return jsonify({"code": -1, "msg": "tokenOut is required and must be a JSON object", "data": None})
-        if not amount_in:
-            return jsonify({"code": -1, "msg": "amountIn is required", "data": None})
-        if not sender:
-            return jsonify({"code": -1, "msg": "sender address is required", "data": None})
-        if not recipient:
-            recipient = sender
-
-        result = build_swap_tx(
-            chain_id=chain_id,
-            router=router,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=str(amount_in),
-            slippage=float(slippage),
-            sender=sender,
-            recipient=recipient,
-            market=market,
-        )
-
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Build transaction failed"), "data": result})
-    except Exception as e:
-        logger.error(f"api_swap_build_tx error: {e}")
-        return jsonify({"code": -1, "msg": str(e), "data": None})
-
-
-@app.route('/api/swap/approve-tx', methods=['POST'])
-def api_swap_approve_tx():
-    """
-    Build ERC20 approve transaction for wallet signing.
-    Required before swap if token allowance is insufficient.
-
-    Request body:
-    {
-        "chainId": 1,
         "router": "okx",
-        "tokenAddress": "0x...",
-        "approveAmount": "1000000",  // or "max" for unlimited
-        "spender": "0x..."  // required for Bitget (from build-tx 'approveSpender')
+        "market": "..."
     }
+
+    Same-chain: builds swap tx + includes approve tx data if needed.
+    Cross-chain: builds via specified router (omnibridge / nearintents).
     """
     try:
         if not request.is_json:
@@ -2706,63 +2675,422 @@ def api_swap_approve_tx():
         if not body or not isinstance(body, dict):
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
-        chain_id = body.get("chainId")
-        router = body.get("router")
-        token_address = body.get("tokenAddress")
-        approve_amount = body.get("approveAmount", "max")
-        spender = body.get("spender")
+        near_signed = (
+            body.get("nearMcaDepositSignedTx")
+            or body.get("nearSignedTx")
+            or body.get("signedNearTxBase64")
+        )
+        if isinstance(near_signed, str) and near_signed.strip():
+            from unified_swap import broadcast_near_signed_transaction
 
-        # Validate required fields
-        if not chain_id or not isinstance(chain_id, int):
-            return jsonify({"code": -1, "msg": "chainId is required and must be an integer", "data": None})
-        if not router or router not in ("bitget", "okx"):
-            return jsonify({"code": -1, "msg": "router is required and must be 'bitget' or 'okx'", "data": None})
-        if not token_address:
-            return jsonify({"code": -1, "msg": "tokenAddress is required", "data": None})
+            ret = broadcast_near_signed_transaction(Cfg.NETWORK_ID, near_signed.strip())
+            return jsonify(ret)
 
-        # Convert "max"/"unlimited" to a large number for OKX API
-        if approve_amount in ("max", "unlimited"):
-            # Use a very large number (2^255) for OKX API; for Bitget we use MaxUint256 directly
-            if router == "okx":
-                approve_amount = str(2 ** 255)
-        else:
-            approve_amount = str(approve_amount)
+        orch = body.get("mcaWithdrawOrchestration")
+        if isinstance(orch, dict) and orch:
+            from job.mca_withdraw_job import enqueue_mca_withdraw_orchestration_job
 
-        result = build_approve_tx(
-            chain_id=chain_id,
-            router=router,
-            token_address=token_address,
-            approve_amount=approve_amount,
-            spender=spender,
+            ret = enqueue_mca_withdraw_orchestration_job(Cfg.NETWORK_ID, orch)
+            http = 202 if ret.get("code") == 0 else 400
+            return jsonify(ret), http
+
+        mca_rel = body.get("mcaRelayer") if isinstance(body.get("mcaRelayer"), dict) else None
+        mca_oc = body.get("mca") if isinstance(body.get("mca"), dict) else None
+        if mca_oc is None and isinstance(body.get("mcaOneclick"), dict):
+            mca_oc = body.get("mcaOneclick")
+        mca_id_hint = ""
+        if isinstance(mca_rel, dict):
+            mca_id_hint = str(
+                mca_rel.get("mcaAccountId") or mca_rel.get("mca_id") or ""
+            ).strip()
+        if not mca_id_hint and isinstance(mca_oc, dict):
+            mca_id_hint = str(
+                mca_oc.get("mcaAccountId") or mca_oc.get("mca_id") or ""
+            ).strip()
+        multi_addr_body = body.get("multi_addr") or body.get("multiAddr") or ""
+        is_cross_chain_body = body.get("is_cross_chain")
+        if is_cross_chain_body is None:
+            is_cross_chain_body = body.get("isCrossChain")
+        result = unified_swap(
+            from_chain=body.get("fromChain", body.get("chainId", "")),
+            to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
+            token_in_address=body.get("tokenIn", ""),
+            token_out_address=body.get("tokenOut", ""),
+            amount_in=str(body.get("amountIn", "")),
+            slippage=float(body.get("slippage", 0.5)),
+            sender=body.get("sender", "") or mca_id_hint,
+            recipient=body.get("recipient", ""),
+            router=body.get("router", ""),
+            market=body.get("market", ""),
+            quote_expected_out=str(body.get("expectedOut", body.get("quoteExpectedOut", ""))),
+            quote_min_amount_out=str(body.get("minAmountOut", body.get("quoteMinAmountOut", ""))),
+            pre_swap=body.get("preSwap") if isinstance(body.get("preSwap"), dict) else None,
+            bridge=body.get("bridge") if isinstance(body.get("bridge"), dict) else None,
+            mca_relayer=mca_rel,
+            mca_oneclick=mca_oc,
+            deposit_address=str(
+                body.get("deposit_address") or body.get("depositAddress") or ""
+            ),
+            is_cross_chain=is_cross_chain_body,
+            tx_type=str(body.get("tx_type") or body.get("txType") or ""),
+            multi_addr=str(multi_addr_body or mca_id_hint or ""),
         )
 
-        if result.get("success"):
-            return jsonify({"code": 0, "msg": "success", "data": result})
-        else:
-            return jsonify({"code": -1, "msg": result.get("error", "Build approve transaction failed"), "data": result})
+        return jsonify(result)
     except Exception as e:
-        logger.error(f"api_swap_approve_tx error: {e}")
+        logger.error(f"api_swap_build error: {e}")
         return jsonify({"code": -1, "msg": str(e), "data": None})
 
 
-@app.route('/api/swap/supported-routers', methods=['GET'])
-def api_swap_supported_routers():
+@app.route("/api/swap/mca-withdraw-jobs", methods=["GET"])
+def api_swap_mca_withdraw_jobs():
     """
-    Get supported DEX routers and chain information.
+    Poll async MCA-withdraw orchestration job status (enqueue via POST /api/swap/swap
+    body field mcaWithdrawOrchestration). Query ?id=<jobId>.
+    """
+    try:
+        job_raw = request.args.get("id", "").strip()
+        if not job_raw:
+            return jsonify({"code": -1, "msg": "id is required"})
+        job_id_int = int(job_raw)
+        from job.mca_withdraw_job import public_job
+
+        return jsonify(public_job(Cfg.NETWORK_ID, job_id_int))
+    except ValueError:
+        return jsonify({"code": -1, "msg": "id must be an integer"})
+    except Exception as e:
+        logger.error(f"api_swap_mca_withdraw_jobs error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+def _order_status_with_top_level_status(data):
+    """Copy 1Click status to data.status when it only exists under intentsStatus (e.g. mca_relayer)."""
+    if not isinstance(data, dict):
+        return data if data is not None else {}
+    out = dict(data)
+    intents = out.get("intentsStatus")
+    if isinstance(intents, dict):
+        st = intents.get("status")
+        if st is None:
+            st = intents.get("state")
+        if st is not None:
+            out["status"] = st
+    return out
+
+
+@app.route('/api/swap/order-status', methods=['GET'])
+def api_swap_order_status():
+    """
+    Unified cross-chain / relayer-adjacent order status.
 
     Query params:
-        chainId (optional): specific chain ID to query
+      - orderId (required)
+      - router (required):
+          * omnibridge
+          * nearintents | preswap-nearintents  (orderId = 1Click depositAddress)
+          * mca_relayer | mca-withdraw-intents (orderId = multichain_lending batch_id,
+            same as swap `data.orderId` / `data.batchId`; includes Relayer batch + 1Click when parsable)
     """
     try:
-        chain_id_str = request.args.get("chainId")
-        chain_id = int(chain_id_str) if chain_id_str else None
+        order_id = request.args.get("orderId", "")
+        router = request.args.get("router", "").strip().lower()
 
-        result = get_supported_routers(chain_id=chain_id)
+        if not order_id:
+            return jsonify({"code": -1, "msg": "orderId is required"})
+        if not router:
+            return jsonify(
+                {
+                    "code": -1,
+                    "msg": "router is required (omnibridge, nearintents, preswap-nearintents, mca_relayer)",
+                }
+            )
 
-        return jsonify({"code": 0, "msg": "success", "data": result})
+        if router == "omnibridge":
+            from omnibridge_utils import omni_get_order_status
+            result = omni_get_order_status(order_id)
+        elif router in ("nearintents", "preswap-nearintents"):
+            # preswap-nearintents is a two-stage route whose cross-chain phase is
+            # handled entirely by 1Click. The orderId we expose for it is the
+            # 1Click depositAddress, so status query goes through the same path.
+            from nearintents_utils import nearintents_order_status
+            result = nearintents_order_status(order_id)
+        elif router in ("mca_relayer", "mca-withdraw-intents"):
+            from mca_relayer_payload import (
+                extract_intents_deposit_address_from_business,
+                summarize_multichain_lending_batch,
+            )
+            from nearintents_utils import nearintents_order_status
+
+            bid = order_id.strip()
+            rows = query_multichain_lending_data(Cfg.NETWORK_ID, bid)
+            if rows is None:
+                rows = []
+            s = summarize_multichain_lending_batch(rows)
+
+            deposit_addr = ""
+            for r in rows:
+                rq = r.get("request")
+                if not rq:
+                    continue
+                try:
+                    obj = json.loads(rq) if isinstance(rq, str) else rq
+                    b = obj.get("business") if isinstance(obj, dict) else None
+                    if isinstance(b, dict):
+                        dep = extract_intents_deposit_address_from_business(b)
+                        if dep:
+                            deposit_addr = dep
+                except Exception:
+                    continue
+
+            intents_payload = None
+            intents_err = None
+            if deposit_addr:
+                ns = nearintents_order_status(deposit_addr)
+                if ns.get("success"):
+                    intents_payload = ns.get("data")
+                else:
+                    intents_err = ns.get("error", "NearIntents status query failed")
+
+            payload = _order_status_with_top_level_status(
+                {
+                    "orderId": bid,
+                    "batchId": bid,
+                    "relayer": {
+                        "pending": bool(s.get("pending")),
+                        "complete": bool(s.get("complete")),
+                        "success": bool(s.get("success")),
+                        "txHashes": s.get("tx_hashes") or [],
+                        "error": s.get("error") or "",
+                        "rowCount": len(rows),
+                    },
+                    "intentsDepositAddress": deposit_addr or None,
+                    "intentsStatus": intents_payload,
+                    **(
+                        {"intentsStatusError": intents_err}
+                        if intents_err and not intents_payload
+                        else {}
+                    ),
+                }
+            )
+            return jsonify({"code": 0, "msg": "success", "data": payload})
+        else:
+            return jsonify(
+                {
+                    "code": -1,
+                    "msg": (
+                        f"Unknown router: {router}. Supported: omnibridge, nearintents, "
+                        "preswap-nearintents, mca_relayer"
+                    ),
+                }
+            )
+
+        if result.get("success"):
+            payload = _order_status_with_top_level_status(result.get("data", {}) or {})
+            return jsonify({"code": 0, "msg": "success", "data": payload})
+        else:
+            return jsonify({"code": -1, "msg": result.get("error", "Query failed")})
     except Exception as e:
-        logger.error(f"api_swap_supported_routers error: {e}")
-        return jsonify({"code": -1, "msg": str(e), "data": None})
+        logger.error(f"api_swap_order_status error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+# ============================================================
+# Swap Transaction Report & History
+# ============================================================
+
+CROSS_CHAIN_ACCOUNT_DISPLAY = "Cross-chain Account"
+
+
+def _is_mca_near_account_id(addr: str) -> bool:
+    """
+    True for NEAR MCA account ids (e.g. rhea000006.ma.private-mainnet.ref-dev-team.near).
+
+    Aligns with frontend trade history: legacy *.multica.near and staging/mainnet *.ma.*.near.
+    """
+    a = (addr or "").strip().lower()
+    if not a or not a.endswith(".near"):
+        return False
+    if a.endswith(".multica.near"):
+        return True
+    if ".ma." in a:
+        return True
+    am = (getattr(Cfg, "MCA_AM_CONTRACT", None) or "").strip().lower()
+    if am and (a == am or a.endswith("." + am)):
+        return True
+    return False
+
+
+def _swap_history_display_address(addr, multi_addr=None):
+    """Map MCA NEAR account ids to fixed UI label for GET /api/swap/history."""
+    raw = (addr or "").strip()
+    if not raw:
+        return addr
+    mca = (multi_addr or "").strip()
+    if mca and raw == mca:
+        return CROSS_CHAIN_ACCOUNT_DISPLAY
+    if _is_mca_near_account_id(raw):
+        return CROSS_CHAIN_ACCOUNT_DISPLAY
+    return addr
+
+
+try:
+    ensure_swap_transactions_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure swap_transactions table: {_e}")
+
+
+@app.route('/api/swap/report', methods=['POST'])
+def api_swap_report():
+    """
+    Report a user-signed swap transaction so the backend can persist history
+    and poll cross-chain status.
+
+    Required body fields:
+      - sender         (string): user's source-chain wallet address
+      - from_hash      (string): source-chain tx hash the user just signed
+      - from_token     (string): source-chain input token address
+      - to_token       (string): destination-chain output token address
+      - deposit_address(string): cross-chain deposit address (same-chain can pass "")
+
+    Optional:
+      - recipient (aka receiver): destination-chain wallet that will receive the output.
+                                  Same-chain: usually same as sender. Cross-chain: may differ.
+      - multi_addr, swap_id (aka swapId)
+      - from_chain, to_chain, amount_in, estimated_out, router, tx_type
+      - is_cross_chain (bool), extra (object)
+    """
+    try:
+        if not request.is_json:
+            return jsonify({"code": -1, "msg": "Request must be JSON format", "data": None})
+        body = request.get_json() or {}
+        if not isinstance(body, dict):
+            return jsonify({"code": -1, "msg": "Request body must be a JSON object"})
+
+        sender = (body.get("sender") or "").strip()
+        recipient = (body.get("recipient") or body.get("receiver") or "").strip()
+        from_hash = (body.get("from_hash") or body.get("fromHash") or "").strip()
+        from_token = body.get("from_token") or body.get("fromToken") or ""
+        to_token = body.get("to_token") or body.get("toToken") or ""
+        deposit_address = body.get("deposit_address") or body.get("depositAddress") or ""
+
+        if not sender:
+            return jsonify({"code": -1, "msg": "sender is required"})
+        if not from_hash:
+            return jsonify({"code": -1, "msg": "from_hash is required"})
+        if not from_token or not to_token:
+            return jsonify({"code": -1, "msg": "from_token and to_token are required"})
+
+        swap_id_val = body.get("swap_id")
+        if swap_id_val is None:
+            swap_id_val = body.get("swapId")
+
+        from_chain = body.get("from_chain") or body.get("fromChain") or ""
+        to_chain = body.get("to_chain") or body.get("toChain") or ""
+
+        is_cross_chain = body.get("is_cross_chain")
+        if is_cross_chain is None:
+            is_cross_chain = body.get("isCrossChain")
+        if is_cross_chain is None:
+            if from_chain and to_chain:
+                is_cross_chain = str(from_chain) != str(to_chain)
+            elif deposit_address:
+                is_cross_chain = True
+            else:
+                is_cross_chain = False
+
+        record_id = insert_swap_transaction(
+            Cfg.NETWORK_ID,
+            sender=sender,
+            recipient=recipient or None,
+            from_hash=from_hash,
+            deposit_address=deposit_address or None,
+            from_token=from_token,
+            to_token=to_token,
+            from_chain=str(from_chain) if from_chain else None,
+            to_chain=str(to_chain) if to_chain else None,
+            amount_in=body.get("amount_in") or body.get("amountIn"),
+            estimated_out=body.get("estimated_out") or body.get("estimatedOut"),
+            router=body.get("router"),
+            tx_type=body.get("tx_type") or body.get("txType"),
+            is_cross_chain=bool(is_cross_chain),
+            multi_addr=body.get("multi_addr") or body.get("multiAddr"),
+            swap_id=str(swap_id_val) if swap_id_val is not None else None,
+            extra=body.get("extra"),
+        )
+
+        return jsonify({"code": 0, "msg": "success", "data": {"id": record_id, "from_hash": from_hash}})
+    except Exception as e:
+        logger.error(f"api_swap_report error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
+
+
+@app.route('/api/swap/history', methods=['GET'])
+def api_swap_history():
+    """
+    Query a sender's swap history, newest first.
+
+    Query params:
+      - sender     (required): wallet address
+      - pageNumber (default 1)
+      - pageSize   (default 20, max 100)
+    """
+    try:
+        sender = (request.args.get("sender") or "").strip()
+        if not sender:
+            return jsonify({"code": -1, "msg": "sender is required"})
+
+        try:
+            page_number = int(request.args.get("pageNumber", 1))
+        except (TypeError, ValueError):
+            page_number = 1
+        try:
+            page_size = int(request.args.get("pageSize", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_number = max(1, page_number)
+        page_size = max(1, min(100, page_size))
+
+        rows, total = query_swap_transactions(
+            Cfg.NETWORK_ID, sender, page_number=page_number, page_size=page_size
+        )
+
+        for row in rows:
+            created_at = row.get("created_at")
+            updated_at = row.get("updated_at")
+            if isinstance(created_at, datetime.datetime):
+                row["created_at"] = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(updated_at, datetime.datetime):
+                row["updated_at"] = updated_at.strftime("%Y-%m-%d %H:%M:%S")
+            mca_ref = row.get("multi_addr")
+            if row.get("sender") is not None:
+                row["sender"] = _swap_history_display_address(row.get("sender"), mca_ref)
+            if row.get("recipient") is not None:
+                row["recipient"] = _swap_history_display_address(row.get("recipient"), mca_ref)
+            if row.get("multi_addr") is not None:
+                row["multi_addr"] = _swap_history_display_address(row.get("multi_addr"), mca_ref)
+            for json_field in ("extra", "status_response"):
+                if row.get(json_field):
+                    try:
+                        row[json_field] = json.loads(row[json_field])
+                    except Exception:
+                        pass
+
+        total_page = (total + page_size - 1) // page_size if total else 0
+
+        return jsonify({
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "record_list": rows,
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_page": total_page,
+                "total_size": total,
+            },
+        })
+    except Exception as e:
+        logger.error(f"api_swap_history error: {e}")
+        return jsonify({"code": -1, "msg": str(e)})
 
 
 # ============================================================
@@ -4170,15 +4498,24 @@ def api_beacon():
     return resp
 
 
+@app.route("/boss-ui/")
+@app.route("/boss-ui/<path:path>")
+def serve_boss_ui(path="index.html"):
+    """Serve Boss frontend SPA - all routes fall back to index.html"""
+    import os
+    static_dir = os.path.join(app.root_path, "boss-frontend", "dist")
+    file_path = os.path.join(static_dir, path)
+    if os.path.isfile(file_path):
+        return app.send_static_file(path)
+    return app.send_static_file("index.html")
+
+
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
 log_file = "app-%s.log" % current_date
 logger.add(log_file)
 
-# Start TRXX pending order polling scheduler
-try:
-    start_trxx_scheduler()
-except Exception as sched_err:
-    logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
+# TRXX scheduler: start via gunicorn.conf.py post_fork (one leader among workers).
+# Flask dev server starts it in __main__ below.
 
 # Start LSD bridge fee compensation scheduler
 # try:
@@ -4187,6 +4524,10 @@ except Exception as sched_err:
 #     logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
 
 if __name__ == '__main__':
+    try:
+        start_trxx_scheduler_once()
+    except Exception as sched_err:
+        logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
     app.logger.setLevel(logging.INFO)
     app.logger.info(Welcome)
     app.run(host='0.0.0.0', port=28080, debug=False)

@@ -1,0 +1,266 @@
+<template>
+  <div class="login-page">
+    <div class="login-card">
+      <h2 class="login-title">API Management</h2>
+      <p class="login-subtitle">{{ isRegister ? 'Create your account' : 'Sign in to your account' }}</p>
+
+      <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleSubmit" class="login-form">
+        <el-form-item prop="email">
+          <el-input v-model="form.email" placeholder="Email" size="large" prefix-icon="Message" />
+        </el-form-item>
+        <el-form-item prop="password">
+          <el-input v-model="form.password" placeholder="Password" type="password" size="large" prefix-icon="Lock" show-password />
+        </el-form-item>
+        <el-form-item v-if="isRegister" prop="confirmPassword">
+          <el-input
+            v-model="form.confirmPassword"
+            placeholder="Confirm Password"
+            type="password"
+            size="large"
+            prefix-icon="Lock"
+            show-password
+          />
+        </el-form-item>
+        <el-form-item v-if="isRegister && emailVerify" prop="code">
+          <div class="code-row">
+            <el-input v-model="form.code" placeholder="Verification Code" size="large" maxlength="6" />
+            <el-button
+              size="large"
+              :disabled="countdown > 0 || !form.email"
+              :loading="sendingCode"
+              @click="handleSendCode"
+              class="code-btn"
+            >
+              {{ countdown > 0 ? `${countdown}s` : 'Send Code' }}
+            </el-button>
+          </div>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" size="large" :loading="loading" @click="handleSubmit" style="width: 100%">
+            {{ isRegister ? 'Register' : 'Login' }}
+          </el-button>
+        </el-form-item>
+      </el-form>
+
+      <div class="login-switch">
+        <span v-if="!isRegister">Don't have an account? <el-link type="primary" @click="isRegister = true">Register</el-link></span>
+        <span v-else>Already have an account? <el-link type="primary" @click="isRegister = false">Login</el-link></span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, watch, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useAuthStore } from '../store'
+import api from '../api'
+
+const router = useRouter()
+const auth = useAuthStore()
+
+const isRegister = ref(false)
+const loading = ref(false)
+const sendingCode = ref(false)
+const countdown = ref(0)
+const emailVerify = ref(true)
+const formRef = ref(null)
+const form = ref({ email: '', password: '', confirmPassword: '', code: '' })
+
+const EMAIL_PATTERN = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/
+
+const rules = {
+  email: [
+    { required: true, message: 'Please enter your email', trigger: 'blur' },
+    { pattern: EMAIL_PATTERN, message: 'Please enter a valid email address', trigger: ['blur', 'change'] },
+  ],
+  password: [
+    { required: true, message: 'Please enter your password', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (isRegister.value && value && value.length < 6) {
+          callback(new Error('Password must be at least 6 characters'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+  confirmPassword: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!isRegister.value) {
+          callback()
+          return
+        }
+        if (!value) {
+          callback(new Error('Please confirm your password'))
+          return
+        }
+        if (value !== form.value.password) {
+          callback(new Error('Passwords do not match'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  code: [
+    {
+      validator: (_rule, value, callback) => {
+        if (isRegister.value && emailVerify.value && !value) {
+          callback(new Error('Please enter the verification code'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+
+let countdownTimer = null
+
+onMounted(async () => {
+  try {
+    const res = await api.get('/config')
+    if (res.code === 0) {
+      emailVerify.value = res.data.emailVerify
+    }
+  } catch (_) {}
+})
+
+watch(isRegister, () => {
+  form.value.code = ''
+  form.value.confirmPassword = ''
+  formRef.value?.clearValidate()
+})
+
+watch(
+  () => form.value.password,
+  () => {
+    if (isRegister.value && form.value.confirmPassword && formRef.value) {
+      formRef.value.validateField('confirmPassword').catch(() => {})
+    }
+  },
+)
+
+async function validateEmailField() {
+  if (!formRef.value) return false
+  try {
+    await formRef.value.validateField('email')
+    return true
+  } catch {
+    return false
+  }
+}
+
+function startCountdown() {
+  countdown.value = 60
+  countdownTimer = setInterval(() => {
+    countdown.value--
+    if (countdown.value <= 0) {
+      clearInterval(countdownTimer)
+      countdownTimer = null
+    }
+  }, 1000)
+}
+
+async function handleSendCode() {
+  if (!(await validateEmailField())) return
+  sendingCode.value = true
+  try {
+    const res = await api.post('/send-code', { email: form.value.email })
+    if (res.code === 0) {
+      ElMessage.success('Verification code sent to your email')
+      startCountdown()
+    } else {
+      ElMessage.error(res.msg || 'Failed to send code')
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.msg || 'Network error')
+  } finally {
+    sendingCode.value = false
+  }
+}
+
+async function handleSubmit() {
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    return
+  }
+  loading.value = true
+  try {
+    const endpoint = isRegister.value ? '/register' : '/login'
+    const payload = isRegister.value
+      ? { email: form.value.email, password: form.value.password, ...(emailVerify.value ? { code: form.value.code } : {}) }
+      : { email: form.value.email, password: form.value.password }
+    const res = await api.post(endpoint, payload)
+    if (res.code === 0) {
+      auth.setAuth(res.data.user, res.data.token)
+      ElMessage.success(isRegister.value ? 'Registration successful' : 'Login successful')
+      router.push('/dashboard')
+    } else {
+      ElMessage.error(res.msg || 'Operation failed')
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.msg || 'Network error')
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<style scoped>
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+.login-card {
+  background: white;
+  border-radius: 12px;
+  padding: 40px;
+  width: 420px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+}
+.login-title {
+  text-align: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #303133;
+  margin-bottom: 4px;
+}
+.login-subtitle {
+  text-align: center;
+  color: #909399;
+  margin-bottom: 28px;
+  font-size: 14px;
+}
+.login-form {
+  margin-top: 20px;
+}
+.login-switch {
+  text-align: center;
+  font-size: 13px;
+  color: #909399;
+}
+.code-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+.code-row .el-input {
+  flex: 1;
+}
+.code-btn {
+  min-width: 110px;
+}
+</style>

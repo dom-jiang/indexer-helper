@@ -6,8 +6,33 @@ __author__ = 'Marco'
 try:
     from db_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
-    TESTNET_RPC_URL= ["https://rpc.testnet.near.org", ]
-    MAINNET_RPC_URL= ["https://rpc.mainnet.near.org", ]
+    TESTNET_RPC_URL = ["https://rpc.testnet.near.org", ]
+    MAINNET_RPC_URL = ["https://rpc.mainnet.near.org", ]
+
+try:
+    from db_info import (
+        MCA_BURROW_LOGIC_CONTRACT,
+        MCA_AM_CONTRACT,
+        INTENTS_APP_FEES_RECIPIENT,
+        INTENTS_APP_FEES,
+        INTENTS_DEFAULT_REFERRAL,
+    )
+except ImportError:
+    MCA_BURROW_LOGIC_CONTRACT = None
+    MCA_AM_CONTRACT = None
+    INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
+    INTENTS_APP_FEES = 2
+    INTENTS_DEFAULT_REFERRAL = "rhea"
+
+try:
+    from db_info import MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+except ImportError:
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = ""
+
+try:
+    from db_info import MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
+except ImportError:
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = None
 
 try:
     from db_info import REDIS_HOST, REDIS_PORT
@@ -50,7 +75,11 @@ except ImportError:
 
 
 try:
-    from db_info import MARKET_KEY, MARKET_URL, AUTH_SWITCH, NOT_AUTH_LIST, SIGN_EXPIRE, CRYPTO_AES_KEY, REF_URL, REF_SDK_URL, REF_GO_API, LST_CONTRACT_ID, LST_RPC, LST_AGO_DAY, COINGECKO_API_KEY
+    from db_info import (
+        MARKET_KEY, MARKET_URL, AUTH_SWITCH, NOT_AUTH_LIST, SIGN_EXPIRE, CRYPTO_AES_KEY,
+        REF_URL, REF_SDK_URL, REF_GO_API, LST_CONTRACT_ID, LST_RPC, LST_AGO_DAY, COINGECKO_API_KEY,
+        SMARTX_URL, NEAR_AGGREGATE_DEX_CONTRACT,
+    )
 except ImportError:
     MARKET_KEY = ""
     MARKET_URL = ""
@@ -60,6 +89,8 @@ except ImportError:
     CRYPTO_AES_KEY = "8309c61008a5f5ba6c51bbf977781c55"
     REF_URL = ""
     REF_SDK_URL = ""
+    SMARTX_URL = ""
+    NEAR_AGGREGATE_DEX_CONTRACT = ""
     REF_GO_API = ""
     LST_CONTRACT_ID = ""
     LST_RPC = ""
@@ -81,7 +112,7 @@ except ImportError:
 
 
 try:
-    from db_info import BITGET_API_KEY, BITGET_API_SECRET, BITGET_PARTNER_CODE, PROXY_API_URL, OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE, OKX_PROJECT_ID
+    from db_info import BITGET_API_KEY, BITGET_API_SECRET, BITGET_PARTNER_CODE, PROXY_API_URL, OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE, OKX_PROJECT_ID, EVM_TEST_OKX_ONLY
 except ImportError:
     BITGET_API_KEY = ""
     BITGET_API_SECRET = ""
@@ -91,6 +122,7 @@ except ImportError:
     OKX_API_SECRET = ""
     OKX_API_PASSPHRASE = ""
     OKX_PROJECT_ID = ""
+    EVM_TEST_OKX_ONLY = False
 
 try:
     from db_info import TRXX_API_KEY, TRXX_API_SECRET, FRONTEND_API_SECRET, THIRDPARTY_WEBHOOK_URL, EVM_CHAIN_LIST
@@ -144,6 +176,43 @@ try:
 except ImportError:
     pass
 
+try:
+    from db_info import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+except ImportError:
+    SMTP_HOST = "smtp.example.com"
+    SMTP_PORT = 465
+    SMTP_USER = ""
+    SMTP_PASS = ""
+    SMTP_FROM = ""
+
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
+try:
+    from db_info import PANORA_API_KEY
+except ImportError:
+    PANORA_API_KEY = ""
+
+try:
+    from db_info import (
+        TITAN_WS_ENDPOINT,
+        TITAN_API_JWT,
+        TITAN_API_ORIGIN,
+        TITAN_QUOTE_TIMEOUT_SEC,
+    )
+except ImportError:
+    TITAN_WS_ENDPOINT = ""
+    TITAN_API_JWT = ""
+    TITAN_API_ORIGIN = "https://titan.exchange"
+    TITAN_QUOTE_TIMEOUT_SEC = 15
+
+try:
+    from db_info import BOSS_EMAIL_VERIFY
+except ImportError:
+    BOSS_EMAIL_VERIFY = True
+
 
 class Cfg:
     NETWORK_ID = "MAINNET"
@@ -170,6 +239,8 @@ class Cfg:
     OKX_API_SECRET = OKX_API_SECRET
     OKX_API_PASSPHRASE = OKX_API_PASSPHRASE
     OKX_PROJECT_ID = OKX_PROJECT_ID
+    # ===== TEMP TEST: EVM OKX-only (from db_info.EVM_TEST_OKX_ONLY) =====
+    EVM_TEST_OKX_ONLY = EVM_TEST_OKX_ONLY
     TRXX_API_KEY = TRXX_API_KEY
     TRXX_API_SECRET = TRXX_API_SECRET
     FRONTEND_API_SECRET = FRONTEND_API_SECRET
@@ -186,6 +257,52 @@ class Cfg:
     HYPERLIQUID_PERMIT_SPENDER = HYPERLIQUID_PERMIT_SPENDER
     HYPERLIQUID_MAINNET_INFO_URL = HYPERLIQUID_MAINNET_INFO_URL
     HYPERLIQUID_MAINNET_EXCHANGE_URL = HYPERLIQUID_MAINNET_EXCHANGE_URL
+    SMTP_HOST = SMTP_HOST
+    SMTP_PORT = SMTP_PORT
+    SMTP_USER = SMTP_USER
+    SMTP_PASS = SMTP_PASS
+    SMTP_FROM = SMTP_FROM
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
+    # 1Click API host only (NO version suffix). The `/v0` path is appended by
+    # callers via `nearintents_utils._oneclick_url`, which also defensively
+    # strips a trailing `/v0` / `/v0/` if someone leaves it in here. Production
+    # value: `https://1click.chaindefuser.com`.
+    ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
+    # Panora API key for Aptos same-chain swap (`x-api-key` header). Apply at
+    # https://app.panora.exchange/developer — the `/swap` endpoint is gated
+    # and returns 401 without a key. Override in `db_info.py` for production.
+    PANORA_API_KEY = PANORA_API_KEY
+    # Hyperion CLMM for Aptos same-chain / preswap (mirrors frontend @hyperionxyz/sdk).
+    HYPERION_API_HOST = "https://api.hyperion.xyz"
+    HYPERION_CONTRACT = (
+        "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
+    )
+    # Aptos fullnode for on-chain FA metadata (decimals) when Redis is cold.
+    APTOS_RPC_URL = "https://fullnode.mainnet.aptoslabs.com/v1"
+    # Titan Direct WebSocket for Solana same-chain / preswap aggregation.
+    TITAN_WS_ENDPOINT = TITAN_WS_ENDPOINT
+    TITAN_API_JWT = TITAN_API_JWT
+    TITAN_API_ORIGIN = TITAN_API_ORIGIN
+    TITAN_QUOTE_TIMEOUT_SEC = TITAN_QUOTE_TIMEOUT_SEC
+    # Near Intents 1Click: default appFees + referral on every /v0/quote (see nearintents_utils).
+    MCA_BURROW_LOGIC_CONTRACT = MCA_BURROW_LOGIC_CONTRACT
+    MCA_AM_CONTRACT = MCA_AM_CONTRACT
+    INTENTS_APP_FEES_RECIPIENT = INTENTS_APP_FEES_RECIPIENT
+    INTENTS_APP_FEES = INTENTS_APP_FEES
+    INTENTS_DEFAULT_REFERRAL = INTENTS_DEFAULT_REFERRAL
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+    # Burrow-inner amount sent via Logic `simple_withdraw` to the multichain relayer BEFORE
+    # `execute(Withdraw)` in MCA withdraw batches (staging relayers often require this leg).
+    # Override in `db_info.py` or pass `mca.relayerPrepayBurrowInner` on /quote requests.
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
+    # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
+    # cross-chain Solana deposit transactions on the backend. Set to a
+    # paid/private RPC (Helius / QuickNode / Triton ...) in production; the
+    # public mainnet-beta endpoint is rate-limited and not suitable for swap
+    # traffic. If the URL is empty or the RPC call fails, the backend falls
+    # back to the legacy descriptor format (`sol_transfer` / `spl_transfer`).
+    SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+    BOSS_EMAIL_VERIFY = BOSS_EMAIL_VERIFY
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,
@@ -212,7 +329,8 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
-            "NBTC_CONTRACT": "nbtc.bridge.testnet"
+            "NBTC_CONTRACT": "nbtc.bridge.testnet",
+            "BURROW_CONTRACT": "contract.dev-burrow.testnet",
         },
         "TESTNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,
@@ -246,7 +364,8 @@ class Cfg:
             "DB_PWD": DB_PWD,
             "DB_HOST": DB_HOST,
             "DB_PORT": DB_PORT,
-            "NBTC_CONTRACT": "nbtc.bridge.testnet"
+            "NBTC_CONTRACT": "nbtc.bridge.testnet",
+            "BURROW_CONTRACT": "contract.dev-burrow.testnet",
         },
         "MAINNET": {
             "NEAR_RPC_URL": MAINNET_RPC_URL,
@@ -582,6 +701,8 @@ class Cfg:
     MARKET_KEY = MARKET_KEY
     REF_URL = REF_URL
     REF_SDK_URL = REF_SDK_URL
+    SMARTX_URL = SMARTX_URL
+    NEAR_AGGREGATE_DEX_CONTRACT = NEAR_AGGREGATE_DEX_CONTRACT
     REF_GO_API = REF_GO_API
     LST_CONTRACT_ID = LST_CONTRACT_ID
     LST_RPC = LST_RPC
