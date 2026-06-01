@@ -16,11 +16,11 @@ import requests
 sys.path.append("../")
 from config import Cfg
 
-STEP_GATE_SEC = 300
-STEP_PERMIT_SEC = 300
-STEP_CONFIRM_SEC = 300
-STEP_LEDGER_SEC = 300
-STEP_BRIDGE_SEC = 600
+STEP_GATE_SEC = 600
+STEP_PERMIT_SEC = 600
+STEP_CONFIRM_SEC = 600
+STEP_LEDGER_SEC = 600
+STEP_BRIDGE_SEC = 86400
 
 from hyperliquid_deposit_worker import (  # noqa: E402
     HL_TERMINAL_HISTORY,
