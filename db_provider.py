@@ -7,6 +7,22 @@ import time
 import requests
 from redis_provider import RedisProvider, list_token_metadata, list_history_token_price, list_token_price, get_account_pool_assets, get_pool_point_24h_by_pool_id
 from data_utils import add_redis_data
+from loguru import logger
+
+
+MCA_WITHDRAW_JOB_ACTIVE_STATUSES = ("queued", "relayer_waiting", "follow_up")
+MCA_WITHDRAW_JOB_TERMINAL_STATUSES = frozenset(
+    {
+        "done",
+        "relayer_failed",
+        "follow_up_failed",
+        "swap_build_ready",
+        "intents_terminal_success",
+        "intents_terminal_failed",
+        "partial_failed",
+        "failed",
+    }
+)
 
 
 class Encoder(json.JSONEncoder):
@@ -2236,40 +2252,6 @@ def ensure_hyperliquid_transfer_jobs_table(network_id):
     except Exception as e:
         db_conn.rollback()
         print("ensure_hyperliquid_transfer_jobs_table error:", e.args)
-    finally:
-        cursor.close()
-        db_conn.close()
-
-
-def update_hyperliquid_deposit_order(network_id, hl_deposit_order_id, fields: dict):
-    """Partial update by id. `fields` maps column_name -> value."""
-    if not fields:
-        return
-    nullable_keys = {
-        "permit_id", "error_message", "oneclick_status_snapshot",
-        "permit_response_snapshot", "records_snapshot",
-        "permit_started_at", "confirm_started_at",
-    }
-    cols = []
-    vals = []
-    for k, v in fields.items():
-        if v is None and k not in nullable_keys:
-            continue
-        cols.append("`%s` = %%s" % str(k).replace("`", ""))
-        vals.append(v)
-    if not cols:
-        return
-    sql = "UPDATE hyperliquid_deposit_orders SET " + ", ".join(cols) + ", updated_at = NOW() WHERE id = %s"
-    vals.append(hl_deposit_order_id)
-    db_conn = get_db_connect(network_id)
-    cursor = db_conn.cursor()
-    try:
-        cursor.execute(sql, tuple(vals))
-        db_conn.commit()
-    except Exception as e:
-        db_conn.rollback()
-        print("update_hyperliquid_deposit_order error:", e)
-        raise e
     finally:
         cursor.close()
         db_conn.close()
