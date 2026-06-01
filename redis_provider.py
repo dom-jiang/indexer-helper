@@ -559,6 +559,19 @@ def get_chain_tokens_with_prices(chain: str, max_age_seconds: int = None) -> Dic
     return result
 
 
+def get_1click_tokens_cache():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("ONECLICK_TOKENS_CACHE")
+    r.close()
+    return ret
+
+
+def set_1click_tokens_cache(data_str, ttl=600):
+    r = redis.StrictRedis(connection_pool=pool)
+    r.set("ONECLICK_TOKENS_CACHE", data_str, ex=ttl)
+    r.close()
+
+
 if __name__ == '__main__':
     conn = RedisProvider()
     # conn.begin_pipe()
