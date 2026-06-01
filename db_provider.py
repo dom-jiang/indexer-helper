@@ -2579,6 +2579,79 @@ def update_swap_mca_withdraw_job_row(network_id, job_id, *, fields):
         cursor.close()
 
 
+def insert_swap_transaction(network_id, **fields):
+    """
+    Insert a swap transaction record reported by frontend after a user signed tx.
+
+    Required: sender, from_hash
+    Optional: recipient, deposit_address, from_token, to_token, from_chain, to_chain,
+              amount_in, estimated_out, router, tx_type, is_cross_chain,
+              multi_addr, swap_id, extra (dict/list will be json-encoded),
+              status (default PENDING).
+
+    If from_hash already exists, returns the existing record id (idempotent).
+    """
+    sender = fields.get("sender")
+    from_hash = fields.get("from_hash")
+    if not sender or not from_hash:
+        raise ValueError("sender and from_hash are required")
+
+    extra = fields.get("extra")
+    if isinstance(extra, (dict, list)):
+        extra = json.dumps(extra, ensure_ascii=False)
+
+    is_cross_chain = 1 if fields.get("is_cross_chain") else 0
+
+    columns = [
+        "sender", "recipient", "from_hash", "deposit_address", "from_token", "to_token",
+        "from_chain", "to_chain", "amount_in", "estimated_out", "router",
+        "tx_type", "is_cross_chain", "status", "multi_addr", "swap_id", "extra",
+    ]
+    values = [
+        sender,
+        fields.get("recipient"),
+        from_hash,
+        fields.get("deposit_address"),
+        fields.get("from_token"),
+        fields.get("to_token"),
+        fields.get("from_chain"),
+        fields.get("to_chain"),
+        fields.get("amount_in"),
+        fields.get("estimated_out"),
+        fields.get("router"),
+        fields.get("tx_type") or ("cross-chain" if is_cross_chain else "same-chain"),
+        is_cross_chain,
+        fields.get("status") or "PENDING",
+        fields.get("multi_addr"),
+        fields.get("swap_id"),
+        extra,
+    ]
+
+    placeholders = ", ".join(["%s"] * len(columns))
+    col_sql = ", ".join(f"`{c}`" for c in columns)
+    sql = f"INSERT INTO swap_transactions ({col_sql}) VALUES ({placeholders})"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.lastrowid
+    except pymysql.err.IntegrityError:
+        db_conn.rollback()
+        existing = get_swap_transaction_by_hash(network_id, from_hash)
+        if existing:
+            return existing.get("id")
+        raise
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_swap_transaction error: {e}")
+        raise
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
