@@ -299,6 +299,168 @@ def extract_mca_evm_rsv_from_lending_batch(
     return None
 
 
+def is_zcash_bridge_deposit_body(body: Any) -> bool:
+    """
+    Hyper Zcash deposit: transfer.skipped=false without transfer.txHash.
+
+    Matches PLAN-zcash-v2 — bridge poll uses quote.depositAddress; signature uses
+    signatureTask.zcashDepositAddress.
+    """
+    if not isinstance(body, dict):
+        return False
+    tr = body.get("transfer")
+    if not isinstance(tr, dict) or tr.get("skipped") is not False:
+        return False
+    q = body.get("quote")
+    if not isinstance(q, dict) or not q.get("needsBridge"):
+        return False
+    if not (q.get("depositAddress") or "").strip():
+        return False
+    dm = body.get("displayMeta")
+    if not isinstance(dm, dict):
+        return False
+    src = dm.get("source")
+    if not isinstance(src, dict):
+        return False
+    return (src.get("chain") or "").strip().lower() == "zcash"
+
+
+def is_zcash_mca_signature_task(signature_task: Any) -> bool:
+    st = signature_task if isinstance(signature_task, dict) else {}
+    chain = (st.get("signerChain") or "").strip().lower()
+    zcash_addr = (st.get("zcashDepositAddress") or "").strip()
+    return chain == "zcash" or bool(zcash_addr)
+
+
+def resolve_zcash_signature_task(
+    network_id: str,
+    signature_task: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Poll Zcash business row by deposit address (or parse txHash directly).
+
+    Returns dict with keys: rsv, tx_hash, pending, error_msg, ext_patch.
+    """
+    st = signature_task if isinstance(signature_task, dict) else {}
+    tx_hash = (st.get("txHash") or "").strip()
+    zcash_addr = (st.get("zcashDepositAddress") or "").strip()
+    ext_patch: Dict[str, Any] = {}
+
+    if tx_hash:
+        senders = _mca_near_sender_ids(network_id, signature_task=st)
+        rsv = fetch_evm_rsv_from_near_tx(network_id, tx_hash, senders)
+        ext_patch["zcashTxHash"] = tx_hash
+        if rsv:
+            return {
+                "rsv": rsv,
+                "tx_hash": tx_hash,
+                "pending": False,
+                "error_msg": None,
+                "ext_patch": ext_patch,
+            }
+        return {
+            "rsv": None,
+            "tx_hash": tx_hash,
+            "pending": True,
+            "error_msg": None,
+            "ext_patch": ext_patch,
+        }
+
+    if not zcash_addr:
+        return {
+            "rsv": None,
+            "tx_hash": None,
+            "pending": False,
+            "error_msg": "zcashDepositAddress is required for Zcash signature task",
+            "ext_patch": ext_patch,
+        }
+
+    from db_provider import query_multichain_lending_zcash_data
+
+    ext_patch["zcashDepositAddress"] = zcash_addr
+    row = query_multichain_lending_zcash_data(network_id, zcash_addr)
+    if not row:
+        ext_patch["zcashStatus"] = "missing"
+        return {
+            "rsv": None,
+            "tx_hash": None,
+            "pending": True,
+            "error_msg": None,
+            "ext_patch": ext_patch,
+        }
+
+    try:
+        status = int(row.get("status") if row.get("status") is not None else -1)
+    except Exception:
+        status = -1
+    ext_patch["zcashStatus"] = status
+    err = (row.get("error_msg") or "").strip()
+    if err:
+        ext_patch["zcashError"] = err[:500]
+
+    if status == 3:
+        return {
+            "rsv": None,
+            "tx_hash": None,
+            "pending": False,
+            "error_msg": err or "Zcash business failed",
+            "ext_patch": ext_patch,
+        }
+
+    if status == 0:
+        return {
+            "rsv": None,
+            "tx_hash": None,
+            "pending": True,
+            "error_msg": None,
+            "ext_patch": ext_patch,
+        }
+
+    near_tx = (row.get("tx_hash") or "").strip()
+    if near_tx:
+        ext_patch["zcashTxHash"] = near_tx
+
+    if status == 1 and near_tx:
+        senders = _mca_near_sender_ids(
+            network_id,
+            signature_task=st,
+            mca_id=row.get("ma_id"),
+        )
+        rsv = fetch_evm_rsv_from_near_tx(network_id, near_tx, senders)
+        if rsv:
+            return {
+                "rsv": rsv,
+                "tx_hash": near_tx,
+                "pending": False,
+                "error_msg": None,
+                "ext_patch": ext_patch,
+            }
+        return {
+            "rsv": None,
+            "tx_hash": near_tx,
+            "pending": True,
+            "error_msg": None,
+            "ext_patch": ext_patch,
+        }
+
+    if err:
+        return {
+            "rsv": None,
+            "tx_hash": near_tx or None,
+            "pending": False,
+            "error_msg": err,
+            "ext_patch": ext_patch,
+        }
+
+    return {
+        "rsv": None,
+        "tx_hash": near_tx or None,
+        "pending": True,
+        "error_msg": None,
+        "ext_patch": ext_patch,
+    }
+
+
 def resolve_mca_evm_rsv(
     network_id: str,
     *,

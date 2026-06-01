@@ -23,6 +23,7 @@ from db_provider import (
     insert_hyperliquid_transfer_job,
     list_hyperliquid_transfer_history,
 )
+from mca_evm_signature import is_zcash_bridge_deposit_body
 
 bp = Blueprint("hyperliquid_perps", __name__, url_prefix="/api/v1/perps/hyperliquid")
 
@@ -428,7 +429,11 @@ def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _validate_transfer_block(body: Dict[str, Any]) -> Optional[str]:
+def _validate_transfer_block(
+    body: Dict[str, Any],
+    *,
+    allow_zcash_bridge_no_tx: bool = False,
+) -> Optional[str]:
     tr = body.get("transfer")
     if tr is None:
         return "transfer is required"
@@ -438,6 +443,8 @@ def _validate_transfer_block(body: Dict[str, Any]) -> Optional[str]:
     if not isinstance(sk, bool):
         return "transfer.skipped must be a boolean"
     if not sk:
+        if allow_zcash_bridge_no_tx and is_zcash_bridge_deposit_body(body):
+            return None
         h = tr.get("txHash")
         if not h or not str(h).strip():
             return "transfer.txHash is required when transfer.skipped is false"
@@ -483,9 +490,22 @@ def _validate_mca_signature_task(stask: Any) -> Optional[str]:
         return "signatureTask object is required"
     if (stask.get("type") or "").strip() != "mca_relayer":
         return "signatureTask.type must be mca_relayer for accountMode mca"
-    if not stask.get("batchId") and not stask.get("txHash"):
-        return "signatureTask.batchId or signatureTask.txHash is required for accountMode mca"
-    return None
+    batch_id = stask.get("batchId")
+    tx_hash = stask.get("txHash")
+    zcash_addr = stask.get("zcashDepositAddress")
+    signer_chain = (stask.get("signerChain") or "").strip().lower()
+    if batch_id or tx_hash or zcash_addr:
+        if signer_chain == "zcash":
+            if not tx_hash and not zcash_addr:
+                return (
+                    "signatureTask.zcashDepositAddress or txHash is required "
+                    "for signerChain zcash"
+                )
+        return None
+    return (
+        "signatureTask.batchId, txHash, or zcashDepositAddress is required "
+        "for accountMode mca"
+    )
 
 
 def _validate_permit_request(pr: Any, hyperliquid_user_address: str) -> Optional[str]:
@@ -512,7 +532,7 @@ def _validate_deposit(body: Dict[str, Any]) -> Optional[str]:
     err = _validate_quote(body)
     if err:
         return err
-    err = _validate_transfer_block(body)
+    err = _validate_transfer_block(body, allow_zcash_bridge_no_tx=True)
     if err:
         return err
 
@@ -524,7 +544,11 @@ def _validate_deposit(body: Dict[str, Any]) -> Optional[str]:
         has_ps = isinstance(ps, dict) and bool(ps)
         has_relayer = isinstance(pr, dict) and (
             isinstance(stask, dict)
-            and (stask.get("batchId") or stask.get("txHash"))
+            and (
+                stask.get("batchId")
+                or stask.get("txHash")
+                or stask.get("zcashDepositAddress")
+            )
         )
         if not has_ps and not has_relayer:
             return (
@@ -590,7 +614,11 @@ def _validate_withdraw(body: Dict[str, Any]) -> Optional[str]:
     sig = body.get("signature")
     if am == "mca":
         has_sig = isinstance(sig, dict) and bool(sig.get("r"))
-        has_stask = isinstance(stask, dict) and (stask.get("batchId") or stask.get("txHash"))
+        has_stask = isinstance(stask, dict) and (
+            stask.get("batchId")
+            or stask.get("txHash")
+            or stask.get("zcashDepositAddress")
+        )
         if not has_sig and not has_stask:
             return "signature or signatureTask is required for accountMode mca"
         if has_sig:
@@ -654,6 +682,14 @@ def _create_or_get_job(
         tx_hashes.append(str(tr.get("txHash")).strip())
 
     payload = json.dumps(body, ensure_ascii=False, default=str)
+    if transfer_type == "deposit" and is_zcash_bridge_deposit_body(body):
+        init_status = "WAITING_BRIDGE"
+        init_message = "Waiting for bridge settlement"
+        init_progress = 40
+    else:
+        init_status = "SUBMITTED"
+        init_message = "Job accepted"
+        init_progress = 5
     row_in = {
         "job_id": _new_job_id(transfer_type),
         "client_request_id": cid[:128],
@@ -661,9 +697,9 @@ def _create_or_get_job(
         "account_mode": am,
         "hyperliquid_user_address": hl[:128],
         "destination_address": (destination_address or "")[:256] or None,
-        "status": "SUBMITTED",
-        "message": "Job accepted",
-        "progress": 5,
+        "status": init_status,
+        "message": init_message,
+        "progress": init_progress,
         "request_payload": payload,
         "tx_hashes_json": json.dumps(tx_hashes) if tx_hashes else None,
         "external_status_json": None,
