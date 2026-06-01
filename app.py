@@ -8,6 +8,7 @@ from flask import jsonify
 from flask import Response
 from flask import g
 import json
+import math
 import logging
 from indexer_provider import get_proposal_id_hash
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price, list_base_token_price
@@ -34,7 +35,7 @@ from db_provider import query_recent_transaction_swap, query_recent_transaction_
     query_multichain_lending_history, add_multichain_lending_report, query_dcl_bin_points, \
     query_multichain_lending_account, add_multichain_lending_whitelist, query_multichain_lending_zcash_data, zcash_get_public_key, \
     query_evm_mpc_call_cache, add_evm_mpc_call_cache, query_supported_chains, \
-    check_supported_chains_expired, refresh_supported_chains, \
+    check_supported_chains_expired, refresh_supported_chains, get_oneclick_order_by_deposit_address, \
     insert_random_record, get_one_pending_random_record, update_random_record, get_random_record_by_request_id, \
     get_pending_random_records_page, add_multichain_lending_report_lsd, query_multichain_lending_history_lsd
 from loguru import logger
@@ -64,9 +65,21 @@ from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_
     update_trxx_order_status as db_update_trxx_order_status, trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions
+    update_trxx_order_status as db_update_trxx_order_status, get_pending_trxx_orders, \
+    trxx_webhook_event_exists, create_trxx_webhook_event, \
+    insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
+    ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
+    ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
+    query_near_intents_orders_merged_meta, \
+    get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
+    ensure_hyperliquid_deposit_orders_table, get_hyperliquid_deposit_by_unique_key, \
+    insert_hyperliquid_deposit_order, get_hyperliquid_deposit_order_by_id, \
+    ensure_hyperliquid_transfer_jobs_table, \
+    ensure_user_access_logs_table, insert_user_access_log
 from lsd_compensation_utils import start_lsd_compensation_scheduler
+from hyperliquid_perps_routes import register_hyperliquid_perps
 
-service_version = "20260318.01"
+service_version = "20260519.01"
 Welcome = 'Welcome to ref datacenter API server, version ' + service_version + ', indexer %s' % \
           Cfg.NETWORK[Cfg.NETWORK_ID]["INDEXER_HOST"][-3:]
 # Instantiation, which can be regarded as fixed format
@@ -86,6 +99,15 @@ def _get_swap_endpoint_group(path: str) -> str | None:
     if "/api/swap/swap" in path or "/api/swap/report" in path:
         return "build"
     return None
+app = Flask(__name__)
+register_hyperliquid_perps(app)
+# limiter = Limiter(
+#     app,
+#     key_func=get_ip_address,
+#     default_limits=["20 per second"],
+#     # storage_uri="redis://:@127.0.0.1:6379/2"
+#     storage_uri="redis://:@" + Cfg.REDIS["REDIS_HOST"] + ":6379/2"
+# )
 
 
 @app.before_request
@@ -694,14 +716,14 @@ def analysis_v2_pool_data():
 
 @app.route('/analysis-v2-pool-account-data', methods=['GET'])
 def analysis_v2_pool_account_data():
-    import threading
+    # import threading
     file_name = request.args.get("file_name")
-    logger.info("account file_name:{}", file_name)
-    thread = threading.Thread(
-        target=analysis_v2_pool_account_data_to_s3,
-        args=(file_name, Cfg.NETWORK_ID)
-    )
-    thread.start()
+    # logger.info("account file_name:{}", file_name)
+    # thread = threading.Thread(
+    #     target=analysis_v2_pool_account_data_to_s3,
+    #     args=(file_name, Cfg.NETWORK_ID)
+    # )
+    # thread.start()
     return file_name
 
 
@@ -1540,7 +1562,7 @@ def handel_conversion_token_record():
 
 @app.route('/get-rnear-apy', methods=['GET'])
 def handel_rnear_apy():
-    day_number = request.args.get("day_number", type=int, default=2)
+    day_number = request.args.get("day_number", type=int, default=30)
     apy = get_rnear_apy(day_number)
     if apy is None:
         price_result = get_rnear_price(day_number)
@@ -3714,6 +3736,770 @@ def _format_order_response(order):
     }
 
 
+# ============================================================
+# 1Click Swap Order API
+# ============================================================
+
+try:
+    ensure_oneclick_orders_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure oneclick_orders table: {_e}")
+
+
+@app.route('/api/1click/create-order', methods=['POST'])
+@app.route('/api/1click/quote', methods=['POST'])
+def handle_1click_create_order():
+    """POST /api/1click/create-order and POST /api/1click/quote — same handler (1Click /v0/quote + insert oneclick_orders)."""
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "Request body is required"}), 400
+
+        required_fields = ["originAsset", "destinationAsset", "amount", "refundTo", "recipient"]
+        for field in required_fields:
+            if not body.get(field):
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+
+        oneclick_payload = {
+            "dry": False,
+            "swapType": body.get("swapType", "EXACT_INPUT"),
+            "slippageTolerance": body.get("slippageTolerance", 100),
+            "originAsset": body["originAsset"],
+            "depositType": body.get("depositType", "ORIGIN_CHAIN"),
+            "destinationAsset": body["destinationAsset"],
+            "amount": body["amount"],
+            "recipient": body["recipient"],
+            "recipientType": body.get("recipientType", "DESTINATION_CHAIN"),
+            "refundTo": body["refundTo"],
+            "refundType": body.get("refundType", "ORIGIN_CHAIN"),
+        }
+        if body.get("deadline"):
+            oneclick_payload["deadline"] = body["deadline"]
+        if body.get("referral"):
+            oneclick_payload["referral"] = body["referral"]
+        for extra_key in ("customRecipientMsg", "appFees", "depositMode",
+                          "virtualChainRecipient", "virtualChainRefundRecipient"):
+            if body.get(extra_key) is not None:
+                oneclick_payload[extra_key] = body[extra_key]
+
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if Cfg.ONECLICK_JWT_TOKEN:
+            headers["Authorization"] = Cfg.ONECLICK_JWT_TOKEN
+
+        resp = requests.post(
+            f"{Cfg.ONECLICK_BASE_URL}/v0/quote",
+            json=oneclick_payload,
+            headers=headers,
+            timeout=30
+        )
+
+        if resp.status_code >= 300:
+            # Match 1Click error JSON body (message, correlationId, …); avoid double-encoding in "detail".
+            try:
+                payload = resp.json()
+            except (ValueError, json.JSONDecodeError, TypeError):
+                payload = None
+            if not isinstance(payload, dict):
+                text = (resp.text or "").strip()
+                payload = {
+                    "message": text or "1Click API error",
+                    "path": "/v0/quote",
+                }
+            return jsonify(payload), resp.status_code
+
+        quote_data = resp.json()
+        deposit_address = None
+        quote_obj = quote_data.get("quote") or {}
+        deposit_address = quote_obj.get("depositAddress")
+
+        insert_oneclick_order(
+            network_id=Cfg.NETWORK_ID,
+            origin_asset=body["originAsset"],
+            destination_asset=body["destinationAsset"],
+            amount=body["amount"],
+            refund_to=body["refundTo"],
+            recipient=body["recipient"],
+            swap_type=oneclick_payload["swapType"],
+            slippage_tolerance=oneclick_payload["slippageTolerance"],
+            deposit_type=oneclick_payload["depositType"],
+            recipient_type=oneclick_payload["recipientType"],
+            refund_type=oneclick_payload["refundType"],
+            deadline=oneclick_payload.get("deadline"),
+            referral=oneclick_payload.get("referral"),
+            deposit_address=deposit_address,
+            request_body=json.dumps(oneclick_payload),
+            quote_response=json.dumps(quote_data)
+        )
+
+        return jsonify(quote_data)
+
+    except Exception as e:
+        logger.error(f"handle_1click_create_order error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _serialize_oneclick_order_rows(data_list):
+    """Shared list shape for /api/1click/orders."""
+    record_list = []
+    for row in (data_list or []):
+        item = dict(row)
+        for dt_key in ("created_at", "updated_at"):
+            if item.get(dt_key):
+                item[dt_key] = str(item[dt_key])
+        for json_key in ("quote_response", "status_response"):
+            if item.get(json_key):
+                try:
+                    item[json_key] = json.loads(item[json_key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        record_list.append(item)
+    return record_list
+
+
+@app.route('/api/1click/orders', methods=['GET'])
+def handle_1click_orders():
+    try:
+        refund_to = request.args.get("refund_to", "").strip()
+        if not refund_to:
+            return jsonify({"error": "Missing required parameter: refund_to"}), 400
+
+        page_number = int(request.args.get("page_number", 1))
+        page_size = int(request.args.get("page_size", 10))
+        if page_number < 1:
+            page_number = 1
+        if page_size < 1 or page_size > 100:
+            page_size = 10
+
+        data_list, total_number = query_oneclick_orders(
+            Cfg.NETWORK_ID, refund_to, page_number, page_size
+        )
+
+        record_list = _serialize_oneclick_order_rows(data_list)
+
+        total_page = math.ceil(total_number / page_size) if total_number > 0 else 0
+
+        return jsonify({
+            "record_list": record_list,
+            "page_number": page_number,
+            "page_size": page_size,
+            "total_page": total_page,
+            "total_size": total_number
+        })
+
+    except Exception as e:
+        logger.error(f"handle_1click_orders error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# Near Intents API
+#
+# Mirrors /api/1click/* but writes into a separate `near_intents_orders`
+# table that carries three caller-provided business tags (source / action
+# / account) so different products can share this backend and later
+# filter their own data slice without colliding.
+# ============================================================
+
+NEAR_INTENTS_TAG_MAX_LEN = 128
+
+
+def _validate_near_intents_tag(value, field_name):
+    """Return (cleaned_value, error_response_or_none)."""
+    if value is None:
+        return None, (jsonify({"error": f"Missing required field: {field_name}"}), 400)
+    if not isinstance(value, str):
+        return None, (jsonify({"error": f"Field {field_name} must be a string"}), 400)
+    cleaned = value.strip()
+    if not cleaned:
+        return None, (jsonify({"error": f"Missing required field: {field_name}"}), 400)
+    if len(cleaned) > NEAR_INTENTS_TAG_MAX_LEN:
+        return None, (jsonify({
+            "error": f"Field {field_name} exceeds max length {NEAR_INTENTS_TAG_MAX_LEN}"
+        }), 400)
+    return cleaned, None
+
+
+def _format_near_intents_row(row):
+    """Stringify datetime columns and parse JSON text columns for the response."""
+    if not row:
+        return None
+    item = dict(row)
+    for dt_key in ("created_at", "updated_at"):
+        if item.get(dt_key) is not None:
+            item[dt_key] = str(item[dt_key])
+    for json_key in ("request_payload", "quote_response", "status_response"):
+        if item.get(json_key):
+            try:
+                item[json_key] = json.loads(item[json_key])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return item
+
+
+def _hydrate_near_intents_merged_row(network_id, meta_row):
+    """Turn a meta row from `query_near_intents_orders_merged_meta` into API payload."""
+    if not meta_row:
+        return None
+    kind = meta_row.get("record_kind")
+    if kind == "swap":
+        oid = meta_row.get("near_intents_order_id")
+        row = get_near_intents_order_by_id(network_id, oid)
+        if not row:
+            return None
+        item = _format_near_intents_row(row)
+        item["record_kind"] = "swap"
+        item["near_intents_order_id"] = row.get("id")
+        item["hl_deposit_order_id"] = None
+        item["hl_status"] = None
+        item["hl_status_text"] = None
+        item["status_text"] = item.get("status")
+        return item
+
+    if kind == "hl_deposit":
+        hl_id = meta_row.get("hl_deposit_order_id")
+        hl = get_hyperliquid_deposit_order_by_id(network_id, hl_id)
+        parent = get_near_intents_order_by_id(network_id, meta_row.get("near_intents_order_id"))
+        if not hl or not parent:
+            return None
+        item = _format_near_intents_row(dict(parent))
+        item["id"] = hl.get("id")
+        item["near_intents_order_id"] = parent.get("id")
+        item["record_kind"] = "hl_deposit"
+        item["quote_response"] = None
+        item["status_response"] = None
+        item["request_payload"] = None
+        item["hl_deposit_order_id"] = hl.get("id")
+        item["hl_status"] = hl.get("hl_status")
+        item["hl_status_text"] = hl.get("hl_status_text")
+        item["mca_account"] = hl.get("mca_account")
+        item["mca_mapped_evm_account"] = hl.get("mca_mapped_evm_account")
+        item["transfer_tx_hash"] = hl.get("transfer_tx_hash")
+        item["deposit_address"] = hl.get("deposit_address")
+        item["batch_id"] = hl.get("batch_id")
+        item["permit_id"] = hl.get("permit_id")
+        item["hl_error_message"] = hl.get("error_message") or ""
+        item["created_at"] = str(hl.get("created_at") or "")
+        item["updated_at"] = str(hl.get("updated_at") or "")
+        item["status"] = hl.get("hl_status")
+        item["status_text"] = hl.get("hl_status_text")
+        return item
+
+    return None
+
+
+try:
+    ensure_near_intents_orders_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure near_intents_orders table: {_e}")
+
+try:
+    ensure_hyperliquid_deposit_orders_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure hyperliquid_deposit_orders table: {_e}")
+
+try:
+    ensure_hyperliquid_transfer_jobs_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure hyperliquid_transfer_jobs table: {_e}")
+
+
+def _build_oneclick_payload_from_body(body, allow_dry=False):
+    """Translate caller body into the 1Click /v0/quote request shape.
+    Caller is responsible for having validated the 5 required fields.
+
+    `allow_dry`: if True, honor the caller's `dry` flag (used by the trial
+    branch where a pure preview is desired). If False (default), force
+    `dry=false` so a real depositAddress is always produced -- required
+    for downstream persistence + cron polling."""
+    payload = {
+        "dry": bool(body.get("dry")) if allow_dry else False,
+        "swapType": body.get("swapType", "EXACT_INPUT"),
+        "slippageTolerance": body.get("slippageTolerance", 100),
+        "originAsset": body["originAsset"],
+        "depositType": body.get("depositType", "ORIGIN_CHAIN"),
+        "destinationAsset": body["destinationAsset"],
+        "amount": body["amount"],
+        "recipient": body["recipient"],
+        "recipientType": body.get("recipientType", "DESTINATION_CHAIN"),
+        "refundTo": body["refundTo"],
+        "refundType": body.get("refundType", "ORIGIN_CHAIN"),
+    }
+    if body.get("deadline"):
+        payload["deadline"] = body["deadline"]
+    if body.get("referral"):
+        payload["referral"] = body["referral"]
+    for extra_key in ("customRecipientMsg", "appFees", "depositMode",
+                      "virtualChainRecipient", "virtualChainRefundRecipient",
+                      "quoteWaitingTimeMs"):
+        if body.get(extra_key) is not None:
+            payload[extra_key] = body[extra_key]
+    return payload
+
+
+def _call_1click_quote(oneclick_payload):
+    """POST to 1Click /v0/quote. Returns (quote_data, error_response_or_none)."""
+    headers = {"Content-Type": "application/json"}
+    if Cfg.ONECLICK_JWT_TOKEN:
+        headers["Authorization"] = Cfg.ONECLICK_JWT_TOKEN
+
+    resp = requests.post(
+        f"{Cfg.ONECLICK_BASE_URL}/v0/quote",
+        json=oneclick_payload,
+        headers=headers,
+        timeout=30
+    )
+
+    if resp.status_code >= 300:
+        return None, (jsonify({
+            "error": "1Click API error",
+            "status_code": resp.status_code,
+            "detail": resp.text
+        }), resp.status_code)
+
+    return resp.json(), None
+
+
+@app.route('/api/near_intents/quote', methods=['POST'])
+def handle_near_intents_quote():
+    """
+    Three branches keyed by the request body:
+
+      1) noBridge == true
+         -> caller-provided record only, no 1Click call.
+            requires: source / action / account / hash
+            inserts row with status='NO_BRIDGE', no_bridge=1, request_payload=<body>
+            returns: the freshly inserted row (echo).
+
+      2) source missing/empty (trial / preview)
+         -> calls 1Click /v0/quote, does NOT persist anything.
+            requires: the five 1Click fields.
+            returns: 1Click's response verbatim.
+
+      3) Normal
+         -> requires source / action / account + the five 1Click fields.
+            calls 1Click /v0/quote, persists the order, returns 1Click's response.
+    """
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "Request body is required"}), 400
+
+        no_bridge_flag = body.get("noBridge") is True
+        source_raw = body.get("source")
+        source_present = isinstance(source_raw, str) and source_raw.strip() != ""
+
+        # -------- Branch 1: noBridge --------
+        if no_bridge_flag:
+            for tag in ("source", "action", "account"):
+                cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
+                if err is not None:
+                    return err
+                body[tag] = cleaned
+
+            hash_raw = body.get("hash")
+            if not isinstance(hash_raw, str) or not hash_raw.strip():
+                return jsonify({"error": "Missing required field: hash"}), 400
+            hash_value = hash_raw.strip()
+            if len(hash_value) > 128:
+                return jsonify({"error": "Field hash exceeds max length 128"}), 400
+
+            inserted_id = insert_near_intents_order(
+                network_id=Cfg.NETWORK_ID,
+                source=body["source"],
+                action=body["action"],
+                account=body["account"],
+                origin_asset=body.get("originAsset"),
+                destination_asset=body.get("destinationAsset"),
+                amount=body.get("amount"),
+                refund_to=body.get("refundTo"),
+                recipient=body.get("recipient"),
+                swap_type=body.get("swapType"),
+                slippage_tolerance=body.get("slippageTolerance"),
+                deposit_type=body.get("depositType"),
+                recipient_type=body.get("recipientType"),
+                refund_type=body.get("refundType"),
+                deadline=body.get("deadline"),
+                referral=body.get("referral"),
+                deposit_address=None,
+                quote_response=None,
+                status='NO_BRIDGE',
+                no_bridge=1,
+                hash_value=hash_value,
+                request_payload=json.dumps(body)
+            )
+
+            saved_row = get_near_intents_order_by_id(Cfg.NETWORK_ID, inserted_id) \
+                if inserted_id else None
+            return jsonify(_format_near_intents_row(saved_row) or {"id": inserted_id})
+
+        # -------- Branch 2: trial (no source) --------
+        if not source_present:
+            required_fields = ["originAsset", "destinationAsset", "amount",
+                               "refundTo", "recipient"]
+            for field in required_fields:
+                if not body.get(field):
+                    return jsonify({"error": f"Missing required field: {field}"}), 400
+
+            oneclick_payload = _build_oneclick_payload_from_body(body, allow_dry=True)
+            quote_data, err = _call_1click_quote(oneclick_payload)
+            if err is not None:
+                return err
+            return jsonify(quote_data)
+
+        # -------- Branch 3: normal --------
+        if body.get("dry") is True:
+            return jsonify({
+                "error": "dry=true is not supported in normal flow; "
+                         "omit `source` to use the trial branch instead"
+            }), 400
+
+        for tag in ("source", "action", "account"):
+            cleaned, err = _validate_near_intents_tag(body.get(tag), tag)
+            if err is not None:
+                return err
+            body[tag] = cleaned
+
+        required_fields = ["originAsset", "destinationAsset", "amount",
+                           "refundTo", "recipient"]
+        for field in required_fields:
+            if not body.get(field):
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+
+        oneclick_payload = _build_oneclick_payload_from_body(body)
+        quote_data, err = _call_1click_quote(oneclick_payload)
+        if err is not None:
+            return err
+
+        quote_obj = quote_data.get("quote") or {}
+        deposit_address = quote_obj.get("depositAddress")
+
+        insert_near_intents_order(
+            network_id=Cfg.NETWORK_ID,
+            source=body["source"],
+            action=body["action"],
+            account=body["account"],
+            origin_asset=body["originAsset"],
+            destination_asset=body["destinationAsset"],
+            amount=body["amount"],
+            refund_to=body["refundTo"],
+            recipient=body["recipient"],
+            swap_type=oneclick_payload["swapType"],
+            slippage_tolerance=oneclick_payload["slippageTolerance"],
+            deposit_type=oneclick_payload["depositType"],
+            recipient_type=oneclick_payload["recipientType"],
+            refund_type=oneclick_payload["refundType"],
+            deadline=oneclick_payload.get("deadline"),
+            referral=oneclick_payload.get("referral"),
+            deposit_address=deposit_address,
+            quote_response=json.dumps(quote_data),
+            status='PENDING',
+            no_bridge=0,
+            hash_value=None,
+            request_payload=json.dumps(body)
+        )
+
+        return jsonify(quote_data)
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_quote error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/near_intents/orders', methods=['GET'])
+def handle_near_intents_orders():
+    """Paginated list. `source` and `account` are required; `action` is optional."""
+    try:
+        source, err = _validate_near_intents_tag(request.args.get("source"), "source")
+        if err is not None:
+            return err
+        account, err = _validate_near_intents_tag(request.args.get("account"), "account")
+        if err is not None:
+            return err
+
+        action_raw = (request.args.get("action") or "").strip()
+        if action_raw:
+            if len(action_raw) > NEAR_INTENTS_TAG_MAX_LEN:
+                return jsonify({
+                    "error": f"Field action exceeds max length {NEAR_INTENTS_TAG_MAX_LEN}"
+                }), 400
+            action_filter = action_raw
+        else:
+            action_filter = None
+
+        page_number = int(request.args.get("page_number", 1))
+        page_size = int(request.args.get("page_size", 10))
+        if page_number < 1:
+            page_number = 1
+        if page_size < 1 or page_size > 100:
+            page_size = 10
+
+        data_list, total_number = query_near_intents_orders_merged_meta(
+            Cfg.NETWORK_ID, source, account, action_filter, page_number, page_size
+        )
+
+        record_list = []
+        for meta in data_list or []:
+            hydrated = _hydrate_near_intents_merged_row(Cfg.NETWORK_ID, meta)
+            if hydrated is not None:
+                record_list.append(hydrated)
+        total_page = math.ceil(total_number / page_size) if total_number > 0 else 0
+
+        return jsonify({
+            "record_list": record_list,
+            "page_number": page_number,
+            "page_size": page_size,
+            "total_page": total_page,
+            "total_size": total_number
+        })
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_orders error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _require_non_empty_str(body, key, max_len=256):
+    v = body.get(key)
+    if not isinstance(v, str) or not v.strip():
+        return None, (jsonify({"error": f"Missing or invalid field: {key}"}), 400)
+    s = v.strip()
+    if len(s) > max_len:
+        return None, (jsonify({"error": f"Field {key} too long (max {max_len})"}), 400)
+    return s, None
+
+
+@app.route('/api/hyperliquid/deposit', methods=['POST'])
+def handle_hyperliquid_deposit():
+    """
+    Start HyperLiquid deposit orchestration (1Click transfer + relayer batch + Arb permit).
+    Idempotent on (near_intents_order_id, transfer_tx_hash, batch_id).
+    """
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "Request body is required"}), 400
+
+        nio = body.get("near_intents_order_id")
+        try:
+            near_intents_order_id = int(nio)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid near_intents_order_id"}), 400
+
+        parent = get_near_intents_order_by_id(Cfg.NETWORK_ID, near_intents_order_id)
+        if not parent:
+            return jsonify({"error": "near_intents_order not found"}), 404
+
+        mca_account, err = _require_non_empty_str(body, "mca_account", 128)
+        if err:
+            return err
+        mca_mapped, err = _require_non_empty_str(body, "mca_mapped_evm_account", 128)
+        if err:
+            return err
+        tx_hash, err = _require_non_empty_str(body, "transfer_tx_hash", 128)
+        if err:
+            return err
+        dep_addr, err = _require_non_empty_str(body, "deposit_address", 256)
+        if err:
+            return err
+        batch_id, err = _require_non_empty_str(body, "batch_id", 64)
+        if err:
+            return err
+
+        existing = get_hyperliquid_deposit_by_unique_key(
+            Cfg.NETWORK_ID, near_intents_order_id, tx_hash, batch_id
+        )
+        if existing:
+            eid = int(existing["id"])
+            return jsonify({
+                "hl_deposit_order_id": eid,
+                "order_id": eid,
+                "hl_status": existing.get("hl_status"),
+                "hl_status_text": existing.get("hl_status_text"),
+                "status": existing.get("hl_status"),
+                "status_text": existing.get("hl_status_text"),
+                "deduplicated": True,
+            })
+
+        try:
+            new_id = insert_hyperliquid_deposit_order(
+                Cfg.NETWORK_ID,
+                near_intents_order_id,
+                mca_account,
+                mca_mapped,
+                tx_hash,
+                dep_addr,
+                batch_id,
+                hl_status=1,
+                hl_status_text="TRANSFER_PENDING",
+            )
+        except Exception as ins_err:
+            msg = str(ins_err)
+            if "1062" in msg or "Duplicate entry" in msg:
+                existing = get_hyperliquid_deposit_by_unique_key(
+                    Cfg.NETWORK_ID, near_intents_order_id, tx_hash, batch_id
+                )
+                if existing:
+                    eid = int(existing["id"])
+                    return jsonify({
+                        "hl_deposit_order_id": eid,
+                        "order_id": eid,
+                        "hl_status": existing.get("hl_status"),
+                        "hl_status_text": existing.get("hl_status_text"),
+                        "status": existing.get("hl_status"),
+                        "status_text": existing.get("hl_status_text"),
+                        "deduplicated": True,
+                    })
+            logger.error(f"handle_hyperliquid_deposit insert error: {ins_err}")
+            return jsonify({"error": msg}), 500
+        return jsonify({
+            "hl_deposit_order_id": new_id,
+            "order_id": new_id,
+            "hl_status": 1,
+            "hl_status_text": "TRANSFER_PENDING",
+            "status": 1,
+            "status_text": "TRANSFER_PENDING",
+        })
+
+    except Exception as e:
+        logger.error(f"handle_hyperliquid_deposit error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/hyperliquid/deposit-orders/<int:hl_deposit_order_id>", methods=["GET"])
+def handle_hyperliquid_deposit_order_detail(hl_deposit_order_id):
+    try:
+        row = get_hyperliquid_deposit_order_by_id(Cfg.NETWORK_ID, hl_deposit_order_id)
+        if not row:
+            return jsonify({"code": -1, "msg": "not found", "data": None}), 404
+
+        data = {
+            "hl_deposit_order_id": row.get("id"),
+            "order_id": row.get("id"),
+            "near_intents_order_id": row.get("near_intents_order_id"),
+            "status": row.get("hl_status"),
+            "status_text": row.get("hl_status_text"),
+            "hl_status": row.get("hl_status"),
+            "hl_status_text": row.get("hl_status_text"),
+            "transfer_tx_hash": row.get("transfer_tx_hash"),
+            "deposit_address": row.get("deposit_address"),
+            "batch_id": row.get("batch_id"),
+            "permit_id": row.get("permit_id") or "",
+            "mca_account": row.get("mca_account"),
+            "mca_mapped_evm_account": row.get("mca_mapped_evm_account"),
+            "error_message": row.get("error_message") or "",
+        }
+        return jsonify({"code": 0, "data": data})
+
+    except Exception as e:
+        logger.error(f"handle_hyperliquid_deposit_order_detail error: {e}")
+        return jsonify({"code": -1, "msg": str(e), "data": None}), 500
+
+
+@app.route('/api/near_intents/order', methods=['GET'])
+def handle_near_intents_order_detail():
+    """Fetch one order by deposit_address. Reads local DB only -- the
+    cron job (`near_intents_status_checker.py`) keeps the row fresh."""
+    try:
+        deposit_address = (request.args.get("deposit_address") or "").strip()
+        if not deposit_address:
+            return jsonify({"error": "Missing required parameter: deposit_address"}), 400
+
+        row = get_near_intents_order_by_deposit_address(Cfg.NETWORK_ID, deposit_address)
+        if not row:
+            return jsonify({"error": "Order not found"}), 404
+
+        return jsonify(_format_near_intents_row(row))
+
+    except Exception as e:
+        logger.error(f"handle_near_intents_order_detail error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/1click/status', methods=['GET'])
+def handle_1click_status():
+    """
+    Single oneclick_order by deposit_address (latest row by id).
+    Query: deposit_address (required).
+    """
+    try:
+        dep = request.args.get("depositAddress", "").strip()
+        if not dep:
+            return jsonify({"error": "Missing required parameter: deposit_address"}), 400
+
+        row = get_oneclick_order_by_deposit_address(Cfg.NETWORK_ID, dep)
+        if not row:
+            return jsonify({"error": "not_found"}), 404
+
+        item = _serialize_oneclick_order_rows([row])[0]
+        return jsonify(item)
+
+    except Exception as e:
+        logger.error(f"handle_1click_status error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# Frontend Beacon (analytics) — low-profile GET endpoint
+# ============================================================
+
+try:
+    ensure_user_access_logs_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure user_access_logs table: {_e}")
+
+
+@app.route('/api/beacon', methods=['GET'])
+def api_beacon():
+    """
+    Lightweight frontend tracking endpoint. Takes minimal metadata via query
+    string, auto-fills IP / User-Agent / timestamp on the server, and writes
+    a row to user_access_logs. Always returns 204 No Content so callers get
+    a tiny, cacheable-looking response.
+
+    Query params (all optional except on the collection side):
+      - path         : page path (e.g. "/swap")
+      - wallet       : wallet address
+      - wallet_type  : wallet kind (metamask / phantom / okx / near / ...)
+      - referrer     : document.referrer fallback
+      - ua_hint      : optional UA summary from navigator.userAgentData
+
+    Failures are swallowed — a beacon must never break the user's page.
+    """
+    try:
+        args = request.args
+        path = args.get("path") or args.get("p") or ""
+        wallet = args.get("wallet") or args.get("w") or ""
+        wallet_type = args.get("wallet_type") or args.get("wt") or ""
+        referrer = args.get("referrer") or args.get("r") or request.headers.get("Referer", "")
+        ua_hint = args.get("ua_hint") or args.get("uh") or ""
+
+        try:
+            ip = get_ip_address()
+        except Exception:
+            ip = request.remote_addr or ""
+
+        user_agent = request.headers.get("User-Agent", "")
+
+        insert_user_access_log(
+            Cfg.NETWORK_ID,
+            ip=ip,
+            path=path,
+            wallet=wallet,
+            wallet_type=wallet_type,
+            user_agent=user_agent,
+            referrer=referrer,
+            ua_hint=ua_hint,
+        )
+    except Exception as e:
+        logger.warning(f"api_beacon error: {e}")
+
+    resp = Response(status=204)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
 @app.route("/boss-ui/")
 @app.route("/boss-ui/<path:path>")
 def serve_boss_ui(path="index.html"):
@@ -3737,10 +4523,10 @@ except Exception as sched_err:
     logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
 
 # Start LSD bridge fee compensation scheduler
-try:
-    start_lsd_compensation_scheduler()
-except Exception as sched_err:
-    logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
+# try:
+#     start_lsd_compensation_scheduler()
+# except Exception as sched_err:
+#     logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
 
 if __name__ == '__main__':
     app.logger.setLevel(logging.INFO)

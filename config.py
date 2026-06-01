@@ -4,7 +4,7 @@ __author__ = 'Marco'
 
 # load private info
 try:
-    from rpc_info import TESTNET_RPC_URL, MAINNET_RPC_URL
+    from db_info import TESTNET_RPC_URL, MAINNET_RPC_URL
 except ImportError:
     TESTNET_RPC_URL = ["https://rpc.testnet.near.org", ]
     MAINNET_RPC_URL = ["https://rpc.mainnet.near.org", ]
@@ -141,6 +141,42 @@ except ImportError:
     BSC_RPC_URL = "https://bsc-dataseed.binance.org"
 
 try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
+ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
+
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
+HYPERLIQUID_PERMIT_API_BASE = "https://mainnet-indexer.ref-finance.com"
+HYPERLIQUID_USDC_TOKEN_ARBITRUM = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+HYPERLIQUID_PERMIT_SPENDER = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7"
+
+try:
+    from db_info import HYPERLIQUID_PERMIT_API_BASE as _HL_PERMIT_BASE
+    HYPERLIQUID_PERMIT_API_BASE = _HL_PERMIT_BASE
+except ImportError:
+    pass
+
+# Hyperliquid mainnet (HL main / UI exchange — used by Perps worker)
+HYPERLIQUID_MAINNET_INFO_URL = "https://api.hyperliquid.xyz/info"
+HYPERLIQUID_MAINNET_EXCHANGE_URL = "https://api-ui.hyperliquid.xyz/exchange"
+
+try:
+    from db_info import (
+        HYPERLIQUID_MAINNET_INFO_URL as _HL_INFO,
+        HYPERLIQUID_MAINNET_EXCHANGE_URL as _HL_EX,
+    )
+    HYPERLIQUID_MAINNET_INFO_URL = _HL_INFO
+    HYPERLIQUID_MAINNET_EXCHANGE_URL = _HL_EX
+except ImportError:
+    pass
+
+try:
     from db_info import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
 except ImportError:
     SMTP_HOST = "smtp.example.com"
@@ -213,6 +249,14 @@ class Cfg:
     BSC_LSD_TOKEN_ADDRESS = BSC_LSD_TOKEN_ADDRESS
     BSC_WALLET_PRIVATE_KEY = BSC_WALLET_PRIVATE_KEY
     BSC_RPC_URL = BSC_RPC_URL
+    ONECLICK_BASE_URL = ONECLICK_BASE_URL
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
+    HYPERLIQUID_PERMIT_API_BASE = HYPERLIQUID_PERMIT_API_BASE
+    HYPERLIQUID_USDC_TOKEN_ARBITRUM = HYPERLIQUID_USDC_TOKEN_ARBITRUM
+    HYPERLIQUID_PERMIT_SPENDER = HYPERLIQUID_PERMIT_SPENDER
+    HYPERLIQUID_MAINNET_INFO_URL = HYPERLIQUID_MAINNET_INFO_URL
+    HYPERLIQUID_MAINNET_EXCHANGE_URL = HYPERLIQUID_MAINNET_EXCHANGE_URL
     SMTP_HOST = SMTP_HOST
     SMTP_PORT = SMTP_PORT
     SMTP_USER = SMTP_USER
