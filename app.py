@@ -58,18 +58,16 @@ from boss.rate_limiter import check_rate_limit
 from trxx_utils import (
     trxx_create_order, trxx_query_order, trxx_estimate_price, trxx_get_index_data,
     trxx_reclaim_order, verify_trxx_webhook_signature,
-    verify_frontend_signature, VALID_PERIODS, PERIOD_MAP, start_trxx_scheduler,
+    verify_frontend_signature, VALID_PERIODS, PERIOD_MAP, start_trxx_scheduler_once,
     _notify_third_party,
 )
 from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_by_serial, \
-    update_trxx_order_status as db_update_trxx_order_status, trxx_webhook_event_exists, create_trxx_webhook_event, \
-    insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
-    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions
-    update_trxx_order_status as db_update_trxx_order_status, get_pending_trxx_orders, \
+    ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions, \
+    update_trxx_order_status as db_update_trxx_order_status, \
     trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
     ensure_oneclick_orders_table, insert_oneclick_order, query_oneclick_orders, \
-    ensure_near_intents_orders_table, insert_near_intents_order, query_near_intents_orders, \
+    ensure_near_intents_orders_table, insert_near_intents_order, \
     query_near_intents_orders_merged_meta, \
     get_near_intents_order_by_deposit_address, get_near_intents_order_by_id, \
     ensure_hyperliquid_deposit_orders_table, get_hyperliquid_deposit_by_unique_key, \
@@ -86,6 +84,7 @@ Welcome = 'Welcome to ref datacenter API server, version ' + service_version + '
 app = Flask(__name__, static_folder="boss-frontend/dist", static_url_path="/boss-ui")
 
 init_boss_routes(app, lambda: get_db_connect(Cfg.NETWORK_ID))
+register_hyperliquid_perps(app)
 
 
 def _get_swap_endpoint_group(path: str) -> str | None:
@@ -99,8 +98,7 @@ def _get_swap_endpoint_group(path: str) -> str | None:
     if "/api/swap/swap" in path or "/api/swap/report" in path:
         return "build"
     return None
-app = Flask(__name__)
-register_hyperliquid_perps(app)
+
 # limiter = Limiter(
 #     app,
 #     key_func=get_ip_address,
@@ -115,7 +113,7 @@ def before_request():
     path = request.path
 
     # Boss UI and API routes skip legacy auth
-    if path.startswith("/boss"):
+    if path.startswith("/boss") or path.startswith("/boss-ui"):
         return None
 
     # Swap API: JWT auth + rate limiting
@@ -4516,11 +4514,8 @@ current_date = datetime.datetime.now().strftime("%Y-%m-%d")
 log_file = "app-%s.log" % current_date
 logger.add(log_file)
 
-# Start TRXX pending order polling scheduler
-try:
-    start_trxx_scheduler()
-except Exception as sched_err:
-    logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
+# TRXX scheduler: start via gunicorn.conf.py post_fork (one leader among workers).
+# Flask dev server starts it in __main__ below.
 
 # Start LSD bridge fee compensation scheduler
 # try:
@@ -4529,6 +4524,10 @@ except Exception as sched_err:
 #     logger.warning(f"Failed to start LSD compensation scheduler: {sched_err}")
 
 if __name__ == '__main__':
+    try:
+        start_trxx_scheduler_once()
+    except Exception as sched_err:
+        logger.warning(f"Failed to start TRXX scheduler: {sched_err}")
     app.logger.setLevel(logging.INFO)
     app.logger.info(Welcome)
     app.run(host='0.0.0.0', port=28080, debug=False)
