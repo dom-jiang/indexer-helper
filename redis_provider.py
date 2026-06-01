@@ -490,6 +490,19 @@ def get_multichain_lending_tokens_data():
     return ret
 
 
+def get_1click_tokens_cache():
+    r = redis.StrictRedis(connection_pool=pool)
+    ret = r.get("ONECLICK_TOKENS_CACHE")
+    r.close()
+    return ret
+
+
+def set_1click_tokens_cache(data_str, ttl=600):
+    r = redis.StrictRedis(connection_pool=pool)
+    r.set("ONECLICK_TOKENS_CACHE", data_str, ex=ttl)
+    r.close()
+
+
 def get_multichain_lending_token_icon(token):
     r = redis.StrictRedis(connection_pool=pool)
     ret = r.hget("MULTICHAIN_LENDING_TOKENS_ICON", token)

@@ -1,5 +1,6 @@
 import hmac
 import json
+import os
 import requests
 import hashlib
 import time
@@ -249,6 +250,8 @@ def trxx_transfer_activate(receive_address: str, amount: float = 0.5) -> dict:
 
 _scheduler_running = False
 _scheduler_lock = threading.Lock()
+_scheduler_leader_fd = None
+_DEFAULT_SCHEDULER_LOCK_PATH = "/tmp/indexer-trxx-scheduler.lock"
 
 
 def _poll_pending_orders():
@@ -344,7 +347,7 @@ def _scheduler_loop():
 
 
 def start_trxx_scheduler():
-    """Start the background scheduler for polling pending orders"""
+    """Start the background scheduler for polling pending orders (current process only)."""
     global _scheduler_running
     with _scheduler_lock:
         if _scheduler_running:
@@ -353,6 +356,58 @@ def start_trxx_scheduler():
         t = threading.Thread(target=_scheduler_loop, daemon=True, name="trxx-scheduler")
         t.start()
         logger.info("[TRXX Scheduler] Started (polling every 2 minutes)")
+
+
+def start_trxx_scheduler_once(lock_path: str = None) -> bool:
+    """
+    Start TRXX scheduler in at most one Gunicorn worker.
+
+    Uses a non-blocking flock on `lock_path` so only the worker that acquires
+    the lock runs the background thread. Call from gunicorn ``post_fork``, not
+    at app import time (avoids 4x schedulers with ``-w 4``).
+
+    Returns True if this process became the scheduler leader.
+    """
+    global _scheduler_leader_fd
+
+    if _scheduler_running:
+        return True
+
+    path = (lock_path or os.environ.get("TRXX_SCHEDULER_LOCK_PATH") or _DEFAULT_SCHEDULER_LOCK_PATH).strip()
+
+    try:
+        import fcntl
+    except ImportError:
+        # Windows / non-Unix dev: single-process Flask, no cross-process lock.
+        start_trxx_scheduler()
+        return True
+
+    if _scheduler_leader_fd is not None:
+        return _scheduler_running
+
+    try:
+        fd = open(path, "w")
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            fd.close()
+        except Exception:
+            pass
+        logger.debug("[TRXX Scheduler] Another process holds the leader lock ({})", path)
+        return False
+
+    _scheduler_leader_fd = fd
+    try:
+        fd.seek(0)
+        fd.truncate()
+        fd.write(str(os.getpid()))
+        fd.flush()
+    except Exception:
+        pass
+
+    start_trxx_scheduler()
+    logger.info("[TRXX Scheduler] Leader lock acquired (pid={}, lock={})", os.getpid(), path)
+    return True
 
 
 def stop_trxx_scheduler():

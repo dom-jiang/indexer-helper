@@ -7,6 +7,8 @@ import time
 import requests
 from redis_provider import RedisProvider, list_history_token_price, list_token_price, list_token_metadata, get_account_pool_assets, get_pool_point_24h_by_pool_id
 from data_utils import add_redis_data
+from dbutils.pooled_db import PooledDB
+from loguru import logger
 
 
 class Encoder(json.JSONEncoder):
@@ -24,7 +26,72 @@ class Encoder(json.JSONEncoder):
         super(Encoder, self).default(o)
 
 
+_POOL_DEFAULTS = dict(creator=pymysql, mincached=2, maxcached=10, maxconnections=20, blocking=True, charset="utf8mb4")
+
+
+def _make_pool(network_id, user_key, pwd_key, db_key, host_key="DB_HOST", port_key="DB_PORT"):
+    net = Cfg.NETWORK[network_id]
+    return PooledDB(
+        **_POOL_DEFAULTS,
+        host=net[host_key],
+        port=int(net[port_key]),
+        user=net[user_key],
+        passwd=net[pwd_key],
+        db=net[db_key] if db_key in net else db_key,
+    )
+
+
+_nid = Cfg.NETWORK_ID
+try:
+    _db_pool = _make_pool(_nid, "DB_UID", "DB_PWD", "DB_DSN")
+except Exception as e:
+    logger.warning(f"Failed to create main DB pool: {e}")
+    _db_pool = None
+
+try:
+    _lake_pool = _make_pool(_nid, "NEAR_LAKE_DB_UID", "NEAR_LAKE_DB_PWD", "NEAR_LAKE_DB_DSN",
+                            host_key="NEAR_LAKE_DB_HOST", port_key="NEAR_LAKE_DB_PORT")
+except Exception as e:
+    logger.warning(f"Failed to create NEAR lake DB pool: {e}")
+    _lake_pool = None
+
+try:
+    _lake_dcl_pool = _make_pool(_nid, "NEAR_LAKE_DB_UID", "NEAR_LAKE_DB_PWD", "NEAR_LAKE_DCL_DB_DSN",
+                                host_key="NEAR_LAKE_DB_HOST", port_key="NEAR_LAKE_DB_PORT")
+except Exception as e:
+    logger.warning(f"Failed to create NEAR lake DCL pool: {e}")
+    _lake_dcl_pool = None
+
+try:
+    _crm_pool = PooledDB(
+        **_POOL_DEFAULTS,
+        host=Cfg.NETWORK[_nid]["DB_HOST"],
+        port=int(Cfg.NETWORK[_nid]["DB_PORT"]),
+        user=Cfg.NETWORK[_nid].get("CRM_DB_UID", Cfg.NETWORK[_nid]["DB_UID"]),
+        passwd=Cfg.NETWORK[_nid].get("CRM_DB_PWD", Cfg.NETWORK[_nid]["DB_PWD"]),
+        db="crm",
+    )
+except Exception as e:
+    logger.warning(f"Failed to create CRM DB pool: {e}")
+    _crm_pool = None
+
+try:
+    _burrow_pool = PooledDB(
+        **_POOL_DEFAULTS,
+        host=Cfg.NETWORK[_nid]["DB_HOST"],
+        port=int(Cfg.NETWORK[_nid]["DB_PORT"]),
+        user=Cfg.NETWORK[_nid].get("BURROW_DB_UID", Cfg.NETWORK[_nid]["DB_UID"]),
+        passwd=Cfg.NETWORK[_nid].get("BURROW_DB_PWD", Cfg.NETWORK[_nid]["DB_PWD"]),
+        db="burrow",
+    )
+except Exception as e:
+    logger.warning(f"Failed to create Burrow DB pool: {e}")
+    _burrow_pool = None
+
+
 def get_db_connect(network_id: str):
+    if _db_pool:
+        return _db_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
@@ -35,6 +102,8 @@ def get_db_connect(network_id: str):
 
 
 def get_near_lake_connect(network_id: str):
+    if _lake_pool:
+        return _lake_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["NEAR_LAKE_DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["NEAR_LAKE_DB_PORT"]),
@@ -45,6 +114,8 @@ def get_near_lake_connect(network_id: str):
 
 
 def get_near_lake_dcl_connect(network_id: str):
+    if _lake_dcl_pool:
+        return _lake_dcl_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["NEAR_LAKE_DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["NEAR_LAKE_DB_PORT"]),
@@ -55,6 +126,8 @@ def get_near_lake_dcl_connect(network_id: str):
 
 
 def get_crm_db_connect(network_id: str):
+    if _crm_pool:
+        return _crm_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
@@ -65,6 +138,8 @@ def get_crm_db_connect(network_id: str):
 
 
 def get_burrow_connect(network_id: str):
+    if _burrow_pool:
+        return _burrow_pool.connection()
     conn = pymysql.connect(
         host=Cfg.NETWORK[network_id]["DB_HOST"],
         port=int(Cfg.NETWORK[network_id]["DB_PORT"]),
@@ -3877,3 +3952,421 @@ def insert_user_access_log(
     finally:
         cursor.close()
         db_conn.close()
+
+
+
+# ============================================================
+# Swap Transactions (user-reported signed swap history)
+# ============================================================
+
+SWAP_TRANSACTIONS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS swap_transactions (
+    id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+    sender            VARCHAR(128) NOT NULL,
+    recipient         VARCHAR(128) DEFAULT NULL,
+    from_hash         VARCHAR(128) NOT NULL,
+    deposit_address   VARCHAR(128) DEFAULT NULL,
+    from_token        VARCHAR(128) DEFAULT NULL,
+    to_token          VARCHAR(128) DEFAULT NULL,
+    from_chain        VARCHAR(32)  DEFAULT NULL,
+    to_chain          VARCHAR(32)  DEFAULT NULL,
+    amount_in         VARCHAR(64)  DEFAULT NULL,
+    estimated_out     VARCHAR(64)  DEFAULT NULL,
+    actual_out        VARCHAR(64)  DEFAULT NULL,
+    router            VARCHAR(32)  DEFAULT NULL,
+    tx_type           VARCHAR(32)  DEFAULT 'same-chain',
+    is_cross_chain    TINYINT(1)   DEFAULT 0,
+    status            VARCHAR(32)  DEFAULT 'PENDING',
+    to_hash           VARCHAR(128) DEFAULT NULL,
+    multi_addr        VARCHAR(256) DEFAULT NULL,
+    swap_id           VARCHAR(128) DEFAULT NULL,
+    extra             TEXT,
+    status_response   TEXT,
+    created_at        DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_from_hash (from_hash),
+    INDEX idx_sender_created (sender, created_at),
+    INDEX idx_recipient (recipient),
+    INDEX idx_deposit_address (deposit_address),
+    INDEX idx_status_cross (status, is_cross_chain, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def _ensure_swap_transactions_columns(cursor):
+    """Idempotently add missing columns / indexes on an existing table.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on pre-existing tables, so when we
+    introduce new columns (e.g. `recipient`) we need to ALTER them in. Each
+    check reads information_schema to stay MySQL 5.7 compatible (which lacks
+    `ADD COLUMN IF NOT EXISTS`).
+    """
+    def _column_exists(name):
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'swap_transactions' "
+            "AND COLUMN_NAME = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+        return bool(row and (row[0] if isinstance(row, (tuple, list)) else row.get("COUNT(*)", 0)))
+
+    def _index_exists(name):
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'swap_transactions' "
+            "AND INDEX_NAME = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+        return bool(row and (row[0] if isinstance(row, (tuple, list)) else row.get("COUNT(*)", 0)))
+
+    if not _column_exists("recipient"):
+        cursor.execute("ALTER TABLE swap_transactions ADD COLUMN recipient VARCHAR(128) DEFAULT NULL AFTER sender")
+    if not _index_exists("idx_recipient"):
+        cursor.execute("ALTER TABLE swap_transactions ADD INDEX idx_recipient (recipient)")
+
+
+def ensure_swap_transactions_table(network_id):
+    """Create the swap_transactions table if it does not exist, then run any
+    column / index migrations that are safe to apply idempotently."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(SWAP_TRANSACTIONS_CREATE_SQL)
+        _ensure_swap_transactions_columns(cursor)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        logger.warning(f"ensure_swap_transactions_table error: {e}")
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_swap_transaction(network_id, **fields):
+    """
+    Insert a swap transaction record reported by frontend after a user signed tx.
+
+    Required: sender, from_hash
+    Optional: recipient, deposit_address, from_token, to_token, from_chain, to_chain,
+              amount_in, estimated_out, router, tx_type, is_cross_chain,
+              multi_addr, swap_id, extra (dict/list will be json-encoded),
+              status (default PENDING).
+
+    If from_hash already exists, returns the existing record id (idempotent).
+    """
+    sender = fields.get("sender")
+    from_hash = fields.get("from_hash")
+    if not sender or not from_hash:
+        raise ValueError("sender and from_hash are required")
+
+    extra = fields.get("extra")
+    if isinstance(extra, (dict, list)):
+        extra = json.dumps(extra, ensure_ascii=False)
+
+    is_cross_chain = 1 if fields.get("is_cross_chain") else 0
+
+    columns = [
+        "sender", "recipient", "from_hash", "deposit_address", "from_token", "to_token",
+        "from_chain", "to_chain", "amount_in", "estimated_out", "router",
+        "tx_type", "is_cross_chain", "status", "multi_addr", "swap_id", "extra",
+    ]
+    values = [
+        sender,
+        fields.get("recipient"),
+        from_hash,
+        fields.get("deposit_address"),
+        fields.get("from_token"),
+        fields.get("to_token"),
+        fields.get("from_chain"),
+        fields.get("to_chain"),
+        fields.get("amount_in"),
+        fields.get("estimated_out"),
+        fields.get("router"),
+        fields.get("tx_type") or ("cross-chain" if is_cross_chain else "same-chain"),
+        is_cross_chain,
+        fields.get("status") or "PENDING",
+        fields.get("multi_addr"),
+        fields.get("swap_id"),
+        extra,
+    ]
+
+    placeholders = ", ".join(["%s"] * len(columns))
+    col_sql = ", ".join(f"`{c}`" for c in columns)
+    sql = f"INSERT INTO swap_transactions ({col_sql}) VALUES ({placeholders})"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.lastrowid
+    except pymysql.err.IntegrityError:
+        db_conn.rollback()
+        existing = get_swap_transaction_by_hash(network_id, from_hash)
+        if existing:
+            return existing.get("id")
+        raise
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_swap_transaction error: {e}")
+        raise
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_swap_transaction_by_hash(network_id, from_hash):
+    """Fetch a swap record by its source-chain transaction hash."""
+    db_conn = get_db_connect(network_id)
+    sql = "SELECT * FROM swap_transactions WHERE from_hash = %s LIMIT 1"
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (from_hash,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"get_swap_transaction_by_hash error: {e}")
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_swap_transactions(network_id, sender, page_number=1, page_size=20):
+    """Paginated query of a user's reported swap transactions, newest first."""
+    try:
+        page_number = max(1, int(page_number))
+        page_size = max(1, min(100, int(page_size)))
+    except (TypeError, ValueError):
+        page_number = 1
+        page_size = 20
+
+    offset = (page_number - 1) * page_size
+    db_conn = get_db_connect(network_id)
+    # Match by sender (initiator), recipient (destination wallet on to_chain for cross-chain),
+    # or multi_addr (legacy secondary-address search key).
+    count_sql = (
+        "SELECT COUNT(*) AS total FROM swap_transactions "
+        "WHERE sender = %s OR recipient = %s OR multi_addr = %s"
+    )
+    query_sql = (
+        "SELECT * FROM swap_transactions "
+        "WHERE sender = %s OR recipient = %s OR multi_addr = %s "
+        "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s"
+    )
+
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(count_sql, (sender, sender, sender))
+        total = cursor.fetchone().get("total", 0)
+        cursor.execute(query_sql, (sender, sender, sender, page_size, offset))
+        rows = cursor.fetchall() or []
+        return rows, total
+    except Exception as e:
+        logger.error(f"query_swap_transactions error: {e}")
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_pending_cross_chain_swaps(network_id, interval_minutes=70):
+    """
+    Fetch cross-chain swap records whose status is still non-terminal
+    and were created within the last `interval_minutes` minutes.
+    Used by the background status checker.
+    """
+    interval_minutes = int(interval_minutes) if interval_minutes else 70
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "SELECT * FROM swap_transactions "
+        "WHERE is_cross_chain = 1 "
+        "AND deposit_address IS NOT NULL AND deposit_address <> '' "
+        "AND status NOT IN ('SUCCESS', 'FAILED', 'REFUNDED', 'EXPIRED') "
+        f"AND created_at >= NOW() - INTERVAL {interval_minutes} MINUTE "
+        "ORDER BY created_at ASC"
+    )
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"get_pending_cross_chain_swaps error: {e}")
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_swap_transaction(network_id, record_id, **kwargs):
+    """Update allowed fields on a swap_transactions record."""
+    allowed = {
+        "status", "to_hash", "actual_out", "status_response",
+        "estimated_out", "router", "deposit_address",
+    }
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed or value is None:
+            continue
+        if key == "status_response" and isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields.append(f"`{key}` = %s")
+        params.append(value)
+
+    if not fields:
+        return 0
+
+    fields.append("updated_at = NOW()")
+    params.append(record_id)
+    sql = f"UPDATE swap_transactions SET {', '.join(fields)} WHERE id = %s"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_swap_transaction error: {e}")
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+# --- MCA withdraw async orchestration jobs (swap API) ---
+MCA_WITHDRAW_JOB_ACTIVE_STATUSES = ("queued", "relayer_waiting", "follow_up")
+MCA_WITHDRAW_JOB_TERMINAL_STATUSES = frozenset(
+    {
+        "done",
+        "relayer_failed",
+        "follow_up_failed",
+        "swap_build_ready",
+        "intents_terminal_success",
+        "intents_terminal_failed",
+        "partial_failed",
+        "failed",
+    }
+)
+
+
+def insert_swap_mca_withdraw_job(
+    network_id,
+    client_request_id,
+    mca_relayer_json: str,
+    after_relayer_json,
+):
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "INSERT INTO swap_mca_withdraw_jobs "
+        "(client_request_id, status, mca_relayer_json, after_relayer_json) "
+        "VALUES (%s, 'queued', %s, %s)"
+    )
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (client_request_id or None, mca_relayer_json, after_relayer_json))
+        db_conn.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_swap_mca_withdraw_job error: {e}")
+        raise e
+    finally:
+        cursor.close()
+
+
+def select_swap_mca_withdraw_job_by_client_request(network_id, client_request_id):
+    if not client_request_id:
+        return None
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT id, status, batch_id, created_at FROM swap_mca_withdraw_jobs "
+            "WHERE client_request_id = %s LIMIT 1",
+            (str(client_request_id),),
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"select_swap_mca_withdraw_job_by_client_request error: {e}")
+        return None
+    finally:
+        cursor.close()
+
+
+def select_swap_mca_withdraw_job_by_id(network_id, job_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT * FROM swap_mca_withdraw_jobs WHERE id = %s LIMIT 1",
+            (int(job_id),),
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"select_swap_mca_withdraw_job_by_id error: {e}")
+        return None
+    finally:
+        cursor.close()
+
+
+def fetch_swap_mca_withdraw_jobs_active(network_id, limit=30):
+    """Pick jobs the cron worker should advance (non-terminal)."""
+    placeholders = ",".join(["%s"] * len(MCA_WITHDRAW_JOB_ACTIVE_STATUSES))
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            f"SELECT * FROM swap_mca_withdraw_jobs WHERE status IN ({placeholders}) "
+            "ORDER BY id ASC LIMIT %s",
+            (*MCA_WITHDRAW_JOB_ACTIVE_STATUSES, int(limit)),
+        )
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"fetch_swap_mca_withdraw_jobs_active error: {e}")
+        return []
+    finally:
+        cursor.close()
+
+
+def update_swap_mca_withdraw_job_row(network_id, job_id, *, fields):
+    """fields: dict of column -> value (None skips)."""
+    if not fields:
+        return 0
+    allowed_cols = {
+        "status",
+        "batch_id",
+        "relayer_result_summary",
+        "bridge_swap_result_json",
+        "intents_status_snapshot",
+        "intents_poll_count",
+        "attempts",
+        "last_error",
+    }
+    parts = []
+    params = []
+    for k, v in fields.items():
+        if k not in allowed_cols or v is None:
+            continue
+        parts.append("`{0}` = %s".format(k))
+        params.append(v)
+    if not parts:
+        return 0
+    parts.append("`updated_at` = NOW()")
+    params.append(int(job_id))
+    sql = "UPDATE swap_mca_withdraw_jobs SET {0} WHERE id = %s".format(", ".join(parts))
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_swap_mca_withdraw_job_row error: {e}")
+        return 0
+    finally:
+        cursor.close()

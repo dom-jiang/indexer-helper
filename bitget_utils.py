@@ -12,6 +12,9 @@ from config import Cfg
 BITGET_BASE_URL = "https://bopenapi.bgwapi.io"
 OKX_BASE_URL = "https://web3.okx.com"
 
+_http_session = requests.Session()
+_http_session.headers.update({"Content-Type": "application/json"})
+
 
 def _sorted_json_str(data: Dict[str, Any]) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -106,9 +109,7 @@ def proxy_bitget_request(
     }
     if body_str:
         request_kwargs["data"] = body_str
-    response = requests.request(
-        **request_kwargs,
-    )
+    response = _http_session.request(**request_kwargs)
     response.raise_for_status()
     return response.json()
 
@@ -157,6 +158,6 @@ def proxy_okx_request(
     }
     if body_str:
         request_kwargs["data"] = body_str
-    response = requests.request(**request_kwargs)
+    response = _http_session.request(**request_kwargs)
     response.raise_for_status()
     return response.json()
