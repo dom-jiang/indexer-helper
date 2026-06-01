@@ -2437,6 +2437,166 @@ def query_multichain_lending_zcash_data(network_id, mca_id):
     return
 
 
+def insert_swap_mca_withdraw_job(
+    network_id,
+    client_request_id,
+    mca_relayer_json: str,
+    after_relayer_json,
+):
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "INSERT INTO swap_mca_withdraw_jobs "
+        "(client_request_id, status, mca_relayer_json, after_relayer_json) "
+        "VALUES (%s, 'queued', %s, %s)"
+    )
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (client_request_id or None, mca_relayer_json, after_relayer_json))
+        db_conn.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_swap_mca_withdraw_job error: {e}")
+        raise e
+    finally:
+        cursor.close()
+
+
+def select_swap_mca_withdraw_job_by_client_request(network_id, client_request_id):
+    if not client_request_id:
+        return None
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT id, status, batch_id, created_at FROM swap_mca_withdraw_jobs "
+            "WHERE client_request_id = %s LIMIT 1",
+            (str(client_request_id),),
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"select_swap_mca_withdraw_job_by_client_request error: {e}")
+        return None
+    finally:
+        cursor.close()
+
+
+def select_swap_mca_withdraw_job_by_id(network_id, job_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT * FROM swap_mca_withdraw_jobs WHERE id = %s LIMIT 1",
+            (int(job_id),),
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"select_swap_mca_withdraw_job_by_id error: {e}")
+        return None
+    finally:
+        cursor.close()
+
+
+def add_multichain_lending_requests(network_id, mca_id, wallet, data_list, page_display_data):
+    import uuid
+    batch_id = uuid.uuid4()
+    db_conn = get_db_connect(network_id)
+    # 使用UTC+0时区的时间
+    utc_now = datetime.utcnow()
+    sql = "insert into multichain_lending_requests(mca_id, `wallet`, `request`, batch_id, `sequence`, " \
+          "`created_at`, `updated_at`) values(%s,%s,%s,%s,%s,%s,%s)"
+    insert_sql = "insert into multichain_lending_report_data(`type`, mca_id, `wallet`, batch_id, page_display_data" \
+                 ", `created_at`, `updated_at`) values(%s,%s,%s,%s,%s,%s,%s)"
+    insert_data = []
+    cursor = db_conn.cursor()
+    try:
+        i = 0
+        for data in data_list:
+            if isinstance(data, dict):
+                data_json = json.dumps(data)
+            elif isinstance(data, str):
+                try:
+                    json.loads(data)
+                    data_json = data
+                except (json.JSONDecodeError, TypeError):
+                    data_json = json.dumps(data)
+            else:
+                data_json = json.dumps(data)
+            insert_data.append((mca_id, wallet, data_json, batch_id, i, utc_now, utc_now))
+            i += 1
+        if len(insert_data) > 0:
+            cursor.executemany(sql, insert_data)
+            if page_display_data != "":
+                cursor.execute(insert_sql, (1, mca_id, wallet, batch_id, page_display_data, utc_now, utc_now))
+            db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("insert multichain_lending_requests to db error:", e)
+        raise e
+    finally:
+        cursor.close()
+    return batch_id
+
+
+def fetch_swap_mca_withdraw_jobs_active(network_id, limit=30):
+    """Pick jobs the cron worker should advance (non-terminal)."""
+    placeholders = ",".join(["%s"] * len(MCA_WITHDRAW_JOB_ACTIVE_STATUSES))
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            f"SELECT * FROM swap_mca_withdraw_jobs WHERE status IN ({placeholders}) "
+            "ORDER BY id ASC LIMIT %s",
+            (*MCA_WITHDRAW_JOB_ACTIVE_STATUSES, int(limit)),
+        )
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"fetch_swap_mca_withdraw_jobs_active error: {e}")
+        return []
+    finally:
+        cursor.close()
+
+
+def update_swap_mca_withdraw_job_row(network_id, job_id, *, fields):
+    """fields: dict of column -> value (None skips)."""
+    if not fields:
+        return 0
+    allowed_cols = {
+        "status",
+        "batch_id",
+        "relayer_result_summary",
+        "bridge_swap_result_json",
+        "intents_status_snapshot",
+        "intents_poll_count",
+        "attempts",
+        "last_error",
+    }
+    parts = []
+    params = []
+    for k, v in fields.items():
+        if k not in allowed_cols or v is None:
+            continue
+        parts.append("`{0}` = %s".format(k))
+        params.append(v)
+    if not parts:
+        return 0
+    parts.append("`updated_at` = NOW()")
+    params.append(int(job_id))
+    sql = "UPDATE swap_mca_withdraw_jobs SET {0} WHERE id = %s".format(", ".join(parts))
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_swap_mca_withdraw_job_row error: {e}")
+        return 0
+    finally:
+        cursor.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
