@@ -219,7 +219,7 @@ print(swap_resp.json())</pre>
   "data": {
     "isCrossChain": false | true,
     "chainType": "evm" | "solana" | "aptos",      // source chain type
-    "router": "okx | bitget | jupiter | panora | omnibridge | nearintents",
+    "router": "okx | bitget | jupiter | hyperion | omnibridge | nearintents",
     "fromChain": "56",
     "toChain":   "42161",
     "tokenIn":  { "address", "symbol", "decimals" },
@@ -256,7 +256,7 @@ print(swap_resp.json())</pre>
         <h4 style="margin-top: 16px;">Aptos — <code>data.tx</code> shape (Move entry function)</h4>
         <div class="code-block">
           <pre>{
-  "function":       "0x1::aptos_account::transfer_coins",   // or Panora's swap function
+  "function":       "0x1::aptos_account::transfer_coins",   // or Hyperion's swap function
   "type_arguments": ["&lt;CoinType&gt;"],
   "arguments":      ["&lt;recipient&gt;", "&lt;amount&gt;"]
 }</pre>
