@@ -108,6 +108,11 @@ BITGET_CHAIN_MAP = {
     10: "optimism",
 }
 
+# Chains where Bitget routing is disabled in backend aggregation. Bitget has
+# quoted unexecutable routes on these chains (e.g. SolvBTC 'TF' reverts on
+# Arbitrum), so it is skipped at quote time and OKX is used instead.
+BITGET_DISABLED_CHAIN_IDS = {42161}
+
 # OKX native token sentinel address
 OKX_NATIVE_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
@@ -672,7 +677,7 @@ def aggregate_quote(
     routers_to_query = []
     # ===== TEMP TEST START: EVM OKX-only — skip Bitget parallel quote =====
     if not _evm_test_okx_only():
-        if chain_id in BITGET_CHAIN_MAP:
+        if chain_id in BITGET_CHAIN_MAP and chain_id not in BITGET_DISABLED_CHAIN_IDS:
             routers_to_query.append(("bitget", bitget_quote))
     # Original (restore when reverting EVM_TEST_OKX_ONLY):
     # if chain_id in BITGET_CHAIN_MAP:
@@ -813,6 +818,8 @@ def build_swap_tx(
         if _evm_test_okx_only():
             return {"success": False, "error": "Bitget disabled (EVM_TEST_OKX_ONLY test flag)"}
         # ===== TEMP TEST END =====
+        if chain_id in BITGET_DISABLED_CHAIN_IDS:
+            return {"success": False, "error": f"Bitget disabled on chain {chain_id}"}
         return _build_bitget_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient, market)
     elif router == "okx":
         return _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient)
