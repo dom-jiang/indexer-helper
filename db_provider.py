@@ -2734,6 +2734,47 @@ def update_swap_transaction(network_id, record_id, **kwargs):
         db_conn.close()
 
 
+def get_pending_near_intents_orders(network_id):
+    """Return non-terminal, bridge-backed orders created within the last hour.
+    NoBridge rows are explicitly excluded -- they carry their own on-chain hash
+    and have no upstream status to poll."""
+    db_conn = get_db_connect(network_id)
+    sql = """SELECT id, deposit_address, status FROM near_intents_orders
+             WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'EXPIRED', 'NO_BRIDGE')
+               AND no_bridge = 0
+               AND deposit_address IS NOT NULL
+               AND created_at >= NOW() - INTERVAL 1 HOUR
+             ORDER BY created_at ASC"""
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall()
+    except Exception as e:
+        print("get_pending_near_intents_orders error:", e)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_near_intents_order_status(network_id, order_id, status, status_response):
+    db_conn = get_db_connect(network_id)
+    sql = """UPDATE near_intents_orders
+             SET status = %s, status_response = %s, updated_at = NOW()
+             WHERE id = %s"""
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (status, status_response, order_id))
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("update_near_intents_order_status error:", e)
+        raise e
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
