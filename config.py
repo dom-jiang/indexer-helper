@@ -103,6 +103,55 @@ try:
 except ImportError:
     pass
 
+try:
+    from db_info import ONECLICK_JWT_TOKEN
+except ImportError:
+    ONECLICK_JWT_TOKEN = ""
+
+try:
+    from db_info import (
+        TITAN_WS_ENDPOINT,
+        TITAN_API_JWT,
+        TITAN_API_ORIGIN,
+        TITAN_QUOTE_TIMEOUT_SEC,
+    )
+except ImportError:
+    TITAN_WS_ENDPOINT = ""
+    TITAN_API_JWT = ""
+    TITAN_API_ORIGIN = "https://titan.exchange"
+    TITAN_QUOTE_TIMEOUT_SEC = 15
+
+try:
+    from db_info import (
+        MCA_BURROW_LOGIC_CONTRACT,
+        MCA_AM_CONTRACT,
+        INTENTS_APP_FEES_RECIPIENT,
+        INTENTS_APP_FEES,
+        INTENTS_DEFAULT_REFERRAL,
+    )
+except ImportError:
+    MCA_BURROW_LOGIC_CONTRACT = None
+    MCA_AM_CONTRACT = None
+    INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
+    INTENTS_APP_FEES = 2
+    INTENTS_DEFAULT_REFERRAL = "rhea"
+
+
+try:
+    from db_info import MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+except ImportError:
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = ""
+
+try:
+    from db_info import MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
+except ImportError:
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = None
+
+try:
+    from db_info import BOSS_EMAIL_VERIFY
+except ImportError:
+    BOSS_EMAIL_VERIFY = True
+
 
 class Cfg:
     NETWORK_ID = "MAINNET"
@@ -121,6 +170,32 @@ class Cfg:
     HYPERLIQUID_MAINNET_EXCHANGE_URL = HYPERLIQUID_MAINNET_EXCHANGE_URL
     REDIS_TOKEN_PRICE_PREFIX = "MULTICHAIN_TOKEN_PRICE"
     ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
+    APTOS_RPC_URL = "https://fullnode.mainnet.aptoslabs.com/v1"
+    # Titan Direct WebSocket for Solana same-chain / preswap aggregation.
+    TITAN_WS_ENDPOINT = TITAN_WS_ENDPOINT
+    TITAN_API_JWT = TITAN_API_JWT
+    TITAN_API_ORIGIN = TITAN_API_ORIGIN
+    TITAN_QUOTE_TIMEOUT_SEC = TITAN_QUOTE_TIMEOUT_SEC
+    # Near Intents 1Click: default appFees + referral on every /v0/quote (see nearintents_utils).
+    MCA_BURROW_LOGIC_CONTRACT = MCA_BURROW_LOGIC_CONTRACT
+    MCA_AM_CONTRACT = MCA_AM_CONTRACT
+    INTENTS_APP_FEES_RECIPIENT = INTENTS_APP_FEES_RECIPIENT
+    INTENTS_APP_FEES = INTENTS_APP_FEES
+    INTENTS_DEFAULT_REFERRAL = INTENTS_DEFAULT_REFERRAL
+    MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
+    # Burrow-inner amount sent via Logic `simple_withdraw` to the multichain relayer BEFORE
+    # `execute(Withdraw)` in MCA withdraw batches (staging relayers often require this leg).
+    # Override in `db_info.py` or pass `mca.relayerPrepayBurrowInner` on /quote requests.
+    MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER = MCA_RELAYER_SIMPLE_WITHDRAW_FEE_INNER
+    # Solana JSON-RPC endpoint used to fetch a recent blockhash when assembling
+    # cross-chain Solana deposit transactions on the backend. Set to a
+    # paid/private RPC (Helius / QuickNode / Triton ...) in production; the
+    # public mainnet-beta endpoint is rate-limited and not suitable for swap
+    # traffic. If the URL is empty or the RPC call fails, the backend falls
+    # back to the legacy descriptor format (`sol_transfer` / `spl_transfer`).
+    SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+    BOSS_EMAIL_VERIFY = BOSS_EMAIL_VERIFY
+    ONECLICK_JWT_TOKEN = ONECLICK_JWT_TOKEN
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,
