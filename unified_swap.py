@@ -3722,6 +3722,7 @@ def _preswap_cross_chain_swap(
         chosen_stage_a = None
         chosen_stage_a_router = ""
         chosen_sim_skipped = None
+        chosen_sim_warning = None
         fallback_failure = None
         tried_routers = []
         for stage_a in stage_a_candidates:
@@ -3754,7 +3755,9 @@ def _preswap_cross_chain_swap(
                 continue
 
             # EVM: simulate Stage-A swap (skips when allowance missing — user signs
-            # approve first). On revert, return a re-quote error.
+            # approve first). For OKX preswap, align with the production frontend:
+            # do not hard-block on RPC eth_call failures (OKX adapters can be false
+            # negatives in simulation); return the tx with a warning instead.
             if is_evm_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
                 sim_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
                 sim = simulate_preswap_evm_swap(
@@ -3773,6 +3776,19 @@ def _preswap_cross_chain_swap(
                     chosen_stage_a_router = stage_a_router
                     break
                 if not sim.get("success") and not sim.get("skipped"):
+                    if stage_a_router == "okx":
+                        chosen_sim_warning = {
+                            "simulateError": sim.get("error", ""),
+                            "allowance": sim.get("allowance", ""),
+                            "stageARouter": stage_a_router,
+                        }
+                        logger.warning(
+                            "preswap stage-A okx simulation failed but tx is returned (%s)",
+                            sim.get("error", ""),
+                        )
+                        chosen_stage_a = stage_a
+                        chosen_stage_a_router = stage_a_router
+                        break
                     slip_bps = convert_slippage_to_decimal(stage_a_slippage) * 10000
                     est_int = _safe_int_str(stage_a_estimated_out)
                     min_feasible = (
@@ -3904,6 +3920,9 @@ def _preswap_cross_chain_swap(
             response_data["simulateNote"] = (
                 "Allowance to the swap router is insufficient; sign approve first, then swap"
             )
+        if chosen_sim_warning:
+            response_data["simulateWarning"] = chosen_sim_warning.get("simulateError", "")
+            response_data["simulateWarningData"] = chosen_sim_warning
 
         # 3) Approve info: EVM only. Solana and NEAR have no ERC-20-style approve.
         #    Built once for the chosen route (after fallback selection).
