@@ -3130,7 +3130,6 @@ def _stage_a_build_evm(
     preferred_router: str = "",
     preferred_market: str = "",
     return_all: bool = False,
-    exact_out_amount: str = "",
 ) -> Dict:
     """Build the EVM Stage-A swap tx (exactIn delivered to depositAddress).
 
@@ -3149,46 +3148,22 @@ def _stage_a_build_evm(
         bitget_quote,
         _parse_bitget_quote,
         build_swap_tx,
-        build_okx_exact_out_swap_tx,
     )
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
 
     def _build_okx() -> Dict:
         approve_spender = ""
-        exact_out_int = _safe_int_str(exact_out_amount)
-        if exact_out_int > 0:
-            # For preswap -> 1Click, the deposit order expects a fixed
-            # intermediate amount. Build an OKX exactOut swap so the DEX leg
-            # targets that bridge input instead of leaving output variable.
-            res = build_okx_exact_out_swap_tx(
-                chain_id=chain_int,
-                token_in=token_in,
-                token_out=intermediate,
-                amount_out=str(exact_out_int),
-                slippage=slippage,
-                sender=sender,
-                receiver=deposit_address,
-            )
-            if res.get("success"):
-                max_in = _safe_int_str(res.get("maxAmountIn") or res.get("amountIn") or "")
-                if max_in > 0 and max_in > _safe_int_str(amount_in):
-                    return {
-                        "success": False,
-                        "router": "okx",
-                        "error": "OKX exactOut requires more tokenIn than amountIn",
-                    }
-        else:
-            res = build_same_chain_swap_tx(
-                chain_id=chain_int,
-                router="okx",
-                token_in=token_in,
-                token_out=intermediate,
-                amount_in=str(amount_in),
-                slippage=slippage,
-                sender=sender,
-                recipient=deposit_address,
-            )
+        res = build_same_chain_swap_tx(
+            chain_id=chain_int,
+            router="okx",
+            token_in=token_in,
+            token_out=intermediate,
+            amount_in=str(amount_in),
+            slippage=slippage,
+            sender=sender,
+            recipient=deposit_address,
+        )
         if not res.get("success"):
             return {"success": False, "router": "okx", "error": res.get("error")}
         try:
@@ -3728,7 +3703,6 @@ def _preswap_cross_chain_swap(
                 preferred_router=str(pre_swap.get("router") or ""),
                 preferred_market=str(pre_swap.get("market") or ""),
                 return_all=False,
-                exact_out_amount=str(mid_target),
             )
             stage_a_candidates = [single] if single.get("success") else []
             build_err = single.get("error")
@@ -3763,10 +3737,11 @@ def _preswap_cross_chain_swap(
             tried_routers.append(stage_a_router)
 
             stage_a_min_int = _safe_int_str(stage_a_min_out)
-            # Guard: stage-A min-out must cover the bridge's expected input, else the
-            # bridge order can under-fill. EVM uses the same guard now that swap-time
-            # bridge re-anchoring has been removed.
-            if stage_a_min_int > 0 and stage_a_min_int < mid_target:
+            # Non-EVM legs cannot be simulated/rebuilt reliably here, so keep the
+            # strict guard. EVM follows the production frontend model: exactIn DEX
+            # swap into a FLEX_INPUT 1Click order, where actual received amount can
+            # vary within slippage.
+            if not is_evm_src and stage_a_min_int > 0 and stage_a_min_int < mid_target:
                 fallback_failure = {
                     "code": -2,
                     "msg": "Price moved too much, please re-quote",
