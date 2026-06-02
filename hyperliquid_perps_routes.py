@@ -493,14 +493,27 @@ def _validate_mca_signature_task(stask: Any) -> Optional[str]:
     batch_id = stask.get("batchId")
     tx_hash = stask.get("txHash")
     zcash_addr = stask.get("zcashDepositAddress")
-    signer_chain = (stask.get("signerChain") or "").strip().lower()
+    zcash_mode = (stask.get("zcashMode") or "").strip().lower()
+    if zcash_mode not in ("", "plugin", "legacy"):
+        return "signatureTask.zcashMode must be plugin or legacy"
+
+    # Plugin (PC) mode always resolves via the relayer batch.
+    if zcash_mode == "plugin":
+        if not batch_id:
+            return "signatureTask.batchId is required for signatureTask.zcashMode plugin"
+        return None
+    # Legacy (Mobile) mode resolves via Zcash deposit address / tx hash polling.
+    if zcash_mode == "legacy":
+        if not tx_hash and not zcash_addr:
+            return (
+                "signatureTask.zcashMode legacy requires "
+                "signatureTask.zcashDepositAddress or signatureTask.txHash"
+            )
+        return None
+
+    # No explicit zcashMode: backward-compatible. Accept any legacy or plugin
+    # shape (zcash batchId-only requests are treated as plugin downstream).
     if batch_id or tx_hash or zcash_addr:
-        if signer_chain == "zcash":
-            if not tx_hash and not zcash_addr:
-                return (
-                    "signatureTask.zcashDepositAddress or txHash is required "
-                    "for signerChain zcash"
-                )
         return None
     return (
         "signatureTask.batchId, txHash, or zcashDepositAddress is required "
