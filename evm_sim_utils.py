@@ -43,6 +43,17 @@ _HUGE_WEI = hex(10 * (10 ** 18))  # 10 ETH for gas
 # Cache detected slots per (chain_id, token_addr_lower): {"bal": int|None, "alw": int|None}
 _SLOT_CACHE: Dict[str, Dict[str, Optional[int]]] = {}
 
+# Cache whether an RPC URL honors eth_call state override. This is the critical
+# latency guard: probing storage slots on an override-incapable RPC would grind
+# dozens of eth_calls before failing, so we gate slot detection behind one cheap
+# capability probe (cached for the process lifetime).
+_OVERRIDE_CACHE: Dict[str, bool] = {}
+
+# Minimal runtime bytecode: `return sload(0)`. Used to verify that the RPC
+# applies BOTH code and stateDiff overrides (exactly what funded sim relies on).
+_PROBE_CODE = "0x60005460005260206000f3"
+_PROBE_ADDR = "0x000000000000000000000000000000000000dEaD"
+
 
 def _keccak(data: bytes) -> bytes:
     """keccak256 — prefer web3, fall back to pycryptodome."""
@@ -97,6 +108,28 @@ def _eth_call(url: str, call_obj: Dict, overrides: Optional[Dict] = None, timeou
         return {"error": err.get("message") or str(err) or "no result"}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+
+
+def _rpc_supports_override(url: str, timeout: int = 4) -> bool:
+    """Cheap, cached probe: does this RPC apply eth_call state override?
+
+    One eth_call against a dummy address whose code (`return sload(0)`) and slot 0
+    are both injected via override. If the readback equals the sentinel, the RPC
+    honors overrides. Cached per URL so we never re-probe a known-bad endpoint.
+    """
+    cached = _OVERRIDE_CACHE.get(url)
+    if cached is not None:
+        return cached
+    ov = {_PROBE_ADDR: {"code": _PROBE_CODE, "stateDiff": {_value32(0): _value32(_SENTINEL)}}}
+    r = _eth_call(url, {"to": _PROBE_ADDR, "data": "0x"}, ov, timeout=timeout)
+    ok = False
+    if "result" in r:
+        try:
+            ok = int(r["result"], 16) == _SENTINEL
+        except (ValueError, TypeError):
+            ok = False
+    _OVERRIDE_CACHE[url] = ok
+    return ok
 
 
 def _detect_slots_on_rpc(url: str, token: str) -> Optional[Dict[str, Optional[int]]]:
@@ -175,6 +208,14 @@ def simulate_swap_funded(
         return {"skipped": True, "reason": "no_tx"}
     if not rpc_urls:
         return {"skipped": True, "reason": "no_rpc"}
+
+    # Latency guard: only keep RPCs that actually honor state override. On
+    # override-incapable endpoints this fails fast (one cached probe) instead of
+    # grinding dozens of slot-detection eth_calls before giving up.
+    capable = [u for u in rpc_urls if _rpc_supports_override(u)]
+    if not capable:
+        return {"skipped": True, "reason": "no_override_support"}
+    rpc_urls = capable
 
     token = token_in_address.lower()
     cache_key = f"{int(chain_id)}:{token}"
