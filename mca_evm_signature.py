@@ -332,6 +332,32 @@ def is_zcash_mca_signature_task(signature_task: Any) -> bool:
     return chain == "zcash" or bool(zcash_addr)
 
 
+def is_zcash_legacy_signature_task(signature_task: Any) -> bool:
+    """Legacy (Mobile) Zcash signature task.
+
+    Legacy tasks are resolved by polling `zcashDepositAddress` /
+    `signatureTask.txHash` (see `resolve_zcash_signature_task`). Plugin (PC)
+    tasks always carry a `batchId` and are resolved through the normal relayer
+    batch path instead.
+
+    Determination is driven by the frontend-sent `signatureTask.zcashMode`,
+    with a backward-compatible fallback for requests predating that field.
+    """
+    st = signature_task if isinstance(signature_task, dict) else {}
+    mode = (st.get("zcashMode") or "").strip().lower()
+    if mode == "legacy":
+        return True
+    if mode == "plugin":
+        return False
+    # Backward compatibility for requests without an explicit zcashMode.
+    if (st.get("zcashDepositAddress") or "").strip():
+        return True
+    chain = (st.get("signerChain") or "").strip().lower()
+    has_tx = bool((st.get("txHash") or "").strip())
+    has_batch = bool((st.get("batchId") or "").strip())
+    return chain == "zcash" and has_tx and not has_batch
+
+
 def resolve_zcash_signature_task(
     network_id: str,
     signature_task: Optional[Dict[str, Any]],

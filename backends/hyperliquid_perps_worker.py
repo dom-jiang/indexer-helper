@@ -8,7 +8,7 @@ Usage: python hyperliquid_perps_worker.py MAINNET
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -21,6 +21,13 @@ STEP_PERMIT_SEC = 600
 STEP_CONFIRM_SEC = 600
 STEP_LEDGER_SEC = 600
 STEP_BRIDGE_SEC = 86400
+# Absolute anti-zombie backstop for a bridge deposit. Even if 1Click never
+# returns a terminal status and polling keeps failing, the job is reaped after
+# this. Sized above the longest 1Click deposit window (~3 days) so it never
+# fires during a legitimate, still-valid quote.
+STEP_DEPOSIT_ABS_CAP_SEC = 3 * 86400 + 3600
+# Extra slack added on top of the 1Click quote deadline before failing locally.
+DEPOSIT_DEADLINE_GRACE_SEC = 600
 
 from hyperliquid_deposit_worker import (  # noqa: E402
     HL_TERMINAL_HISTORY,
@@ -36,7 +43,7 @@ from mca_evm_signature import (  # noqa: E402
     extract_deposit_hash_from_permit_records,
     extract_withdraw_hash_from_ledger,
     is_zcash_bridge_deposit_body,
-    is_zcash_mca_signature_task,
+    is_zcash_legacy_signature_task,
     lending_batch_complete,
     lending_batch_error,
     resolve_mca_evm_rsv,
@@ -59,6 +66,20 @@ def _parse_dt(val) -> Optional[datetime]:
         except Exception:
             return None
     return None
+
+
+def _parse_iso_dt(val) -> Optional[datetime]:
+    """Parse a 1Click ISO-8601 timestamp (UTC, possibly 'Z'-suffixed) to naive UTC."""
+    if not isinstance(val, str) or not val.strip():
+        return None
+    s = val.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _loads_payload(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -356,16 +377,98 @@ def _deposit_prereq_timeout_fail(
     network_id: str,
     job_id: str,
     payload: Dict[str, Any],
-    created: datetime,
+    start: datetime,
     now: datetime,
 ) -> bool:
+    """Gate for internal post-bridge prerequisites (e.g. MCA business signature).
+
+    Measured from `start` (when this step was entered), NOT from job creation, so
+    a long upstream bridge wait does not eat into this internal step's budget.
+    """
     limit = _deposit_prereq_timeout_sec(payload)
-    if (now - created).total_seconds() > limit:
+    if (now - start).total_seconds() > limit:
         mins = max(1, limit // 60)
         _fail_job(
             network_id,
             job_id,
             "timeout waiting for deposit prerequisites ({0}m)".format(mins),
+        )
+        return True
+    return False
+
+
+def _oneclick_deposit_deadline(
+    oc_data: Optional[Dict[str, Any]], row: Dict[str, Any]
+) -> Optional[datetime]:
+    """Authoritative deposit window from the 1Click quote.
+
+    Prefers the live poll payload, then the stored snapshot. Uses
+    `quote.timeWhenInactive` (when the deposit address stops accepting funds),
+    falling back to `quote.deadline`.
+    """
+    candidates: List[Any] = []
+    if isinstance(oc_data, dict):
+        candidates.append(oc_data)
+    snap = _ext(row).get("oneClickSnapshot")
+    if isinstance(snap, str) and snap:
+        try:
+            candidates.append(json.loads(snap))
+        except Exception:
+            pass
+    elif isinstance(snap, dict):
+        candidates.append(snap)
+    for data in candidates:
+        if not isinstance(data, dict):
+            continue
+        qr = data.get("quoteResponse")
+        quote = qr.get("quote") if isinstance(qr, dict) else None
+        if not isinstance(quote, dict):
+            continue
+        for key in ("timeWhenInactive", "deadline"):
+            dt = _parse_iso_dt(quote.get(key))
+            if dt is not None:
+                return dt
+    return None
+
+
+def _bridge_deposit_abscap_fail(
+    network_id: str, job_id: str, created: datetime, now: datetime
+) -> bool:
+    """Absolute backstop so a stuck bridge deposit can never live forever."""
+    if (now - created).total_seconds() > STEP_DEPOSIT_ABS_CAP_SEC:
+        _fail_job(
+            network_id, job_id, "timeout waiting for bridge deposit (absolute cap)"
+        )
+        return True
+    return False
+
+
+def _bridge_deposit_deadline_fail(
+    network_id: str,
+    job_id: str,
+    oc_data: Optional[Dict[str, Any]],
+    row: Dict[str, Any],
+    created: datetime,
+    now: datetime,
+) -> bool:
+    """Fail a still-pending bridge deposit only after the 1Click quote deadline
+    (plus grace) has passed, or the absolute cap is hit.
+
+    While the quote is still valid we defer to 1Click's own terminal status
+    (SUCCESS / EXPIRED / REFUNDED), so legitimate slow deposits (e.g. BTC waiting
+    for on-chain confirmations, up to the quote deadline) are never killed early.
+    """
+    if _bridge_deposit_abscap_fail(network_id, job_id, created, now):
+        return True
+    deadline = _oneclick_deposit_deadline(oc_data, row)
+    if deadline is None:
+        # No discoverable deadline yet: keep waiting; the absolute cap is the backstop.
+        return False
+    if now > deadline + timedelta(seconds=DEPOSIT_DEADLINE_GRACE_SEC):
+        _fail_job(
+            network_id,
+            job_id,
+            "timeout waiting for bridge deposit (past 1Click quote deadline)",
         )
         return True
     return False
@@ -378,7 +481,7 @@ def _refresh_zcash_signature_external_status(
     signature_task: Dict[str, Any],
 ) -> None:
     """Merge Zcash business poll into externalStatus while bridge is still pending."""
-    if not is_zcash_mca_signature_task(signature_task):
+    if not is_zcash_legacy_signature_task(signature_task):
         return
     zr = resolve_zcash_signature_task(network_id, signature_task)
     ext_patch = dict(zr.get("ext_patch") or {})
@@ -403,7 +506,7 @@ def _resolve_mca_b_path_rsv(
 ) -> Optional[Dict[str, Any]]:
     """Resolve r/s/v for MCA B-path (batch, Zcash deposit address, or txHash)."""
     stask = signature_task if isinstance(signature_task, dict) else {}
-    if is_zcash_mca_signature_task(stask):
+    if is_zcash_legacy_signature_task(stask):
         zr = resolve_zcash_signature_task(network_id, stask)
         if zr.get("error_msg"):
             raise ValueError(str(zr["error_msg"]))
@@ -450,7 +553,7 @@ def _wait_for_mca_signature(
     if timeout_gate():
         return True
 
-    if is_zcash_mca_signature_task(stask):
+    if is_zcash_legacy_signature_task(stask):
         zr = resolve_zcash_signature_task(network_id, stask)
         ext_patch = zr.get("ext_patch") or {}
         if zr.get("error_msg"):
@@ -459,7 +562,7 @@ def _wait_for_mca_signature(
         if zr.get("pending"):
             sig_msg = (
                 "Waiting for Zcash business signature"
-                if is_zcash_mca_signature_task(stask)
+                if is_zcash_legacy_signature_task(stask)
                 else "Waiting for relayer signature"
             )
             _update_job(
@@ -581,6 +684,26 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
             return True
         return False
 
+    def _deposit_sig_gate() -> bool:
+        """Timeout gate for the post-bridge MCA business signature wait.
+
+        Measured from when this step is first entered (recorded once in
+        externalStatus), so a long upstream bridge wait does not eat into it.
+        """
+        nonlocal row
+        ex = _ext(row)
+        skey = "depositSigWaitStartedAt"
+        if skey not in ex:
+            ex[skey] = now.strftime("%Y-%m-%d %H:%M:%S")
+            _update_job(
+                network_id,
+                job_id,
+                {"external_status_json": json.dumps(ex, ensure_ascii=False)[:65000]},
+            )
+            row = get_hyperliquid_transfer_job_by_job_id(network_id, job_id) or row
+        s0 = _parse_dt(_ext(row).get(skey)) or now
+        return _deposit_prereq_timeout_fail(network_id, job_id, payload, s0, now)
+
     permit_id = row.get("permit_id")
     if st == "WAITING_PERMIT" and permit_id:
         ex = _ext(row)
@@ -651,7 +774,10 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
         "SUBMITTING_PERMIT",
     ):
         if needs_bridge and deposit_address:
-            if _deposit_prereq_timeout_fail(network_id, job_id, payload, created, now):
+            # Pre-poll only the absolute backstop, so persistent poll failures
+            # still get reaped. The real "still pending" decision is made after
+            # polling, driven by the 1Click quote deadline (see below).
+            if _bridge_deposit_abscap_fail(network_id, job_id, created, now):
                 return
             try:
                 oc_st, oc_data = poll_oneclick_status(deposit_address)
@@ -680,6 +806,13 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
                 )
                 return
             if oc_st != "SUCCESS":
+                # Bridge still pending: defer to 1Click's own terminal status
+                # while the quote is valid; only fail locally once we are past
+                # the quote deadline (plus grace) or the absolute cap.
+                if _bridge_deposit_deadline_fail(
+                    network_id, job_id, oc_data, row, created, now
+                ):
+                    return
                 if not skip_lending:
                     stask = payload.get("signatureTask") or {}
                     if isinstance(stask, dict):
@@ -702,9 +835,7 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
                 stask,
                 batch_id,
                 transfer_type="deposit",
-                timeout_gate=lambda: _deposit_prereq_timeout_fail(
-                    network_id, job_id, payload, created, now
-                ),
+                timeout_gate=_deposit_sig_gate,
             ):
                 return
 
@@ -736,7 +867,7 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
                 if not isinstance(stask, dict):
                     stask = {}
                 lending_rows: List[Dict[str, Any]] = []
-                if batch_id and not is_zcash_mca_signature_task(stask):
+                if batch_id and not is_zcash_legacy_signature_task(stask):
                     lending_rows = query_multichain_lending_data(network_id, batch_id) or []
                 try:
                     rsv = _resolve_mca_b_path_rsv(
@@ -845,7 +976,7 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
         stask = payload.get("signatureTask") or {}
         sig = payload.get("signature")
         has_frontend_sig = isinstance(sig, dict) and bool(sig.get("r"))
-        if account_mode == "mca" and has_frontend_sig:
+        if has_frontend_sig:
             _update_job(
                 network_id,
                 job_id,
@@ -871,7 +1002,7 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
                 ):
                     return
                 lending_rows: List[Dict[str, Any]] = []
-                if batch_id and not is_zcash_mca_signature_task(stask):
+                if batch_id and not is_zcash_legacy_signature_task(stask):
                     lending_rows = query_multichain_lending_data(network_id, batch_id) or []
                 try:
                     rsv = _resolve_mca_b_path_rsv(
@@ -896,7 +1027,7 @@ def process_withdraw_row(network_id: str, row: Dict[str, Any]) -> None:
                     return
                 ext = _ext(row)
                 ext["withdrawSignature"] = rsv
-                if is_zcash_mca_signature_task(stask):
+                if is_zcash_legacy_signature_task(stask):
                     zr = resolve_zcash_signature_task(network_id, stask)
                     zpatch = zr.get("ext_patch") or {}
                     if zpatch:
