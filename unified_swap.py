@@ -1216,10 +1216,6 @@ def _preswap_cross_chain_quote(
         return {"success": False, "error": reason or "no 1Click-supported intermediate on fromChain"}
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
-    # The intermediate-amount buffer protects stage A: we target a slightly lower amount than
-    # the raw aggregator estimate so the exact intermediate amount the bridge expects is
-    # actually deliverable at swap time even if price drifts slightly.
-    mid_buffer = Decimal("1") - Decimal(str(slippage_decimal))
 
     best = None
     best_amount = Decimal("-1")
@@ -1257,8 +1253,11 @@ def _preswap_cross_chain_quote(
                 errors.append(f"{inter['symbol']}: {err}")
                 continue
 
-            # Target a slightly lower mid amount so stage-A is still feasible at swap time.
-            mid_amount_target = int(mid_amount_raw * mid_buffer)
+            # Match the production frontend flow: quote the 1Click FLEX_INPUT leg
+            # using the Stage-A estimated output. 1Click returns its own
+            # minAmountIn for the flexible deposit; Stage-A minOut remains exposed
+            # in preSwap metadata for display/risk checks.
+            mid_amount_target = int(mid_amount_raw)
             if mid_amount_target <= 0:
                 errors.append(f"{inter['symbol']}: mid target <= 0")
                 continue
