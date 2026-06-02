@@ -1955,7 +1955,7 @@ def build_solana_swap_tx(
 
 
 # ============================================================
-# Aptos Aggregation (Panora)
+# Aptos Aggregation (Hyperion)
 # ============================================================
 
 APTOS_BLUECHIP_TOKENS = {
@@ -1963,64 +1963,6 @@ APTOS_BLUECHIP_TOKENS = {
     "USDC": {"address": "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", "symbol": "USDC", "decimals": 6},
     "USDT": {"address": "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b", "symbol": "USDT", "decimals": 6},
 }
-
-
-def _panora_aptos_quote(
-    token_in: Dict,
-    token_out: Dict,
-    amount_in: str,
-    slippage_decimal: float,
-    sender: str,
-    recipient: str,
-) -> Dict:
-    from panora_utils import panora_swap
-
-    slippage_pct = slippage_decimal * 100
-    token_in_decimals = token_in.get("decimals", 8)
-    readable_amount = shrink_token(amount_in, token_in_decimals)
-
-    result = panora_swap(
-        from_token=token_in.get("address", ""),
-        to_token=token_out.get("address", ""),
-        from_amount=readable_amount,
-        to_wallet=recipient or sender,
-        slippage=slippage_pct,
-    )
-    if not result.get("success"):
-        return {"success": False, "router": "panora", "error": result.get("error", "Panora API failed")}
-
-    data = result["data"]
-    quotes_list = data if isinstance(data, list) else data.get("quotes", [data])
-    if not quotes_list:
-        return {"success": False, "router": "panora", "error": "Panora returned no quotes"}
-
-    best_q = None
-    best_out = Decimal("-1")
-    for q in quotes_list:
-        to_amount = q.get("toTokenAmount")
-        if not to_amount:
-            continue
-        try:
-            amount_out_readable = Decimal(str(to_amount))
-        except (InvalidOperation, ValueError):
-            continue
-        token_out_decimals = token_out.get("decimals", 8)
-        amount_out_raw = int(amount_out_readable * Decimal(10 ** token_out_decimals))
-        if Decimal(str(amount_out_raw)) > best_out:
-            best_out = Decimal(str(amount_out_raw))
-            min_out = int(amount_out_raw * (Decimal("1") - Decimal(str(slippage_decimal))))
-            best_q = {
-                "router": "panora",
-                "amountOut": str(amount_out_raw),
-                "amountOutReadable": str(to_amount),
-                "minAmountOut": str(min_out),
-                "priceImpact": q.get("priceImpact", ""),
-                "txData": q.get("txData", {}),
-            }
-
-    if not best_q:
-        return {"success": False, "router": "panora", "error": "No valid Aptos quotes from Panora"}
-    return {"success": True, **best_q}
 
 
 def _hyperion_aptos_quote(
@@ -2058,9 +2000,10 @@ def aggregate_aptos_quote(
     recipient: str = None,
 ) -> Dict:
     """
-    Get Aptos swap quote from Panora + Hyperion CLMM (best amountOut wins).
+    Get Aptos swap quote from Hyperion CLMM.
 
-    Panora accepts human-readable amounts; Hyperion uses smallest units.
+    Hyperion uses smallest units. Kept in the multi-router shape so additional
+    Aptos aggregators can be slotted back in later.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2071,16 +2014,11 @@ def aggregate_aptos_quote(
     errors = []
     parsed = []
 
-    def _run_panora():
-        return _panora_aptos_quote(
-            token_in, token_out, amount_in, slippage_decimal, sender, recipient,
-        )
-
     def _run_hyperion():
         return _hyperion_aptos_quote(token_in, token_out, amount_in, slippage_decimal)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {pool.submit(_run_panora): "panora", pool.submit(_run_hyperion): "hyperion"}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        futures = {pool.submit(_run_hyperion): "hyperion"}
         for fut in as_completed(futures):
             name = futures[fut]
             try:
@@ -2137,9 +2075,10 @@ def build_aptos_swap_tx(
     recipient: str = None,
 ) -> Dict:
     """
-    Build Aptos swap transaction via Panora or Hyperion CLMM.
+    Build Aptos swap transaction via Hyperion CLMM.
 
-    Returns Move entry function data for Aptos wallet adapter.
+    Returns Move entry function data for Aptos wallet adapter. Legacy callers
+    that still pass ``router="panora"`` (or empty) are routed to Hyperion.
     """
     if not recipient:
         recipient = sender
@@ -2147,78 +2086,30 @@ def build_aptos_swap_tx(
     slippage_decimal = convert_slippage_to_decimal(slippage)
     router_name = (router or "").strip().lower()
 
-    if router_name == "hyperion":
-        from hyperion_utils import hyperion_build_swap_tx
-
-        res = hyperion_build_swap_tx(
-            token_in=token_in.get("address", ""),
-            token_out=token_out.get("address", ""),
-            amount_in=str(amount_in),
-            slippage_decimal=slippage_decimal,
-            recipient=recipient,
-            safe_mode=False,
-        )
-        if not res.get("success"):
-            return {"success": False, "error": res.get("error", "Hyperion swap build failed")}
-        return {
-            "success": True,
-            "chainType": CHAIN_TYPE_APTOS,
-            "tx": res.get("tx") or {},
-            "router": "hyperion",
-            "estimatedOut": str(res.get("estimatedOut") or ""),
-            "minAmountOut": str(res.get("minAmountOut") or ""),
-        }
-
-    if router_name and router_name not in ("panora", ""):
+    # Panora has been removed; only Hyperion remains. Accept the legacy
+    # "panora"/empty values as Hyperion, reject anything else.
+    if router_name not in ("", "hyperion", "panora"):
         return {"success": False, "error": f"Unknown Aptos router: {router}"}
 
-    from panora_utils import panora_swap
+    from hyperion_utils import hyperion_build_swap_tx
 
-    slippage_pct = slippage_decimal * 100
-    token_in_decimals = token_in.get("decimals", 8)
-    readable_amount = shrink_token(amount_in, token_in_decimals)
-
-    result = panora_swap(
-        from_token=token_in.get("address", ""),
-        to_token=token_out.get("address", ""),
-        from_amount=readable_amount,
-        to_wallet=recipient,
-        slippage=slippage_pct,
+    res = hyperion_build_swap_tx(
+        token_in=token_in.get("address", ""),
+        token_out=token_out.get("address", ""),
+        amount_in=str(amount_in),
+        slippage_decimal=slippage_decimal,
+        recipient=recipient,
+        safe_mode=False,
     )
-
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "Panora swap failed")}
-
-    data = result["data"]
-    quotes_list = data if isinstance(data, list) else data.get("quotes", [data])
-    if not quotes_list:
-        return {"success": False, "error": "Panora returned no transaction data"}
-
-    best_quote = quotes_list[0]
-    tx_data = best_quote.get("txData", {})
-
-    if not tx_data:
-        return {"success": False, "error": "Panora: no txData in response"}
-
-    to_amount = best_quote.get("toTokenAmount")
-    token_out_decimals = token_out.get("decimals", 8)
-    amount_out_raw = ""
-    min_out = ""
-    if to_amount is not None:
-        try:
-            amount_out_readable = Decimal(str(to_amount))
-            amount_out_raw = str(int(amount_out_readable * Decimal(10 ** token_out_decimals)))
-            min_out = str(int(Decimal(amount_out_raw) * (Decimal("1") - Decimal(str(slippage_decimal)))))
-        except (InvalidOperation, ValueError):
-            pass
-
+    if not res.get("success"):
+        return {"success": False, "error": res.get("error", "Hyperion swap build failed")}
     return {
         "success": True,
         "chainType": CHAIN_TYPE_APTOS,
-        "tx": tx_data,
-        "router": "panora",
-        "estimatedOut": amount_out_raw,
-        "minAmountOut": min_out or amount_out_raw,
+        "tx": res.get("tx") or {},
+        "router": "hyperion",
+        "estimatedOut": str(res.get("estimatedOut") or ""),
+        "minAmountOut": str(res.get("minAmountOut") or ""),
     }
 
 
@@ -2414,7 +2305,6 @@ def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
             "chainId": "aptos-mainnet",
             "routers": [
                 {"name": "hyperion", "supported": True},
-                {"name": "panora", "supported": True},
             ],
             "bluechipTokens": [
                 {"symbol": k, "address": v["address"], "decimals": v["decimals"]}
