@@ -2700,7 +2700,7 @@ def update_swap_transaction(network_id, record_id, **kwargs):
     """Update allowed fields on a swap_transactions record."""
     allowed = {
         "status", "to_hash", "actual_out", "status_response",
-        "estimated_out", "router", "deposit_address",
+        "estimated_out", "router", "deposit_address", "from_hash",
     }
     fields = []
     params = []
