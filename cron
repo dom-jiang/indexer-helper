@@ -37,3 +37,4 @@
 * * * * * /indexer-helper/backends/backend_hyperliquid_perps_worker.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_mca_withdraw_job.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_near_intents_status_checker.sh > /dev/null
+* * * * * /indexer-helper/backends/backend_swap_status_checker.sh > /dev/null

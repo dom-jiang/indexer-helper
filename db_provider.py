@@ -2668,6 +2668,72 @@ def insert_swap_transaction(network_id, **fields):
         db_conn.close()
 
 
+def get_pending_cross_chain_swaps(network_id, interval_minutes=70):
+    """
+    Fetch cross-chain swap records whose status is still non-terminal
+    and were created within the last `interval_minutes` minutes.
+    Used by the background status checker.
+    """
+    interval_minutes = int(interval_minutes) if interval_minutes else 70
+    db_conn = get_db_connect(network_id)
+    sql = (
+        "SELECT * FROM swap_transactions "
+        "WHERE is_cross_chain = 1 "
+        "AND deposit_address IS NOT NULL AND deposit_address <> '' "
+        "AND status NOT IN ('SUCCESS', 'FAILED', 'REFUNDED', 'EXPIRED') "
+        f"AND created_at >= NOW() - INTERVAL {interval_minutes} MINUTE "
+        "ORDER BY created_at ASC"
+    )
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"get_pending_cross_chain_swaps error: {e}")
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_swap_transaction(network_id, record_id, **kwargs):
+    """Update allowed fields on a swap_transactions record."""
+    allowed = {
+        "status", "to_hash", "actual_out", "status_response",
+        "estimated_out", "router", "deposit_address",
+    }
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed or value is None:
+            continue
+        if key == "status_response" and isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields.append(f"`{key}` = %s")
+        params.append(value)
+
+    if not fields:
+        return 0
+
+    fields.append("updated_at = NOW()")
+    params.append(record_id)
+    sql = f"UPDATE swap_transactions SET {', '.join(fields)} WHERE id = %s"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_swap_transaction error: {e}")
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()
