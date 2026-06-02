@@ -50,6 +50,31 @@ def _extract_to_hash(router: str, status_data: dict) -> str:
     return ""
 
 
+def _extract_from_hash(router: str, status_data: dict) -> str:
+    """Pull the best-effort origin (source) chain tx hash from a status payload.
+
+    Used to backfill the synthetic `mca_relayer:{batch_id}` placeholder once the
+    relayer has broadcast and 1Click reports the real origin tx.
+    """
+    if not isinstance(status_data, dict):
+        return ""
+    if router in _NEARINTENTS_LIKE_ROUTERS:
+        swap = status_data.get("swapDetails") or {}
+        hashes = swap.get("originChainTxHashes") or []
+        if hashes and isinstance(hashes, list):
+            first = hashes[0]
+            if isinstance(first, dict) and first.get("hash"):
+                return first.get("hash", "")
+            if isinstance(first, str) and first:
+                return first
+        near_hashes = swap.get("nearTxHashes") or []
+        if near_hashes and isinstance(near_hashes, list) and isinstance(near_hashes[0], str):
+            return near_hashes[0]
+    if router == "omnibridge":
+        return status_data.get("originTxHash") or status_data.get("fromHash") or ""
+    return ""
+
+
 def _extract_actual_out(router: str, status_data: dict) -> str:
     if not isinstance(status_data, dict):
         return ""
@@ -121,6 +146,24 @@ def check_once(network_id: str) -> int:
             )
         except Exception as e:
             logger.error(f"[swap_status_checker] update failed id={rec_id}: {e}")
+
+        # Backfill the synthetic `mca_relayer:{batch_id}` placeholder with the real
+        # origin tx hash once available. Done as a separate, best-effort update so a
+        # uk_from_hash conflict can never roll back the status update above. Only
+        # relayer-enqueued rows are touched (avoids clobbering reported from_hash).
+        if str(row.get("from_hash") or "").startswith("mca_relayer:"):
+            real_from_hash = _extract_from_hash(router, data)
+            if real_from_hash:
+                try:
+                    update_swap_transaction(network_id, rec_id, from_hash=real_from_hash)
+                    logger.info(
+                        f"[swap_status_checker] backfilled from_hash id={rec_id} "
+                        f"-> {real_from_hash}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[swap_status_checker] from_hash backfill skipped id={rec_id}: {e}"
+                    )
 
     return updated
 

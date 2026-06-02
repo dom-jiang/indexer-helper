@@ -3724,8 +3724,9 @@ def _preswap_cross_chain_swap(
 
             stage_a_min_int = _safe_int_str(stage_a_min_out)
             # Guard: stage-A min-out must cover the bridge's expected input, else the
-            # bridge order under-fills. (EVM relies on the eth_call simulation below.)
-            if not is_evm_src and stage_a_min_int > 0 and stage_a_min_int < mid_target:
+            # bridge order can under-fill. EVM uses the same guard now that swap-time
+            # bridge re-anchoring has been removed.
+            if stage_a_min_int > 0 and stage_a_min_int < mid_target:
                 fallback_failure = {
                     "code": -2,
                     "msg": "Price moved too much, please re-quote",
