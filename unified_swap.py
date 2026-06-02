@@ -8,7 +8,6 @@ For same-chain:  delegates to existing multi_chain_* functions.
 
 import base64
 import json
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
@@ -986,194 +985,6 @@ def _build_quote_provider_warnings(
     return warnings or None
 
 
-# Short-lived verdict cache for the Bitget Stage-A executability check (B). Keyed by
-# (chain, tokenIn, tokenOut); value is (is_executable, expiry_monotonic). Avoids
-# rebuilding + re-simulating the Bitget route on every /quote for the same pair.
-_BITGET_VERDICT_TTL = 90.0
-_BITGET_VERDICT_CACHE: Dict[str, Tuple[bool, float]] = {}
-
-
-def _bitget_verdict_key(chain_int: int, token_in: Dict, intermediate: Dict) -> str:
-    ti = str((token_in or {}).get("address") or "").lower()
-    to = str((intermediate or {}).get("address") or "").lower()
-    return f"{int(chain_int)}:{ti}:{to}"
-
-
-def _bitget_verdict_get(key: str) -> Optional[bool]:
-    hit = _BITGET_VERDICT_CACHE.get(key)
-    if not hit:
-        return None
-    executable, expiry = hit
-    if time.monotonic() >= expiry:
-        _BITGET_VERDICT_CACHE.pop(key, None)
-        return None
-    return executable
-
-
-def _bitget_verdict_set(key: str, executable: bool) -> None:
-    _BITGET_VERDICT_CACHE[key] = (executable, time.monotonic() + _BITGET_VERDICT_TTL)
-
-
-def _erc20_balance_of(chain_int: int, token_addr: str, holder: str) -> Optional[int]:
-    """Best-effort ERC20 balanceOf(holder) via eth_call. None if unavailable."""
-    try:
-        import requests
-        from swap_utils import EVM_RPC_FALLBACK, normalize_evm_address
-        rpc_urls = EVM_RPC_FALLBACK.get(int(chain_int)) or []
-        data = "0x70a08231" + normalize_evm_address(holder).replace("0x", "").zfill(64)
-        call_obj = {"to": normalize_evm_address(token_addr), "data": data}
-        for url in rpc_urls:
-            try:
-                resp = requests.post(
-                    url,
-                    json={"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": [call_obj, "latest"]},
-                    timeout=6,
-                )
-                result = resp.json().get("result")
-                if result:
-                    return int(result, 16)
-            except Exception:
-                continue
-    except Exception:
-        return None
-    return None
-
-
-def _demote_stage_a_to_non_bitget(res: Dict, quote: Dict, reason: str = "") -> Dict:
-    """Replace a Bitget Stage-A winner with the best non-Bitget quote (in-place on res).
-
-    Returns the new winner quote (or the original if no alternative exists).
-    """
-    alts = [
-        q for q in (res.get("allQuotes") or [])
-        if isinstance(q, dict)
-        and str(q.get("router") or "") != "bitget"
-        and str(q.get("amountOut") or "")
-    ]
-    if not alts:
-        return quote
-    best = max(alts, key=lambda q: _safe_decimal(q.get("amountOut")))
-    res["quote"] = best
-    errs = res.get("errors")
-    if not isinstance(errs, list):
-        errs = []
-    errs.append({"router": "bitget", "error": f"demoted (unexecutable): {reason}"})
-    res["errors"] = errs
-    return best
-
-
-def _verify_evm_stage_a_winner(
-    chain_int: int,
-    token_in: Dict,
-    intermediate: Dict,
-    amount_in: str,
-    slippage: float,
-    sender: str,
-    res: Dict,
-    quote: Dict,
-) -> Dict:
-    """B — verify the EVM Stage-A winner can actually execute on-chain.
-
-    Only Bitget winners are checked: Bitget sometimes quotes thin-liquidity paths
-    it cannot execute (e.g. SolvBTC dust), winning on price but reverting on-chain
-    (`TF`). On revert, demote to the best non-Bitget quote so /quote anchors the
-    bridge to an executable route.
-
-    Two verification strategies, in order:
-      1) Plain eth_call from the sender. In the MCA flow the sender usually already
-         holds tokenIn and has approved the router from a prior attempt, so a real
-         call reveals `TF` with no special RPC support needed.
-      2) Funded simulation (balance + allowance injected via state override) when
-         the sender has not approved yet. Requires an override-capable RPC.
-
-    Best-effort: if neither can verify (no approval AND no override support), the
-    winner is kept unchanged.
-    """
-    try:
-        if str(quote.get("router") or "") != "bitget":
-            return quote
-
-        # Short-circuit on a cached verdict for this pair (avoids rebuild+sim cost).
-        vkey = _bitget_verdict_key(chain_int, token_in, intermediate)
-        cached = _bitget_verdict_get(vkey)
-        if cached is True:
-            return quote
-        if cached is False:
-            logger.info("preswap quote: bitget cached as unexecutable; demoting (%s)", vkey)
-            return _demote_stage_a_to_non_bitget(res, quote, reason="cached_unexecutable")
-
-        from swap_utils import EVM_RPC_FALLBACK, build_swap_tx
-        from evm_sim_utils import simulate_swap_funded
-
-        built = build_swap_tx(
-            chain_id=chain_int,
-            router="bitget",
-            token_in=token_in,
-            token_out=intermediate,
-            amount_in=str(amount_in),
-            slippage=slippage,
-            sender=sender,
-            recipient=sender,
-            market=str(quote.get("market") or ""),
-        )
-        if not built.get("success"):
-            logger.warning(
-                "preswap quote: bitget stage-A build failed (%s); demoting",
-                built.get("error"),
-            )
-            return _demote_stage_a_to_non_bitget(res, quote, reason="build_failed")
-
-        tx = built.get("tx") or {}
-        spender = built.get("approveSpender") or tx.get("to", "")
-        token_in_addr = token_in.get("address", "")
-
-        # Strategy 1: plain sim using the sender's real on-chain state.
-        sim = simulate_preswap_evm_swap(
-            chain_int, sender, token_in_addr, str(amount_in), spender, tx,
-        )
-        if sim.get("success"):
-            _bitget_verdict_set(vkey, True)
-            return quote  # executes with real balance+allowance -> keep Bitget
-        if not sim.get("skipped"):
-            # A revert is only a route verdict when the sender actually holds the
-            # tokens; otherwise it is a funding artifact (insufficient balance).
-            need = int(str(amount_in))
-            bal = _erc20_balance_of(chain_int, token_in_addr, sender)
-            if bal is not None and bal >= need:
-                logger.warning(
-                    "preswap quote: bitget stage-A unexecutable (real sim: %s); demoting",
-                    sim.get("error", ""),
-                )
-                _bitget_verdict_set(vkey, False)
-                return _demote_stage_a_to_non_bitget(res, quote, reason=str(sim.get("error", "")))
-            # balance insufficient/unknown -> fall through to funded sim
-
-        # Strategy 2 (sim skipped — sender not approved): funded state-override sim.
-        fsim = simulate_swap_funded(
-            chain_int,
-            EVM_RPC_FALLBACK.get(int(chain_int)) or [],
-            sender,
-            token_in_addr,
-            spender,
-            str(amount_in),
-            tx,
-        )
-        if fsim.get("skipped"):
-            return quote  # cannot verify -> keep Bitget (do not cache: unknown)
-        if fsim.get("success"):
-            _bitget_verdict_set(vkey, True)
-            return quote
-        logger.warning(
-            "preswap quote: bitget stage-A unexecutable (funded sim: %s); demoting",
-            fsim.get("error", ""),
-        )
-        _bitget_verdict_set(vkey, False)
-        return _demote_stage_a_to_non_bitget(res, quote, reason=str(fsim.get("error", "")))
-    except Exception as e:  # noqa: BLE001 — verification must never break quoting
-        logger.warning("preswap quote bitget verify error: %s", e)
-        return quote
-
-
 def _stage_a_quote_evm(
     chain_int: int,
     token_in: Dict,
@@ -1204,12 +1015,6 @@ def _stage_a_quote_evm(
     out_str = str(quote.get("amountOut") or "")
     if not out_str:
         return None, None, "EVM aggregate quote missing amountOut", None
-
-    # B — demote a Bitget winner that cannot execute on-chain (keeps Bitget when it works).
-    quote = _verify_evm_stage_a_winner(
-        chain_int, token_in, intermediate, str(amount_in), slippage, sender, res, quote,
-    )
-    out_str = str(quote.get("amountOut") or out_str)
 
     try:
         router = str(quote.get("router") or "okx")
@@ -3833,11 +3638,9 @@ def _preswap_cross_chain_swap(
         bridge_estimated_out = cross_tx.get("estimatedOut", "")
         bridge_min_out = cross_tx.get("minAmountOut", "")
 
-        # 2) Stage A candidates (best-first). EVM returns the full Bitget+OKX
-        #    list so we can fall back to the next route when the top one would
-        #    revert on-chain (thin-liquidity tokens that Bitget quotes but cannot
-        #    execute). Non-EVM chains have a single builder and no downstream
-        #    eth_call simulation, so their candidate list has one entry.
+        # 2) Stage A build for the route chosen at /quote (the preSwap winner).
+        #    A single route is built and simulated; router selection (Bitget vs
+        #    OKX, per chain) is decided upstream at /quote, not here.
         if is_solana_src:
             single = _stage_a_build_solana(
                 token_in=token_in,
@@ -3875,7 +3678,7 @@ def _preswap_cross_chain_swap(
             stage_a_candidates = [single] if single.get("success") else []
             build_err = single.get("error")
         else:
-            evm_build = _stage_a_build_evm(
+            single = _stage_a_build_evm(
                 chain_int=chain_int,
                 token_in=token_in,
                 intermediate=intermediate,
@@ -3885,10 +3688,10 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
                 preferred_market=str(pre_swap.get("market") or ""),
-                return_all=True,
+                return_all=False,
             )
-            stage_a_candidates = evm_build.get("candidates") or []
-            build_err = evm_build.get("error")
+            stage_a_candidates = [single] if single.get("success") else []
+            build_err = single.get("error")
 
         if not stage_a_candidates:
             return {"code": -1, "msg": f"Pre-swap tx build failed: {build_err}"}
@@ -3901,11 +3704,8 @@ def _preswap_cross_chain_swap(
 
         is_evm_src = not is_solana_src and not is_near_src and not is_aptos_src
 
-        # Phase 1 — select an executable Stage-A route best-first. EVM routes are
-        # simulated; if the top route would revert on-chain (e.g. Bitget quotes a
-        # thin-liquidity SolvBTC path it cannot execute), fall back to the next.
-        # Response assembly is deferred to Phase 2 so we can re-anchor the bridge
-        # to whichever route is actually chosen (see C below).
+        # Phase 1 — build + simulate the chosen Stage-A route. On revert, return a
+        # re-quote error (router selection is handled upstream at /quote).
         chosen_stage_a = None
         chosen_stage_a_router = ""
         chosen_sim_skipped = None
@@ -3923,8 +3723,8 @@ def _preswap_cross_chain_swap(
             tried_routers.append(stage_a_router)
 
             stage_a_min_int = _safe_int_str(stage_a_min_out)
-            # Non-EVM legs cannot re-anchor (single builder, no eth_call sim), so keep
-            # the strict guard: stage-A min-out must cover the bridge's expected input.
+            # Guard: stage-A min-out must cover the bridge's expected input, else the
+            # bridge order under-fills. (EVM relies on the eth_call simulation below.)
             if not is_evm_src and stage_a_min_int > 0 and stage_a_min_int < mid_target:
                 fallback_failure = {
                     "code": -2,
@@ -3939,7 +3739,7 @@ def _preswap_cross_chain_swap(
                 continue
 
             # EVM: simulate Stage-A swap (skips when allowance missing — user signs
-            # approve first). On revert, fall back to the next candidate route.
+            # approve first). On revert, return a re-quote error.
             if is_evm_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
                 sim_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
                 sim = simulate_preswap_evm_swap(
@@ -3951,41 +3751,8 @@ def _preswap_cross_chain_swap(
                     stage_a_tx,
                 )
                 if sim.get("skipped") and sim.get("reason") == "approve_required":
-                    # Allowance missing -> a plain eth_call would falsely revert. For
-                    # Bitget (which can win on price yet quote an unexecutable route),
-                    # verify the route with balance+allowance injected (state override)
-                    # and fall back on revert. Other routers are accepted pending
-                    # approval (user signs approve first, then swap).
-                    if stage_a_router == "bitget":
-                        from evm_sim_utils import simulate_swap_funded as _sim_funded
-                        from swap_utils import EVM_RPC_FALLBACK as _RPC_FB
-                        fsim = _sim_funded(
-                            chain_int,
-                            _RPC_FB.get(int(chain_int)) or [],
-                            sender,
-                            token_in.get("address", ""),
-                            sim_spender,
-                            str(amount_in),
-                            stage_a_tx,
-                        )
-                        if not fsim.get("success") and not fsim.get("skipped"):
-                            fallback_failure = {
-                                "code": -2,
-                                "msg": "Pre-swap would revert on-chain; please re-quote",
-                                "data": {
-                                    "simulateError": fsim.get("error", ""),
-                                    "amountOutTarget": str(mid_target),
-                                    "stageAEstimatedOut": str(stage_a_estimated_out or ""),
-                                    "stageARouter": stage_a_router,
-                                    "verifiedFunded": True,
-                                    "hint": "Bitget route is not executable on-chain for this token; re-quote (will route via OKX).",
-                                },
-                            }
-                            logger.warning(
-                                "preswap stage-A bitget unexecutable (funded sim: %s); trying next route",
-                                fsim.get("error", ""),
-                            )
-                            continue
+                    # Allowance missing -> a plain eth_call would falsely revert.
+                    # Accept the route pending approval (user signs approve first).
                     chosen_sim_skipped = "approve_required"
                     chosen_stage_a = stage_a
                     chosen_stage_a_router = stage_a_router
@@ -4053,63 +3820,7 @@ def _preswap_cross_chain_swap(
         stage_a_estimated_out = stage_a.get("estimatedOut") or ""
         stage_a_min_out = stage_a.get("minAmountOut") or ""
 
-        # C — re-anchor the bridge to the chosen route (EVM only). The quote-locked
-        # `mid_target` reflects the quote winner (often Bitget). When we fall back to
-        # a lower-output route (e.g. OKX), its guaranteed min-out can be below that
-        # target, which would under-fill the bridge. Re-create the 1Click order
-        # anchored to the chosen route's deliverable and rebuild its Stage-A tx to the
-        # new deposit address, so quote/swap stay self-consistent. The final deviation
-        # check below then honestly compares against the user's quoteMinAmountOut.
-        reanchored_router = ""
-        chosen_min_int = _safe_int_str(stage_a_min_out)
-        if is_evm_src and chosen_min_int > 0 and chosen_min_int < mid_target:
-            new_mid = chosen_min_int
-            near_res2 = nearintents_build_tx(
-                from_chain=from_chain,
-                to_chain=to_chain,
-                token_in=intermediate,
-                token_out=token_out,
-                amount_in=str(new_mid),
-                sender=sender,
-                recipient=recipient,
-                slippage=slippage,
-                oneclick_extensions=oneclick_extensions,
-                swap_type="FLEX_INPUT",
-            )
-            if not near_res2.get("success"):
-                return {"code": -1, "msg": f"Bridge re-anchor failed: {near_res2.get('error')}"}
-            cross_tx = near_res2.get("tx", {}) or {}
-            new_deposit = cross_tx.get("depositAddress", "")
-            if not new_deposit:
-                return {"code": -1, "msg": "1Click did not return depositAddress on re-anchor"}
-            rebuilt = _stage_a_build_evm(
-                chain_int=chain_int,
-                token_in=token_in,
-                intermediate=intermediate,
-                amount_in=str(amount_in),
-                slippage=stage_a_slippage,
-                sender=sender,
-                deposit_address=new_deposit,
-                preferred_router=stage_a_router,
-                preferred_market=str(stage_a.get("market") or ""),
-                return_all=False,
-            )
-            if not rebuilt.get("success"):
-                return {"code": -1, "msg": f"Stage-A re-anchor build failed: {rebuilt.get('error')}"}
-            stage_a = rebuilt
-            stage_a_router = rebuilt.get("router") or stage_a_router
-            stage_a_tx = rebuilt.get("tx") or {}
-            stage_a_estimated_out = rebuilt.get("estimatedOut") or ""
-            stage_a_min_out = rebuilt.get("minAmountOut") or ""
-            deposit_address = new_deposit
-            deposit_memo = cross_tx.get("depositMemo", "")
-            order_id = cross_tx.get("orderId", deposit_address)
-            bridge_estimated_out = cross_tx.get("estimatedOut", "")
-            bridge_min_out = cross_tx.get("minAmountOut", "")
-            mid_target = new_mid
-            reanchored_router = stage_a_router
-
-        # Phase 2 — assemble the response for the chosen (possibly re-anchored) route.
+        # Phase 2 — assemble the response for the chosen route.
         response_data = _build_common_response_data(
             is_cross_chain=True,
             source_chain_type=source_chain_type,
@@ -4157,8 +3868,6 @@ def _preswap_cross_chain_swap(
             )
         if len(tried_routers) > 1:
             pre_swap_resp["routersTried"] = tried_routers
-        if reanchored_router:
-            pre_swap_resp["bridgeReanchored"] = True
         response_data["preSwap"] = pre_swap_resp
         response_data["bridge"] = {
             "router": "nearintents",

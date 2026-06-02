@@ -2555,6 +2555,34 @@ def handle_proxy_okx():
         })
 
 
+# Chains where Bitget routing is disabled. The frontend only offers the Bitget
+# DEX router for chains present in the `/get_supported_chains` bitget list, so
+# removing a chain here forces the UI to route via OKX only. Bitget has quoted
+# unexecutable routes on some chains (e.g. SolvBTC 'TF' reverts on Arbitrum),
+# so they are filtered out at the API boundary regardless of the DB contents.
+# Match is by chain name (lowercased) or chain id string.
+BITGET_DISABLED_CHAIN_NAMES = {"arbitrum"}
+BITGET_DISABLED_CHAIN_IDS = {"42161"}
+
+
+def _filter_disabled_bitget_chains(chain_data):
+    """Drop denylisted chains from the Bitget list in the supported-chains payload."""
+    if not isinstance(chain_data, dict):
+        return
+    # DB/historical payloads use the (typo) key "bitgit"; accept both spellings.
+    for key in ("bitgit", "bitget"):
+        rows = chain_data.get(key)
+        if not isinstance(rows, list):
+            continue
+        chain_data[key] = [
+            r for r in rows
+            if not (
+                str((r or {}).get("chainName") or "").strip().lower() in BITGET_DISABLED_CHAIN_NAMES
+                or str((r or {}).get("chainId") or "").strip() in BITGET_DISABLED_CHAIN_IDS
+            )
+        ]
+
+
 @app.route('/get_supported_chains', methods=['GET'])
 def handle_get_supported_chains():
     try:
@@ -2579,6 +2607,7 @@ def handle_get_supported_chains():
                 logger.error(f"Failed to refresh OKX supported chains: {okx_err}")
 
         chain_data = query_supported_chains(Cfg.NETWORK_ID)
+        _filter_disabled_bitget_chains(chain_data)
         ret = {
             "code": "0",
             "data": chain_data,
