@@ -2615,7 +2615,7 @@ def api_swap_quote():
         "recipient": "0x..."
     }
 
-    Same-chain (fromChain == toChain): routes to multi-aggregator (Bitget/OKX/Jupiter/Panora).
+    Same-chain (fromChain == toChain): routes to multi-aggregator (Bitget/OKX/Jupiter/Hyperion).
     Cross-chain (fromChain != toChain): parallel OmniBridge + NearIntents 1Click, returns best price.
     """
     try:

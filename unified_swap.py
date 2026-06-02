@@ -344,6 +344,7 @@ _CHAIN_KEY_ALIASES = {
     "sonic": ["146"], "146": ["146"],
     "unichain": ["130"], "130": ["130"],
     "berachain": ["80094", "bera"], "bera": ["80094", "bera"], "80094": ["80094", "bera"],
+    "1385": ["80094", "bera"],  # legacy/mis-encoded Berachain id (real id is 80094)
     "xlayer": ["196", "xlayer"], "196": ["196", "xlayer"],
     "monad": ["monad", "143"], "143": ["143", "monad"],
     "plasma": ["plasma", "9745"], "9745": ["9745", "plasma"],
@@ -438,7 +439,7 @@ def _resolve_token_info(chain: str, address: str) -> Optional[Dict]:
     if is_chain_native_token(chain, addr_raw):
         meta = _resolve_native_token_meta(chain)
         # Preserve the original address string the frontend passed so downstream
-        # code (OKX / Bitget / Jupiter / Panora adapters) can re-detect native via
+        # code (OKX / Bitget / Jupiter / Hyperion adapters) can re-detect native via
         # their own native-marker checks.
         return {
             "address": addr_raw,
@@ -536,9 +537,21 @@ def _is_cross_chain(from_chain: str, to_chain: str) -> bool:
     return str(from_chain) != str(to_chain)
 
 
+# Legacy / mis-encoded chain ids some clients send, remapped to the canonical id.
+# e.g. an old frontend config used 1385 for Berachain whose real chainId is 80094
+# (0x138de). Normalizing here means all downstream resolution (Redis token lookup,
+# 1Click asset id, EVM same-chain int) sees the correct chain.
+_CHAIN_ID_REMAP = {
+    "1385": "80094",  # Berachain — frontend config bug (1385 should be 80094)
+}
+
+
 def _normalize_chain_id(chain):
-    """Normalize chain id to string for consistency."""
-    return str(chain) if chain is not None else ""
+    """Normalize chain id to string, remapping known legacy/mis-encoded ids."""
+    if chain is None:
+        return ""
+    s = str(chain).strip()
+    return _CHAIN_ID_REMAP.get(s, s)
 
 
 def _safe_decimal(value) -> Decimal:
@@ -1105,7 +1118,7 @@ def _stage_a_quote_aptos(
     slippage: float,
     sender: str,
 ) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[Dict[str, Any]]]:
-    """Run Hyperion + Panora Stage-A quote for Aptos preswap leg."""
+    """Run Hyperion Stage-A quote for Aptos preswap leg."""
     from swap_utils import aggregate_aptos_quote
 
     res = aggregate_aptos_quote(
@@ -1188,7 +1201,7 @@ def _preswap_cross_chain_quote(
 
     Supports EVM, Solana, NEAR, and Aptos fromChain. Stage-A uses chain-appropriate
     aggregators (Bitget+OKX for EVM, Jupiter+Titan+OKX for Solana, Ref
-    SmartRouter for NEAR, Hyperion+Panora for Aptos); Stage-B is always NearIntents 1Click.
+    SmartRouter for NEAR, Hyperion for Aptos); Stage-B is always NearIntents 1Click.
     """
     is_solana_src = _is_solana_chain(from_chain)
     is_near_src = _is_near_chain(from_chain)
@@ -1249,9 +1262,10 @@ def _preswap_cross_chain_quote(
                 errors.append(f"{inter['symbol']}: mid target <= 0")
                 continue
 
-            # Stage B: NearIntents 1Click dry quote — must match `/swap` build:
-            # EXACT_INPUT on the buffered `amountOutTarget` (what Stage A delivers),
-            # not FLEX_INPUT on the raw Stage-A estimate (would overstate final out).
+            # Stage B: NearIntents 1Click dry quote. With a Stage-A pre-swap the
+            # exact amount delivered to the deposit address is only known at
+            # execution time, so quote the bridge as FLEX_INPUT (and the `/swap`
+            # build below uses FLEX_INPUT too, keeping quote/build consistent).
             near_res = nearintents_quote(
                 from_chain=from_chain,
                 to_chain=to_chain,
@@ -1262,7 +1276,7 @@ def _preswap_cross_chain_quote(
                 recipient=recipient,
                 slippage=slippage,
                 oneclick_extensions=oneclick_extensions,
-                swap_type="EXACT_INPUT",
+                swap_type="FLEX_INPUT",
             )
             if not near_res.get("success"):
                 errors.append(f"{inter['symbol']}: 1Click quote failed: {near_res.get('error')}")
@@ -3114,12 +3128,18 @@ def _stage_a_build_evm(
     deposit_address: str,
     preferred_router: str = "",
     preferred_market: str = "",
+    return_all: bool = False,
 ) -> Dict:
     """Build the EVM Stage-A swap tx (exactIn delivered to depositAddress).
 
     Re-quotes Bitget and OKX at build time and picks the route with the best
     ``minAmountOut`` so quote-time router hints stay consistent with the
     signed transaction.
+
+    When ``return_all`` is True, returns ``{"success": bool, "candidates":
+    [...]}`` with every successful build sorted by ``minAmountOut`` descending,
+    so the caller can fall back to the next-best route when the top one would
+    revert on-chain. Otherwise returns the single best build (legacy shape).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from swap_utils import (
@@ -3218,8 +3238,7 @@ def _stage_a_build_evm(
     else:
         router_order.extend(r for r in ("bitget", "okx") if r in builders and r not in router_order)
 
-    best = None
-    best_min = Decimal("-1")
+    successful = []
     errors = []
     with ThreadPoolExecutor(max_workers=len(router_order)) as pool:
         futures = {pool.submit(builders[r]): r for r in router_order}
@@ -3233,19 +3252,27 @@ def _stage_a_build_evm(
             if not result.get("success"):
                 errors.append(f"{name}: {result.get('error')}")
                 continue
-            try:
-                min_val = Decimal(str(result.get("minAmountOut") or result.get("estimatedOut") or "0"))
-            except (InvalidOperation, ValueError):
-                min_val = Decimal("0")
-            if min_val > best_min:
-                best_min = min_val
-                best = result
+            successful.append(result)
 
-    if not best:
-        detail = "; ".join(errors) if errors else "all EVM stage-A builders failed"
+    # Best route first (highest min-out), so callers can fall back in order.
+    successful.sort(
+        key=lambda r: _safe_decimal(r.get("minAmountOut") or r.get("estimatedOut") or "0"),
+        reverse=True,
+    )
+
+    detail = "; ".join(errors) if errors else "all EVM stage-A builders failed"
+
+    if return_all:
+        return {
+            "success": bool(successful),
+            "candidates": successful,
+            "error": "" if successful else detail,
+        }
+
+    if not successful:
         return {"success": False, "error": detail, "router": preferred_router or "evm-aggregate"}
 
-    return best
+    return successful[0]
 
 
 def _stage_a_build_solana(
@@ -3486,42 +3513,30 @@ def _stage_a_build_aptos(
     deposit_address: str,
     preferred_router: str = "",
 ) -> Dict:
-    """Build Aptos Stage-A Hyperion/Panora swap tx with output to 1Click deposit."""
-    from hyperion_utils import hyperion_build_swap_tx, HYPERION_ROUTER_NAME
-    from swap_utils import build_aptos_swap_tx, convert_slippage_to_decimal
+    """Build Aptos Stage-A Hyperion swap tx with output to 1Click deposit."""
+    from hyperion_utils import hyperion_build_swap_tx
+    from swap_utils import convert_slippage_to_decimal
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
-    router = (preferred_router or HYPERION_ROUTER_NAME).strip().lower()
+    # Panora removed — Aptos Stage-A always routes through Hyperion CLMM.
+    router = "hyperion"
 
-    if router == "hyperion":
-        res = hyperion_build_swap_tx(
-            token_in=token_in.get("address", ""),
-            token_out=intermediate.get("address", ""),
-            amount_in=str(amount_in),
-            slippage_decimal=float(slippage_decimal),
-            recipient=deposit_address,
-            safe_mode=False,
-        )
-    else:
-        res = build_aptos_swap_tx(
-            router=router or "panora",
-            token_in=token_in,
-            token_out=intermediate,
-            amount_in=str(amount_in),
-            slippage=slippage,
-            sender=sender,
-            recipient=deposit_address,
-        )
+    res = hyperion_build_swap_tx(
+        token_in=token_in.get("address", ""),
+        token_out=intermediate.get("address", ""),
+        amount_in=str(amount_in),
+        slippage_decimal=float(slippage_decimal),
+        recipient=deposit_address,
+        safe_mode=False,
+    )
 
     if not res.get("success"):
         return {"success": False, "error": res.get("error"), "router": router}
 
     tx = res.get("tx") or {}
     # Hyperion `router_v3::swap_batch` uses arguments[5] as recipient (string).
-    # Panora `router_entry` has a different layout (arg 5 is nested byte vectors); recipient
-    # is already set via Panora API `toWalletAddress` when building (do not overwrite).
     args = tx.get("arguments")
-    if router == "hyperion" and isinstance(args, list) and len(args) >= 6:
+    if isinstance(args, list) and len(args) >= 6:
         args[5] = deposit_address
 
     return {
@@ -3592,7 +3607,9 @@ def _preswap_cross_chain_swap(
 
     try:
         # 1) Stage B: create the 1Click order (dry=false) so we have a depositAddress.
-        #    Use EXACT_INPUT with `amount = mid_target` — this matches what stage A will deliver.
+        #    Use FLEX_INPUT because Stage A delivers a variable on-chain amount to
+        #    the deposit address (`amount = mid_target` is the target); the bridge
+        #    must accept whatever actually arrives. Matches the FLEX_INPUT quote.
         near_res = nearintents_build_tx(
             from_chain=from_chain,
             to_chain=to_chain,
@@ -3603,6 +3620,7 @@ def _preswap_cross_chain_swap(
             recipient=recipient,
             slippage=slippage,
             oneclick_extensions=oneclick_extensions,
+            swap_type="FLEX_INPUT",
         )
         if not near_res.get("success"):
             return {"code": -1, "msg": f"Bridge order creation failed: {near_res.get('error')}"}
@@ -3616,9 +3634,13 @@ def _preswap_cross_chain_swap(
         bridge_estimated_out = cross_tx.get("estimatedOut", "")
         bridge_min_out = cross_tx.get("minAmountOut", "")
 
-        # 2) Stage A: chain-specific same-chain swap delivering to depositAddress.
+        # 2) Stage A candidates (best-first). EVM returns the full Bitget+OKX
+        #    list so we can fall back to the next route when the top one would
+        #    revert on-chain (thin-liquidity tokens that Bitget quotes but cannot
+        #    execute). Non-EVM chains have a single builder and no downstream
+        #    eth_call simulation, so their candidate list has one entry.
         if is_solana_src:
-            stage_a = _stage_a_build_solana(
+            single = _stage_a_build_solana(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
@@ -3627,8 +3649,10 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
             )
+            stage_a_candidates = [single] if single.get("success") else []
+            build_err = single.get("error")
         elif is_near_src:
-            stage_a = _stage_a_build_near(
+            single = _stage_a_build_near(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
@@ -3637,8 +3661,10 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
             )
+            stage_a_candidates = [single] if single.get("success") else []
+            build_err = single.get("error")
         elif is_aptos_src:
-            stage_a = _stage_a_build_aptos(
+            single = _stage_a_build_aptos(
                 token_in=token_in,
                 intermediate=intermediate,
                 amount_in=str(amount_in),
@@ -3647,8 +3673,10 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
             )
+            stage_a_candidates = [single] if single.get("success") else []
+            build_err = single.get("error")
         else:
-            stage_a = _stage_a_build_evm(
+            evm_build = _stage_a_build_evm(
                 chain_int=chain_int,
                 token_in=token_in,
                 intermediate=intermediate,
@@ -3658,100 +3686,211 @@ def _preswap_cross_chain_swap(
                 deposit_address=deposit_address,
                 preferred_router=str(pre_swap.get("router") or ""),
                 preferred_market=str(pre_swap.get("market") or ""),
+                return_all=True,
             )
-        if not stage_a.get("success"):
-            return {"code": -1, "msg": f"Pre-swap tx build failed: {stage_a.get('error')}"}
+            stage_a_candidates = evm_build.get("candidates") or []
+            build_err = evm_build.get("error")
 
-        stage_a_tx = stage_a.get("tx") or {}
-        stage_a_estimated_out = stage_a.get("estimatedOut") or ""
-        stage_a_min_out = stage_a.get("minAmountOut") or ""
-        stage_a_router = stage_a.get("router") or (
-            "jupiter" if is_solana_src
-            else ("near-ref-smart" if is_near_src
-                  else ("hyperion" if is_aptos_src else "okx"))
-        )
-
-        # Safety: aggregator's swap-time min-out must be >= the bridge's expected mid amount
-        # (otherwise the bridge could be under-delivered and refund). If the aggregator now
-        # quotes lower than quote time, fail fast so the frontend re-quotes.
-        stage_a_min_int = _safe_int_str(stage_a_min_out)
-        if stage_a_min_int > 0 and stage_a_min_int < mid_target:
-            return {
-                "code": -2,
-                "msg": "Price moved too much, please re-quote",
-                "data": {
-                    "preSwapMinOut": str(stage_a_min_out or ""),
-                    "bridgeExpectedIn": str(mid_target),
-                    "quoteMinAmountOut": str(quote_min_amount_out or ""),
-                },
-            }
+        if not stage_a_candidates:
+            return {"code": -1, "msg": f"Pre-swap tx build failed: {build_err}"}
 
         source_chain_type = (
             CHAIN_TYPE_SOLANA if is_solana_src
             else (CHAIN_TYPE_NEAR if is_near_src
                   else (CHAIN_TYPE_APTOS if is_aptos_src else CHAIN_TYPE_EVM))
         )
-        response_data = _build_common_response_data(
-            is_cross_chain=True,
-            source_chain_type=source_chain_type,
-            from_chain=from_chain,
-            to_chain=to_chain,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=amount_in,
-            router=_PRESWAP_ROUTER_NAME,
-        )
-        # Top-level `tx` is the user-signed stage-A tx (it alone triggers both stages).
-        if is_near_src:
-            _set_near_source_tx(
-                response_data, stage_a_tx, sender, router=_PRESWAP_ROUTER_NAME,
+
+        # Try candidates best-first: build the response + (EVM) simulate the
+        # Stage-A swap. If it would revert on-chain, fall back to the next route
+        # (e.g. Bitget reverts -> retry OKX) instead of failing outright.
+        chosen_response = None
+        chosen_stage_a = None
+        chosen_stage_a_tx = {}
+        chosen_stage_a_router = ""
+        fallback_failure = None
+        tried_routers = []
+        for stage_a in stage_a_candidates:
+            stage_a_tx = stage_a.get("tx") or {}
+            stage_a_estimated_out = stage_a.get("estimatedOut") or ""
+            stage_a_min_out = stage_a.get("minAmountOut") or ""
+            stage_a_router = stage_a.get("router") or (
+                "jupiter" if is_solana_src
+                else ("near-ref-smart" if is_near_src
+                      else ("hyperion" if is_aptos_src else "okx"))
             )
-        else:
-            response_data["tx"] = stage_a_tx
-        response_data["estimatedOut"] = str(bridge_estimated_out or "")
-        response_data["minAmountOut"] = str(bridge_min_out or "")
-        response_data["deposit"] = {
-            "depositAddress": deposit_address,
-            "depositMemo": deposit_memo,
-            "depositChain": cross_tx.get("depositChain", str(from_chain)),
-            "orderId": order_id,
-            "estimatedOut": bridge_estimated_out,
-            "minAmountOut": bridge_min_out,
-            "timeEstimate": cross_tx.get("timeEstimate", ""),
-        }
-        pre_swap_resp = {
-            "router": stage_a_router,
-            "chainType": source_chain_type,
-            "chainId": str(from_chain),
-            "tokenIn": token_in,
-            "tokenOut": intermediate,
-            "swapMode": "exactIn",
-            "amountIn": str(amount_in),
-            "estimatedAmountOut": str(stage_a_estimated_out or ""),
-            "minAmountOut": str(stage_a_min_out or ""),
-            "amountOutTarget": str(mid_target),
-            "receiver": deposit_address,
-        }
-        if isinstance(stage_a_tx, dict):
-            pre_swap_resp["addressLookupTableAddresses"] = (
-                stage_a_tx.get("addressLookupTableAddresses") or []
+            tried_routers.append(stage_a_router)
+
+            # Safety: aggregator's swap-time min-out must be >= the bridge's expected
+            # mid amount (otherwise the bridge is under-delivered and refunds). Record
+            # and try the next candidate rather than failing immediately.
+            stage_a_min_int = _safe_int_str(stage_a_min_out)
+            if stage_a_min_int > 0 and stage_a_min_int < mid_target:
+                fallback_failure = {
+                    "code": -2,
+                    "msg": "Price moved too much, please re-quote",
+                    "data": {
+                        "preSwapMinOut": str(stage_a_min_out or ""),
+                        "bridgeExpectedIn": str(mid_target),
+                        "quoteMinAmountOut": str(quote_min_amount_out or ""),
+                        "stageARouter": stage_a_router,
+                    },
+                }
+                continue
+
+            response_data = _build_common_response_data(
+                is_cross_chain=True,
+                source_chain_type=source_chain_type,
+                from_chain=from_chain,
+                to_chain=to_chain,
+                token_in=token_in,
+                token_out=token_out,
+                amount_in=amount_in,
+                router=_PRESWAP_ROUTER_NAME,
             )
-        response_data["preSwap"] = pre_swap_resp
-        response_data["bridge"] = {
-            "router": "nearintents",
-            "fromChain": str(from_chain),
-            "toChain": str(to_chain),
-            "tokenIn": intermediate,
-            "tokenOut": token_out,
-            "amountIn": str(mid_target),
-            "estimatedOut": str(bridge_estimated_out or ""),
-            "minAmountOut": str(bridge_min_out or ""),
-            "timeEstimate": cross_tx.get("timeEstimate", ""),
-            "depositAddress": deposit_address,
-            "orderId": order_id,
-        }
+            # Top-level `tx` is the user-signed stage-A tx (it alone triggers both stages).
+            if is_near_src:
+                _set_near_source_tx(
+                    response_data, stage_a_tx, sender, router=_PRESWAP_ROUTER_NAME,
+                )
+            else:
+                response_data["tx"] = stage_a_tx
+            response_data["estimatedOut"] = str(bridge_estimated_out or "")
+            response_data["minAmountOut"] = str(bridge_min_out or "")
+            response_data["deposit"] = {
+                "depositAddress": deposit_address,
+                "depositMemo": deposit_memo,
+                "depositChain": cross_tx.get("depositChain", str(from_chain)),
+                "orderId": order_id,
+                "estimatedOut": bridge_estimated_out,
+                "minAmountOut": bridge_min_out,
+                "timeEstimate": cross_tx.get("timeEstimate", ""),
+            }
+            pre_swap_resp = {
+                "router": stage_a_router,
+                "chainType": source_chain_type,
+                "chainId": str(from_chain),
+                "tokenIn": token_in,
+                "tokenOut": intermediate,
+                "swapMode": "exactIn",
+                "amountIn": str(amount_in),
+                "estimatedAmountOut": str(stage_a_estimated_out or ""),
+                "minAmountOut": str(stage_a_min_out or ""),
+                "amountOutTarget": str(mid_target),
+                "receiver": deposit_address,
+            }
+            if isinstance(stage_a_tx, dict):
+                pre_swap_resp["addressLookupTableAddresses"] = (
+                    stage_a_tx.get("addressLookupTableAddresses") or []
+                )
+            response_data["preSwap"] = pre_swap_resp
+            response_data["bridge"] = {
+                "router": "nearintents",
+                "fromChain": str(from_chain),
+                "toChain": str(to_chain),
+                "tokenIn": intermediate,
+                "tokenOut": token_out,
+                "amountIn": str(mid_target),
+                "estimatedOut": str(bridge_estimated_out or ""),
+                "minAmountOut": str(bridge_min_out or ""),
+                "timeEstimate": cross_tx.get("timeEstimate", ""),
+                "depositAddress": deposit_address,
+                "orderId": order_id,
+            }
+
+            # EVM: simulate Stage-A swap (skips when allowance missing — user signs
+            # approve first). On revert, fall back to the next candidate route.
+            if not is_solana_src and not is_near_src and not is_aptos_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
+                sim_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
+                sim = simulate_preswap_evm_swap(
+                    chain_int,
+                    sender,
+                    token_in.get("address", ""),
+                    str(amount_in),
+                    sim_spender,
+                    stage_a_tx,
+                )
+                if sim.get("skipped") and sim.get("reason") == "approve_required":
+                    # Cannot simulate before approve; accept this route (user signs
+                    # approve first, then swap).
+                    response_data["simulateSkipped"] = "approve_required"
+                    response_data["simulateNote"] = (
+                        "Allowance to the swap router is insufficient; sign approve first, then swap"
+                    )
+                    chosen_response = response_data
+                    chosen_stage_a = stage_a
+                    chosen_stage_a_tx = stage_a_tx
+                    chosen_stage_a_router = stage_a_router
+                    break
+                if not sim.get("success") and not sim.get("skipped"):
+                    slip_bps = convert_slippage_to_decimal(stage_a_slippage) * 10000
+                    est_int = _safe_int_str(stage_a_estimated_out)
+                    min_feasible = (
+                        int(est_int * (1 - convert_slippage_to_decimal(stage_a_slippage)))
+                        if est_int > 0 else 0
+                    )
+                    hint = (
+                        "Stale quote or insufficient DEX liquidity for amountOutTarget; "
+                        "call /quote again and submit /swap immediately (do not reuse old preSwap/bridge)"
+                    )
+                    if slip_bps >= 100 and est_int > 0 and min_feasible >= mid_target:
+                        hint = (
+                            "Slippage is already wide enough; likely stale preSwap/bridge snapshot or "
+                            "thin pool liquidity. Re-quote and swap within ~1 minute."
+                        )
+                    fallback_failure = {
+                        "code": -2,
+                        "msg": "Pre-swap would revert on-chain; please re-quote",
+                        "data": {
+                            "simulateError": sim.get("error", ""),
+                            "stageASlippageBps": int(slip_bps),
+                            "amountOutTarget": str(mid_target),
+                            "stageAEstimatedOut": str(stage_a_estimated_out or ""),
+                            "stageAMinFeasibleOut": str(min_feasible),
+                            "allowance": sim.get("allowance", ""),
+                            "stageARouter": stage_a_router,
+                            "hint": hint,
+                        },
+                    }
+                    logger.warning(
+                        "preswap stage-A %s would revert (%s); trying next route",
+                        stage_a_router, sim.get("error", ""),
+                    )
+                    continue
+                # Simulation passed.
+                chosen_response = response_data
+                chosen_stage_a = stage_a
+                chosen_stage_a_tx = stage_a_tx
+                chosen_stage_a_router = stage_a_router
+                break
+
+            # Non-EVM (or no simulatable tx): accept the first successful build.
+            chosen_response = response_data
+            chosen_stage_a = stage_a
+            chosen_stage_a_tx = stage_a_tx
+            chosen_stage_a_router = stage_a_router
+            break
+
+        if chosen_response is None:
+            # Every candidate failed the safety/simulation gate.
+            if fallback_failure is not None:
+                if isinstance(fallback_failure.get("data"), dict):
+                    fallback_failure["data"]["triedRouters"] = tried_routers
+                return fallback_failure
+            return {
+                "code": -2,
+                "msg": "Pre-swap would revert on-chain; please re-quote",
+                "data": {"triedRouters": tried_routers},
+            }
+
+        response_data = chosen_response
+        stage_a = chosen_stage_a
+        stage_a_tx = chosen_stage_a_tx
+        stage_a_router = chosen_stage_a_router
+        if len(tried_routers) > 1 and isinstance(response_data.get("preSwap"), dict):
+            response_data["preSwap"]["routersTried"] = tried_routers
 
         # 3) Approve info: EVM only. Solana and NEAR have no ERC-20-style approve.
+        #    Built once for the chosen route (after fallback selection).
         if not is_solana_src and not is_near_src and not is_native_token(token_in.get("address", "")):
             approve_amount = str(amount_in)
             approve_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
@@ -3783,53 +3922,6 @@ def _preswap_cross_chain_swap(
                     response_data["needsApprove"] = True
             else:
                 response_data["approveError"] = approve_res.get("error", approve_res.get("msg", ""))
-
-        # EVM: simulate Stage-A swap (skips when allowance missing — user signs approve first).
-        if not is_solana_src and not is_near_src and not is_aptos_src and stage_a_tx.get("to") and stage_a_tx.get("data"):
-            sim_spender = stage_a.get("spender") or stage_a_tx.get("to", "")
-            sim = simulate_preswap_evm_swap(
-                chain_int,
-                sender,
-                token_in.get("address", ""),
-                str(amount_in),
-                sim_spender,
-                stage_a_tx,
-            )
-            if sim.get("skipped") and sim.get("reason") == "approve_required":
-                response_data["simulateSkipped"] = "approve_required"
-                response_data["simulateNote"] = (
-                    "MOG allowance to the swap router is insufficient; sign approve first, then swap"
-                )
-            elif not sim.get("success") and not sim.get("skipped"):
-                slip_bps = convert_slippage_to_decimal(stage_a_slippage) * 10000
-                est_int = _safe_int_str(stage_a_estimated_out)
-                min_feasible = (
-                    int(est_int * (1 - convert_slippage_to_decimal(stage_a_slippage)))
-                    if est_int > 0 else 0
-                )
-                msg = "Pre-swap would revert on-chain; please re-quote"
-                hint = (
-                    "Stale quote or insufficient DEX liquidity for amountOutTarget; "
-                    "call /quote again and submit /swap immediately (do not reuse old preSwap/bridge)"
-                )
-                if slip_bps >= 100 and est_int > 0 and min_feasible >= mid_target:
-                    hint = (
-                        "Slippage is already wide enough; likely stale preSwap/bridge snapshot or "
-                        "MOG pool liquidity. Re-quote and swap within ~1 minute."
-                    )
-                return {
-                    "code": -2,
-                    "msg": msg,
-                    "data": {
-                        "simulateError": sim.get("error", ""),
-                        "stageASlippageBps": int(slip_bps),
-                        "amountOutTarget": str(mid_target),
-                        "stageAEstimatedOut": str(stage_a_estimated_out or ""),
-                        "stageAMinFeasibleOut": str(min_feasible),
-                        "allowance": sim.get("allowance", ""),
-                        "hint": hint,
-                    },
-                }
 
         # Deviation check against /quote results.
         quote_min_int = _safe_int_str(quote_min_amount_out)

@@ -36,12 +36,12 @@ _CHAIN_WRAPPED_NATIVE_MARKERS = {
     # Solana: Jupiter / OKX treat wSOL mint as native SOL. 1Click lists native
     # SOL with contractAddress=null under assetId `nep141:sol.omft.near`.
     "sol": {"so11111111111111111111111111111111111111112"},
-    # Aptos: native APT is conventionally addressed as `0xa` (Panora bluechip),
+    # Aptos: native APT is conventionally addressed as `0xa` (Aptos bluechip),
     # the legacy Move type path `0x1::aptos_coin::AptosCoin`, or the alias
     # "apt". 1Click lists native APT with contractAddress=null under assetId
     # `nep141:aptos.omft.near`, so we collapse all of these onto the native
     # lookup sentinel — keeping a single tokenIn/tokenOut value usable across
-    # same-chain (Panora) and cross-chain (1Click) flows.
+    # same-chain (Hyperion) and cross-chain (1Click) flows.
     "aptos": {"0xa", "0x1::aptos_coin::aptoscoin", "apt"},
     # NEAR: unlike Solana / Aptos, 1Click does NOT list a `contractAddress=null`
     # native NEAR entry — the canonical NEAR-side bridge asset is wNEAR. We
@@ -136,7 +136,7 @@ CHAIN_TO_1CLICK = {
     "43114": "avax", "avax": "avax", "avalanche": "avax",
     "100": "gnosis", "gnosis": "gnosis",
     "534352": "scroll", "scroll": "scroll",
-    "80094": "bera", "bera": "bera", "berachain": "bera",
+    "80094": "bera", "bera": "bera", "berachain": "bera", "1385": "bera",
     "196": "xlayer", "xlayer": "xlayer",
     "143": "monad", "monad": "monad",
     "9745": "plasma", "plasma": "plasma",
@@ -323,7 +323,7 @@ def is_chain_native_token(chain, address: str) -> bool:
     Accepts any chain identifier that `CHAIN_TO_1CLICK` knows about
     (numeric ids, short names, aliases). Used by token-info resolvers so
     the frontend can pass the same native-token marker across same-chain
-    (Panora / Jupiter / OKX) and cross-chain (1Click) flows.
+    (Hyperion / Jupiter / OKX) and cross-chain (1Click) flows.
     """
     addr_raw = address or ""
     if is_native_token(addr_raw):
@@ -348,7 +348,7 @@ def resolve_1click_asset_id(chain: str, address: str) -> Optional[str]:
       * Chain-specific wrapped-native markers declared in
         `_CHAIN_WRAPPED_NATIVE_MARKERS` (e.g. wSOL mint on Solana, `0xa` on
         Aptos, `wrap.near` on NEAR), so the frontend can use the same
-        address across same-chain (Jupiter / OKX / Panora) and cross-chain
+        address across same-chain (Jupiter / OKX / Hyperion) and cross-chain
         (1Click) flows without branching.
 
     Fall-through behaviour for chains whose "native" marker is itself a real
@@ -519,10 +519,16 @@ def nearintents_build_tx(
     recipient: str = "",
     slippage: float = 0.5,
     oneclick_extensions: Optional[Dict[str, Any]] = None,
+    swap_type: Optional[str] = None,
 ) -> Dict:
     """
     Build cross-chain swap via NearIntents 1Click API (dry=false).
     Returns depositAddress for the user to send funds to.
+
+    ``swap_type`` defaults to ``EXACT_INPUT`` (direct 1Click bridge). The
+    two-stage pre-swap route passes ``FLEX_INPUT`` because Stage A delivers a
+    variable on-chain amount to the deposit address, so the bridge must accept
+    whatever actually arrives rather than a fixed input.
     """
     origin_asset = resolve_1click_asset_id(from_chain, token_in.get("address", ""))
     dest_asset = resolve_1click_asset_id(to_chain, token_out.get("address", ""))
@@ -540,7 +546,7 @@ def nearintents_build_tx(
 
     body = {
         "dry": False,
-        "swapType": "EXACT_INPUT",
+        "swapType": (swap_type or "EXACT_INPUT").strip().upper(),
         "slippageTolerance": slippage_bps,
         "originAsset": origin_asset,
         "depositType": "ORIGIN_CHAIN",

@@ -191,11 +191,6 @@ except ImportError:
     ONECLICK_JWT_TOKEN = ""
 
 try:
-    from db_info import PANORA_API_KEY
-except ImportError:
-    PANORA_API_KEY = ""
-
-try:
     from db_info import (
         TITAN_WS_ENDPOINT,
         TITAN_API_JWT,
@@ -268,10 +263,6 @@ class Cfg:
     # strips a trailing `/v0` / `/v0/` if someone leaves it in here. Production
     # value: `https://1click.chaindefuser.com`.
     ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
-    # Panora API key for Aptos same-chain swap (`x-api-key` header). Apply at
-    # https://app.panora.exchange/developer — the `/swap` endpoint is gated
-    # and returns 401 without a key. Override in `db_info.py` for production.
-    PANORA_API_KEY = PANORA_API_KEY
     # Hyperion CLMM for Aptos same-chain / preswap (mirrors frontend @hyperionxyz/sdk).
     HYPERION_API_HOST = "https://api.hyperion.xyz"
     HYPERION_CONTRACT = (
