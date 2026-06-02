@@ -3130,6 +3130,7 @@ def _stage_a_build_evm(
     preferred_router: str = "",
     preferred_market: str = "",
     return_all: bool = False,
+    exact_out_amount: str = "",
 ) -> Dict:
     """Build the EVM Stage-A swap tx (exactIn delivered to depositAddress).
 
@@ -3148,30 +3149,68 @@ def _stage_a_build_evm(
         bitget_quote,
         _parse_bitget_quote,
         build_swap_tx,
+        build_okx_exact_out_swap_tx,
     )
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
 
     def _build_okx() -> Dict:
-        res = build_same_chain_swap_tx(
-            chain_id=chain_int,
-            router="okx",
-            token_in=token_in,
-            token_out=intermediate,
-            amount_in=str(amount_in),
-            slippage=slippage,
-            sender=sender,
-            recipient=deposit_address,
-        )
+        approve_spender = ""
+        exact_out_int = _safe_int_str(exact_out_amount)
+        if exact_out_int > 0:
+            # For preswap -> 1Click, the deposit order expects a fixed
+            # intermediate amount. Build an OKX exactOut swap so the DEX leg
+            # targets that bridge input instead of leaving output variable.
+            res = build_okx_exact_out_swap_tx(
+                chain_id=chain_int,
+                token_in=token_in,
+                token_out=intermediate,
+                amount_out=str(exact_out_int),
+                slippage=slippage,
+                sender=sender,
+                receiver=deposit_address,
+            )
+            if res.get("success"):
+                max_in = _safe_int_str(res.get("maxAmountIn") or res.get("amountIn") or "")
+                if max_in > 0 and max_in > _safe_int_str(amount_in):
+                    return {
+                        "success": False,
+                        "router": "okx",
+                        "error": "OKX exactOut requires more tokenIn than amountIn",
+                    }
+        else:
+            res = build_same_chain_swap_tx(
+                chain_id=chain_int,
+                router="okx",
+                token_in=token_in,
+                token_out=intermediate,
+                amount_in=str(amount_in),
+                slippage=slippage,
+                sender=sender,
+                recipient=deposit_address,
+            )
         if not res.get("success"):
             return {"success": False, "router": "okx", "error": res.get("error")}
+        try:
+            approve_probe = build_same_chain_approve_tx(
+                chain_id=chain_int,
+                router="okx",
+                token_address=token_in.get("address", ""),
+                approve_amount=str(amount_in),
+            )
+            if approve_probe.get("success"):
+                approve_spender = str(approve_probe.get("dexContractAddress") or "")
+        except Exception:
+            approve_spender = ""
         return {
             "success": True,
             "router": "okx",
             "tx": res.get("tx") or {},
-            "estimatedOut": str(res.get("estimatedOut") or ""),
-            "minAmountOut": str(res.get("minAmountOut") or ""),
-            "spender": (res.get("tx") or {}).get("to", ""),
+            "estimatedOut": str(res.get("estimatedOut") or res.get("amountOut") or ""),
+            "minAmountOut": str(res.get("minAmountOut") or res.get("amountOut") or ""),
+            "spender": approve_spender or (res.get("tx") or {}).get("to", ""),
+            "swapMode": str(res.get("swapMode") or "exactIn"),
+            "maxAmountIn": str(res.get("maxAmountIn") or ""),
         }
 
     def _build_bitget() -> Dict:
@@ -3689,6 +3728,7 @@ def _preswap_cross_chain_swap(
                 preferred_router=str(pre_swap.get("router") or ""),
                 preferred_market=str(pre_swap.get("market") or ""),
                 return_all=False,
+                exact_out_amount=str(mid_target),
             )
             stage_a_candidates = [single] if single.get("success") else []
             build_err = single.get("error")
@@ -3856,7 +3896,7 @@ def _preswap_cross_chain_swap(
             "chainId": str(from_chain),
             "tokenIn": token_in,
             "tokenOut": intermediate,
-            "swapMode": "exactIn",
+            "swapMode": str(stage_a.get("swapMode") or "exactIn"),
             "amountIn": str(amount_in),
             "estimatedAmountOut": str(stage_a_estimated_out or ""),
             "minAmountOut": str(stage_a_min_out or ""),
@@ -3867,6 +3907,8 @@ def _preswap_cross_chain_swap(
             pre_swap_resp["addressLookupTableAddresses"] = (
                 stage_a_tx.get("addressLookupTableAddresses") or []
             )
+        if stage_a.get("maxAmountIn"):
+            pre_swap_resp["maxAmountIn"] = str(stage_a.get("maxAmountIn") or "")
         if len(tried_routers) > 1:
             pre_swap_resp["routersTried"] = tried_routers
         response_data["preSwap"] = pre_swap_resp
