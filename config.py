@@ -262,7 +262,6 @@ class Cfg:
     # callers via `nearintents_utils._oneclick_url`, which also defensively
     # strips a trailing `/v0` / `/v0/` if someone leaves it in here. Production
     # value: `https://1click.chaindefuser.com`.
-    ONECLICK_BASE_URL = "https://1click.chaindefuser.com"
     # Hyperion CLMM for Aptos same-chain / preswap (mirrors frontend @hyperionxyz/sdk).
     HYPERION_API_HOST = "https://api.hyperion.xyz"
     HYPERION_CONTRACT = (

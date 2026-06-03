@@ -11,6 +11,7 @@ Only CLMM routes are used (not Hyperion Aggregator), matching production fronten
 from __future__ import annotations
 
 import hashlib
+import time
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,6 +23,8 @@ from config import Cfg
 HYPERION_ROUTER_NAME = "hyperion"
 APTOS_COIN_TYPE = "0x1::aptos_coin::AptosCoin"
 APTOS_FA_NATIVE = "0xa"
+APTOS_FA_DECIMALS_CACHE_TTL_SECONDS = 24 * 60 * 60
+_APTOS_FA_DECIMALS_LOCAL_CACHE: Dict[str, Tuple[int, float]] = {}
 
 APTOS_NATIVE_ALIASES = frozenset({
     "",
@@ -51,6 +54,52 @@ def _aptos_rpc_url() -> str:
     return (getattr(Cfg, "APTOS_RPC_URL", "") or "https://fullnode.mainnet.aptoslabs.com/v1").rstrip("/")
 
 
+def _aptos_fa_decimals_cache_key(addr: str) -> str:
+    return f"SWAP:APTOS_FA_DECIMALS:{addr.lower()}"
+
+
+def _get_cached_aptos_fa_decimals(addr: str) -> Optional[int]:
+    key = addr.lower()
+    now = time.time()
+    local = _APTOS_FA_DECIMALS_LOCAL_CACHE.get(key)
+    if local and local[1] > now:
+        return local[0]
+    try:
+        from redis_provider import RedisProvider
+
+        r = RedisProvider().r
+        cached = r.get(_aptos_fa_decimals_cache_key(addr))
+        if cached is None:
+            return None
+        val = int(cached)
+        _APTOS_FA_DECIMALS_LOCAL_CACHE[key] = (
+            val,
+            now + APTOS_FA_DECIMALS_CACHE_TTL_SECONDS,
+        )
+        return val
+    except Exception as e:
+        logger.debug(f"Aptos FA decimals Redis cache read failed for {addr}: {e}")
+        return None
+
+
+def _set_cached_aptos_fa_decimals(addr: str, decimals: int) -> None:
+    key = addr.lower()
+    _APTOS_FA_DECIMALS_LOCAL_CACHE[key] = (
+        int(decimals),
+        time.time() + APTOS_FA_DECIMALS_CACHE_TTL_SECONDS,
+    )
+    try:
+        from redis_provider import RedisProvider
+
+        RedisProvider().r.setex(
+            _aptos_fa_decimals_cache_key(addr),
+            APTOS_FA_DECIMALS_CACHE_TTL_SECONDS,
+            str(int(decimals)),
+        )
+    except Exception as e:
+        logger.debug(f"Aptos FA decimals Redis cache write failed for {addr}: {e}")
+
+
 def is_valid_aptos_fa_address(address: str) -> bool:
     raw = (address or "").strip()
     if not raw.startswith("0x"):
@@ -70,6 +119,9 @@ def fetch_aptos_fa_decimals(metadata_address: str, timeout: float = 8.0) -> Opti
     addr = normalize_hyperion_token(metadata_address)
     if not is_valid_aptos_fa_address(addr) or is_coin_token(addr):
         return None
+    cached = _get_cached_aptos_fa_decimals(addr)
+    if cached is not None:
+        return cached
     try:
         resp = _session.post(
             f"{_aptos_rpc_url()}/view",
@@ -83,7 +135,9 @@ def fetch_aptos_fa_decimals(metadata_address: str, timeout: float = 8.0) -> Opti
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list) and data:
-            return int(data[0])
+            decimals = int(data[0])
+            _set_cached_aptos_fa_decimals(addr, decimals)
+            return decimals
     except Exception as e:
         logger.debug(f"Aptos FA decimals lookup failed for {metadata_address}: {e}")
     return None
