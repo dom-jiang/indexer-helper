@@ -113,7 +113,10 @@ from near_same_chain_mca import (
     resolve_near_mca_deposit_receiver,
 )
 from near_mca_withdraw_tx import build_near_mca_withdraw_exec_tx_payload
-from mca_withdraw_cross_intents import nep141_ft_transfer_amount_minus_one
+from mca_withdraw_cross_intents import (
+    nep141_ft_transfer_amount_minus_one,
+    resolve_relayer_prepay_inner_from_config,
+)
 
 
 def broadcast_near_signed_transaction(network_id: str, signed_tx_base64: str) -> Dict[str, Any]:
@@ -1774,6 +1777,13 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 or mca_block.get("relayerPrepaySimpleWithdrawInner")
                 or ""
             ).strip()
+        if (not use_near_exec) and (not prepay_inner):
+            # Keep caller override priority, then align default behavior with
+            # legacy frontend: derive token-specific relayer prepay from
+            # multichain_lending_config.GAS_FEE.
+            prepay_inner = resolve_relayer_prepay_inner_from_config(
+                str(Cfg.NETWORK_ID), tid,
+            )
         need_decrease_collateral = bool(
             mca_block.get("needDecreaseCollateral")
             or mca_block.get("need_decrease_collateral")
