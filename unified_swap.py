@@ -170,7 +170,8 @@ def _assemble_near_mca_withdraw_tx(
 ) -> Dict[str, Any]:
     """
     One NEAR tx: signer calls MCA `exec` with Burrow withdraw + token transfer to recipient.
-    Aligns with src/services/lending/actions/withdraw.ts (near → near, non-Pyth).
+    When requested by frontend, prepends DecreaseCollateral and switches to
+    execute_with_pyth for the withdraw leg.
     """
     if not mca_block or not isinstance(mca_block, dict):
         raise ValueError("mca block missing")
@@ -215,6 +216,20 @@ def _assemble_near_mca_withdraw_tx(
         )
 
     amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_in))
+    need_decrease_collateral = bool(
+        mca_block.get("needDecreaseCollateral")
+        or mca_block.get("need_decrease_collateral")
+    )
+    decrease_collateral_token_id = str(
+        mca_block.get("decreaseCollateralTokenId")
+        or mca_block.get("decrease_collateral_token_id")
+        or ""
+    ).strip()
+    decrease_collateral_amount_burrow = str(
+        mca_block.get("decreaseCollateralAmountBurrow")
+        or mca_block.get("decrease_collateral_amount_burrow")
+        or ""
+    ).strip()
     return build_near_mca_withdraw_exec_tx_payload(
         network_id=Cfg.NETWORK_ID,
         mca_account_id=mca_id,
@@ -223,6 +238,9 @@ def _assemble_near_mca_withdraw_tx(
         amount_burrow=amt_br,
         recipient_near=rec,
         exec_signer_near=exec_signer,
+        need_decrease_collateral=need_decrease_collateral,
+        decrease_collateral_token_id=decrease_collateral_token_id,
+        decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
     )
 
 
