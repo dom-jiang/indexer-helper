@@ -201,21 +201,26 @@ def _assemble_near_mca_withdraw_tx(
     if not tid:
         raise ValueError("tokenIn address required")
 
-    from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
-
-    amt_br, br_err = resolve_mca_withdraw_burrow_inner_amount(
-        network_id=str(Cfg.NETWORK_ID),
-        token_id=tid,
-        amount_token_smallest=str(amount_in),
-        mca_block=mca_block,
-    )
-    if br_err or not amt_br:
-        raise ValueError(
-            br_err
-            or "could not resolve mca.amountBurrow (pass explicitly or rely on Burrow get_asset + amountIn)"
-        )
-
     amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_in))
+    withdraw_all = bool(
+        mca_block.get("withdrawAll")
+        or mca_block.get("withdraw_all")
+    )
+    amt_br = ""
+    if not withdraw_all:
+        from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
+
+        amt_br, br_err = resolve_mca_withdraw_burrow_inner_amount(
+            network_id=str(Cfg.NETWORK_ID),
+            token_id=tid,
+            amount_token_smallest=str(amount_in),
+            mca_block=mca_block,
+        )
+        if br_err or not amt_br:
+            raise ValueError(
+                br_err
+                or "could not resolve mca.amountBurrow (pass explicitly or rely on Burrow get_asset + amountIn)"
+            )
     need_decrease_collateral = bool(
         mca_block.get("needDecreaseCollateral")
         or mca_block.get("need_decrease_collateral")
@@ -235,6 +240,7 @@ def _assemble_near_mca_withdraw_tx(
         exec_signer_near=exec_signer,
         need_decrease_collateral=need_decrease_collateral,
         decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
+        withdraw_all=withdraw_all,
     )
 
 
@@ -1670,21 +1676,28 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
         if not tid:
             return
 
-        from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
+        withdraw_all = bool(
+            mca_block.get("withdrawAll")
+            or mca_block.get("withdraw_all")
+        ) if isinstance(mca_block, dict) else False
 
-        amt_borrow_inner, br_err_note = resolve_mca_withdraw_burrow_inner_amount(
-            network_id=str(Cfg.NETWORK_ID),
-            token_id=tid,
-            amount_token_smallest=str(amount_in),
-            mca_block=mca_block,
-        )
-        if not amt_borrow_inner:
-            logger.warning(
-                "mcaWithdrawToIntents: omitting attach — %s",
-                br_err_note
-                or "could not resolve Burrow inner amount (explicit mca.amountBurrow or get_asset derive)",
+        amt_borrow_inner = ""
+        if not withdraw_all:
+            from mca_burrow_auto import resolve_mca_withdraw_burrow_inner_amount
+
+            amt_borrow_inner, br_err_note = resolve_mca_withdraw_burrow_inner_amount(
+                network_id=str(Cfg.NETWORK_ID),
+                token_id=tid,
+                amount_token_smallest=str(amount_in),
+                mca_block=mca_block,
             )
-            return
+            if not amt_borrow_inner:
+                logger.warning(
+                    "mcaWithdrawToIntents: omitting attach — %s",
+                    br_err_note
+                    or "could not resolve Burrow inner amount (explicit mca.amountBurrow or get_asset derive)",
+                )
+                return
 
         # Must match `assemble_mca_withdraw_to_intents_business` ft_transfer amount (Lending UI minus 1).
         # If we quote 1Click with full `amount_in` but only transfer `amount_in - 1`, status stays INCOMPLETE_DEPOSIT.
@@ -1787,6 +1800,7 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
             relayer_prepay_simple_withdraw_inner=(prepay_inner or None),
             need_decrease_collateral=need_decrease_collateral,
             decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
+            withdraw_all=withdraw_all,
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)

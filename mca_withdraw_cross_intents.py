@@ -182,25 +182,34 @@ def build_execute_withdraw_tx_request(
     max_amount_burrow_inner: str,
     need_decrease_collateral: bool = False,
     decrease_collateral_amount_burrow: Optional[str] = None,
+    withdraw_all: bool = False,
 ) -> Dict[str, Any]:
     """Burrow Logic ``execute({ actions: [Withdraw { token_id, max_amount }] })`` (see ``withdraw.ts``)."""
     logic = str(logic_contract_id or "").strip()
     tid = str(token_id or "").strip()
     amt = str(max_amount_burrow_inner or "").strip()
-    if not logic or not tid or not amt:
+    if not logic or not tid:
         raise ValueError("Burrow_execute_withdraw requires logic contract, token_id, max_amount")
+    if not withdraw_all and not amt:
+        raise ValueError("Burrow_execute_withdraw requires max_amount when withdraw_all is false")
 
     actions: List[Dict[str, Any]] = []
     method_name = "execute"
     if bool(need_decrease_collateral):
-        dec_amt = str(decrease_collateral_amount_burrow or "").strip()
-        if not dec_amt:
-            raise ValueError(
-                "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true"
-            )
-        actions.append({"DecreaseCollateral": {"token_id": tid, "amount": dec_amt}})
+        dec_action = {"DecreaseCollateral": {"token_id": tid}}
+        if not withdraw_all:
+            dec_amt = str(decrease_collateral_amount_burrow or "").strip()
+            if not dec_amt:
+                raise ValueError(
+                    "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true and mca.withdrawAll is false"
+                )
+            dec_action["DecreaseCollateral"]["amount"] = dec_amt
+        actions.append(dec_action)
         method_name = "execute_with_pyth"
-    actions.append({"Withdraw": {"token_id": tid, "max_amount": amt}})
+    wd_action = {"Withdraw": {"token_id": tid}}
+    if not withdraw_all:
+        wd_action["Withdraw"]["max_amount"] = amt
+    actions.append(wd_action)
 
     wd_fn = {
         "method_name": method_name,
@@ -268,6 +277,7 @@ def assemble_mca_withdraw_to_intents_business(
     relayer_prepay_simple_withdraw_inner: Optional[str] = None,
     need_decrease_collateral: bool = False,
     decrease_collateral_amount_burrow: Optional[str] = None,
+    withdraw_all: bool = False,
 ) -> Dict[str, Any]:
     """
     Returns the `businessMap` equivalent (nonce, deadline, tx_requests).
@@ -308,7 +318,7 @@ def assemble_mca_withdraw_to_intents_business(
     tx_requests.extend(build_mca_register_token_tx_requests(network_id, tid, mca))
 
     amt_sw_inner = str(amount_burrow_inner or "").strip()
-    if not amt_sw_inner:
+    if not withdraw_all and not amt_sw_inner:
         raise ValueError(
             "Burrow withdraw requires amount_burrow_inner (pass mca.amountBurrow): "
             "Burrow internal decimal units, same scale as Lending Withdraw.max_amount — "
@@ -346,6 +356,7 @@ def assemble_mca_withdraw_to_intents_business(
             amt_sw_inner,
             need_decrease_collateral=need_decrease_collateral,
             decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
+            withdraw_all=withdraw_all,
         )
     )
 

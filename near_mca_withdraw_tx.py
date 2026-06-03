@@ -62,6 +62,7 @@ def build_near_mca_withdraw_exec_tx_payload(
     exec_signer_near: str,
     need_decrease_collateral: bool = False,
     decrease_collateral_amount_burrow: Optional[str] = None,
+    withdraw_all: bool = False,
     wrap_near_contract_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -91,23 +92,26 @@ def build_near_mca_withdraw_exec_tx_payload(
 
     amt_tok = str(amount_token_smallest).strip()
     amt_br = str(amount_burrow or "").strip()
-    if not amt_br:
+    if not withdraw_all and not amt_br:
         raise ValueError(
             "amountBurrow is required: Burrow Withdraw.max_amount uses internal decimal units, "
             "not NEP-141 smallest-unit amountIn."
         )
-    withdraw_action = {"Withdraw": {"token_id": tid, "max_amount": amt_br}}
+    withdraw_action = {"Withdraw": {"token_id": tid}}
+    if not withdraw_all:
+        withdraw_action["Withdraw"]["max_amount"] = amt_br
     actions: List[Dict[str, Any]] = []
     method_name = "execute"
     if bool(need_decrease_collateral):
-        dec_amt = str(decrease_collateral_amount_burrow or "").strip()
-        if not dec_amt:
-            raise ValueError(
-                "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true"
-            )
-        actions.append(
-            {"DecreaseCollateral": {"token_id": tid, "amount": dec_amt}}
-        )
+        dec_action = {"DecreaseCollateral": {"token_id": tid}}
+        if not withdraw_all:
+            dec_amt = str(decrease_collateral_amount_burrow or "").strip()
+            if not dec_amt:
+                raise ValueError(
+                    "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true and mca.withdrawAll is false"
+                )
+            dec_action["DecreaseCollateral"]["amount"] = dec_amt
+        actions.append(dec_action)
         method_name = "execute_with_pyth"
     actions.append(withdraw_action)
 
