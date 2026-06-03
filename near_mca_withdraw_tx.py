@@ -60,6 +60,8 @@ def build_near_mca_withdraw_exec_tx_payload(
     amount_burrow: str,
     recipient_near: str,
     exec_signer_near: str,
+    need_decrease_collateral: bool = False,
+    decrease_collateral_amount_burrow: Optional[str] = None,
     wrap_near_contract_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -95,10 +97,23 @@ def build_near_mca_withdraw_exec_tx_payload(
             "not NEP-141 smallest-unit amountIn."
         )
     withdraw_action = {"Withdraw": {"token_id": tid, "max_amount": amt_br}}
+    actions: List[Dict[str, Any]] = []
+    method_name = "execute"
+    if bool(need_decrease_collateral):
+        dec_amt = str(decrease_collateral_amount_burrow or "").strip()
+        if not dec_amt:
+            raise ValueError(
+                "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true"
+            )
+        actions.append(
+            {"DecreaseCollateral": {"token_id": tid, "amount": dec_amt}}
+        )
+        method_name = "execute_with_pyth"
+    actions.append(withdraw_action)
 
     withdraw_fn = {
-        "method_name": "execute",
-        "args": _serialize_obj({"actions": [withdraw_action]}),
+        "method_name": method_name,
+        "args": _serialize_obj({"actions": actions}),
         "gas": _tgas_yocto(120),
         "deposit": "1",
     }
