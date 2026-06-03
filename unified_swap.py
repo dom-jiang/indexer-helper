@@ -220,11 +220,6 @@ def _assemble_near_mca_withdraw_tx(
         mca_block.get("needDecreaseCollateral")
         or mca_block.get("need_decrease_collateral")
     )
-    decrease_collateral_token_id = str(
-        mca_block.get("decreaseCollateralTokenId")
-        or mca_block.get("decrease_collateral_token_id")
-        or ""
-    ).strip()
     decrease_collateral_amount_burrow = str(
         mca_block.get("decreaseCollateralAmountBurrow")
         or mca_block.get("decrease_collateral_amount_burrow")
@@ -239,7 +234,6 @@ def _assemble_near_mca_withdraw_tx(
         recipient_near=rec,
         exec_signer_near=exec_signer,
         need_decrease_collateral=need_decrease_collateral,
-        decrease_collateral_token_id=decrease_collateral_token_id,
         decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
     )
 

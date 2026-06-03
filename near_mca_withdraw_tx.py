@@ -61,7 +61,6 @@ def build_near_mca_withdraw_exec_tx_payload(
     recipient_near: str,
     exec_signer_near: str,
     need_decrease_collateral: bool = False,
-    decrease_collateral_token_id: Optional[str] = None,
     decrease_collateral_amount_burrow: Optional[str] = None,
     wrap_near_contract_id: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -106,13 +105,8 @@ def build_near_mca_withdraw_exec_tx_payload(
             raise ValueError(
                 "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true"
             )
-        dec_tid = str(decrease_collateral_token_id or tid).strip()
-        if not dec_tid:
-            raise ValueError(
-                "mca.decreaseCollateralTokenId is required when mca.needDecreaseCollateral is true"
-            )
         actions.append(
-            {"DecreaseCollateral": {"token_id": dec_tid, "amount": dec_amt}}
+            {"DecreaseCollateral": {"token_id": tid, "amount": dec_amt}}
         )
         method_name = "execute_with_pyth"
     actions.append(withdraw_action)
