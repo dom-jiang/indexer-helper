@@ -674,7 +674,7 @@ _PRESWAP_ROUTER_NAME = "preswap-nearintents"
 _PRESWAP_EVM_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "WETH")
 # Order matters: USDC first (best 1Click + Jupiter liquidity), USDT second,
 # native SOL last (no ATA hop needed but typically smallest 1Click pool).
-_PRESWAP_SOLANA_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "SOL")
+_PRESWAP_SOLANA_INTERMEDIATE_SYMBOLS = ("USDC", "USDT")
 # USDC/USDT first (best 1Click liquidity), wNEAR last (native wrap.near).
 _PRESWAP_NEAR_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "NEAR", "ETH", "BTC")
 _NEAR_NATIVE_ALIASES = frozenset({"", "near", "wnear", "wrap.near"})
@@ -3465,7 +3465,14 @@ def _stage_a_build_solana(
         "titan": _build_titan,
     }
     router_order = [preferred_router] if preferred_router in builders else []
-    router_order.extend(r for r in ("titan", "jupiter") if r not in router_order)
+    # Temporarily disable Solana Stage-A fallback for verification:
+    # when /quote selected a router (preferred_router), /swap should only build
+    # that router instead of falling back (e.g. titan -> jupiter), so route
+    # mismatch is visible to callers. Keep the original fallback line commented
+    # for easy rollback after testing.
+    # router_order.extend(r for r in ("titan", "jupiter") if r not in router_order)
+    if not router_order:
+        router_order = ["titan", "jupiter"]
 
     best = None
     best_min = Decimal("-1")
