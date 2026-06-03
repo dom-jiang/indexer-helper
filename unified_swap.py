@@ -3760,16 +3760,18 @@ def _preswap_cross_chain_swap(
             )
             tried_routers.append(stage_a_router)
 
-            stage_a_min_int = _safe_int_str(stage_a_min_out)
-            # Non-EVM legs cannot be simulated/rebuilt reliably here, so keep the
-            # strict guard. EVM follows the production frontend model: exactIn DEX
-            # swap into a FLEX_INPUT 1Click order, where actual received amount can
-            # vary within slippage.
-            if not is_evm_src and stage_a_min_int > 0 and stage_a_min_int < mid_target:
+            stage_a_est_int = _safe_int_str(stage_a_estimated_out)
+            # Non-EVM legs cannot be simulated/rebuilt reliably here, so compare the
+            # fresh build estimate to the quote-locked amountOutTarget (also an
+            # estimate). Do not compare minAmountOut to amountOutTarget — with any
+            # slippage > 0, min is always below the locked estimate and would false-
+            # positive. EVM uses eth_call simulation instead (see below).
+            if not is_evm_src and stage_a_est_int > 0 and stage_a_est_int < mid_target:
                 fallback_failure = {
                     "code": -2,
                     "msg": "Price moved too much, please re-quote",
                     "data": {
+                        "preSwapEstimatedOut": str(stage_a_estimated_out or ""),
                         "preSwapMinOut": str(stage_a_min_out or ""),
                         "bridgeExpectedIn": str(mid_target),
                         "quoteMinAmountOut": str(quote_min_amount_out or ""),
