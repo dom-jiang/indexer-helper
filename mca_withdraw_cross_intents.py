@@ -44,6 +44,62 @@ def _serialize_args(params: Dict[str, Any]) -> str:
     return json.dumps(params or {}, separators=(",", ":"), ensure_ascii=False)
 
 
+def resolve_relayer_prepay_inner_from_config(
+    network_id: str,
+    token_id: str,
+) -> str:
+    """
+    Resolve relayer prepay amount from the same config source as the legacy frontend:
+    `multichain_lending_config` key `GAS_FEE` (JSON map of token smallest-unit fees).
+
+    Returns Burrow-inner units (simple_withdraw `amount_with_inner_decimal`) or "".
+    """
+    tid = str(token_id or "").strip()
+    if not tid:
+        return ""
+    try:
+        from db_provider import query_multichain_lending_config
+        from mca_burrow_auto import derive_burrow_inner_amount_from_token_smallest
+
+        rows = query_multichain_lending_config(network_id) or []
+        gas_raw = ""
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("key") or "").strip() == "GAS_FEE":
+                gas_raw = str(r.get("value") or "").strip()
+                break
+        if not gas_raw:
+            return ""
+        gas_map = json.loads(gas_raw)
+        if not isinstance(gas_map, dict):
+            return ""
+
+        amt_smallest = str(
+            gas_map.get(tid)
+            or gas_map.get(tid.lower())
+            or ""
+        ).strip()
+        if not amt_smallest:
+            return ""
+
+        inner, err = derive_burrow_inner_amount_from_token_smallest(
+            network_id=str(network_id),
+            token_id=tid,
+            amount_token_smallest=amt_smallest,
+        )
+        if err or not inner:
+            logger.warning(
+                "resolve_relayer_prepay_inner_from_config convert failed token=%s err=%s",
+                tid, err,
+            )
+            return ""
+        return str(inner)
+    except Exception as e:
+        logger.warning("resolve_relayer_prepay_inner_from_config failed: %s", e)
+        return ""
+
+
 def nep141_ft_transfer_amount_minus_one(amount_token_smallest: str) -> str:
     """
     Match Lending ``Action.tsx`` ``getWithdrawData``: ``new Big(amountToken).minus(1)``
