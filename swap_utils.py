@@ -1709,7 +1709,7 @@ def aggregate_solana_quote(
     recipient: str = None,
 ) -> Dict:
     """
-    Aggregate quotes from Jupiter, OKX, and Titan for Solana swaps.
+    Aggregate quotes from Jupiter and Titan for Solana swaps.
 
     Args:
         token_in: {"address": "So11...112", "symbol": "SOL", "decimals": 9}
@@ -1744,14 +1744,6 @@ def aggregate_solana_quote(
             slippage_bps=slippage_bps,
             taker=sender,
         )),
-        ("okx", lambda: okx_quote(
-            chain_id=501,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=amount_in,
-            slippage=slippage_decimal,
-            user_address=sender,
-        )),
     ]
 
     quotes = []
@@ -1784,8 +1776,6 @@ def aggregate_solana_quote(
             p = _parse_jupiter_order(data, token_out, slippage_decimal)
         elif router == "titan":
             p = _parse_titan_order(data, token_out, slippage_decimal)
-        elif router == "okx":
-            p = _parse_okx_solana_quote(data, token_out, slippage_decimal)
         if p:
             parsed.append(p)
         else:
@@ -1831,7 +1821,7 @@ def build_solana_swap_tx(
 
     For Jupiter: returns pre-built base64 transaction for wallet signing.
     For Titan: assembles VersionedTransaction from route instructions + ALTs.
-    For OKX: returns OKX Solana swap transaction.
+    OKX is intentionally disabled for Solana backend routing.
     """
     from jupiter_utils import jupiter_order, jupiter_build
     from titan_utils import titan_order
@@ -1921,42 +1911,7 @@ def build_solana_swap_tx(
         }
 
     elif router == "okx":
-        result = okx_swap(
-            chain_id=501,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=amount_in,
-            slippage=slippage_decimal,
-            from_address=sender,
-            to_address=recipient,
-        )
-        if not result.get("success"):
-            return {"success": False, "error": result.get("error", "OKX Solana swap failed")}
-
-        data = result["data"]
-        if str(data.get("code")) != "0" or not data.get("data"):
-            return {"success": False, "error": data.get("msg", "OKX Solana swap error")}
-
-        tx_data = data["data"][0] if isinstance(data["data"], list) else data["data"]
-        tx = tx_data.get("tx") or tx_data
-        from solana_tx_assembler import okx_solana_tx_to_base64
-
-        tx_b64 = okx_solana_tx_to_base64(tx if isinstance(tx, dict) else None)
-        if not tx_b64:
-            return {"success": False, "error": "OKX Solana swap missing or invalid tx.data"}
-
-        from solana_tx_assembler import enrich_solana_tx_envelope
-
-        tx_envelope = enrich_solana_tx_envelope(
-            {"transaction": tx_b64, "format": "base64"},
-            alt_pubkeys=_solana_alt_pubkeys_from_provider("okx", data),
-        )
-        return {
-            "success": True,
-            "chainType": CHAIN_TYPE_SOLANA,
-            "tx": tx_envelope,
-            "router": "okx",
-        }
+        return {"success": False, "error": "OKX disabled on Solana"}
 
     return {"success": False, "error": f"Unknown Solana router: {router}"}
 
@@ -2298,7 +2253,6 @@ def multi_chain_supported_routers(chain_id=None, chain_type=None) -> Dict:
             "routers": [
                 {"name": "jupiter", "supported": True},
                 {"name": "titan", "supported": True},
-                {"name": "okx", "chainId": "501", "supported": True},
             ],
             "bluechipTokens": [
                 {"symbol": k, "address": v["address"], "decimals": v["decimals"]}

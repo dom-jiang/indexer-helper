@@ -186,7 +186,8 @@ CHAIN_TO_OMNI = {
 _token_list_cache = None
 _token_lookup_cache = None
 _token_lookup_built_at = 0.0
-_TOKEN_LOOKUP_TTL_SECONDS = 300
+_TOKEN_LIST_REDIS_TTL_SECONDS = 3600
+_TOKEN_LOOKUP_TTL_SECONDS = 3600
 
 
 def _get_headers() -> Dict:
@@ -242,7 +243,7 @@ def _fetch_token_list() -> list:
         resp = _session.get(_oneclick_url("tokens"), timeout=15)
         resp.raise_for_status()
         tokens = resp.json()
-        set_1click_tokens_cache(json.dumps(tokens), ttl=600)
+        set_1click_tokens_cache(json.dumps(tokens), ttl=_TOKEN_LIST_REDIS_TTL_SECONDS)
         _token_list_cache = tokens
         return tokens
     except Exception as e:
