@@ -1761,6 +1761,15 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 or mca_block.get("relayerPrepaySimpleWithdrawInner")
                 or ""
             ).strip()
+        need_decrease_collateral = bool(
+            mca_block.get("needDecreaseCollateral")
+            or mca_block.get("need_decrease_collateral")
+        ) if isinstance(mca_block, dict) else False
+        decrease_collateral_amount_burrow = str(
+            mca_block.get("decreaseCollateralAmountBurrow")
+            or mca_block.get("decrease_collateral_amount_burrow")
+            or ""
+        ).strip() if isinstance(mca_block, dict) else ""
 
         business = assemble_mca_withdraw_to_intents_business(
             network_id=nw,
@@ -1776,6 +1785,8 @@ def _try_attach_mca_withdraw_near_to_intents_quote(
                 relay_near_recipient if not use_near_exec else None
             ),
             relayer_prepay_simple_withdraw_inner=(prepay_inner or None),
+            need_decrease_collateral=need_decrease_collateral,
+            decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
         )
 
         reg_txs = build_mca_register_token_tx_requests(nw, tid, mca_s)

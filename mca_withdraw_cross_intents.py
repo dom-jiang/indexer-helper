@@ -180,6 +180,8 @@ def build_execute_withdraw_tx_request(
     logic_contract_id: str,
     token_id: str,
     max_amount_burrow_inner: str,
+    need_decrease_collateral: bool = False,
+    decrease_collateral_amount_burrow: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Burrow Logic ``execute({ actions: [Withdraw { token_id, max_amount }] })`` (see ``withdraw.ts``)."""
     logic = str(logic_contract_id or "").strip()
@@ -188,11 +190,21 @@ def build_execute_withdraw_tx_request(
     if not logic or not tid or not amt:
         raise ValueError("Burrow_execute_withdraw requires logic contract, token_id, max_amount")
 
+    actions: List[Dict[str, Any]] = []
+    method_name = "execute"
+    if bool(need_decrease_collateral):
+        dec_amt = str(decrease_collateral_amount_burrow or "").strip()
+        if not dec_amt:
+            raise ValueError(
+                "mca.decreaseCollateralAmountBurrow is required when mca.needDecreaseCollateral is true"
+            )
+        actions.append({"DecreaseCollateral": {"token_id": tid, "amount": dec_amt}})
+        method_name = "execute_with_pyth"
+    actions.append({"Withdraw": {"token_id": tid, "max_amount": amt}})
+
     wd_fn = {
-        "method_name": "execute",
-        "args": _serialize_args(
-            {"actions": [{"Withdraw": {"token_id": tid, "max_amount": amt}}]},
-        ),
+        "method_name": method_name,
+        "args": _serialize_args({"actions": actions}),
         "gas": _tgas_yocto(120),
         "deposit": "1",
     }
@@ -254,6 +266,8 @@ def assemble_mca_withdraw_to_intents_business(
     simple_withdraw_tx: Optional[List[Dict[str, Any]]] = None,
     simple_withdraw_recipient_for_relayer: Optional[str] = None,
     relayer_prepay_simple_withdraw_inner: Optional[str] = None,
+    need_decrease_collateral: bool = False,
+    decrease_collateral_amount_burrow: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns the `businessMap` equivalent (nonce, deadline, tx_requests).
@@ -325,7 +339,15 @@ def assemble_mca_withdraw_to_intents_business(
             "simpleWithdrawData.amountBurrow). Some staging relayers require this step."
         )
 
-    tx_requests.append(build_execute_withdraw_tx_request(logic, tid, amt_sw_inner))
+    tx_requests.append(
+        build_execute_withdraw_tx_request(
+            logic,
+            tid,
+            amt_sw_inner,
+            need_decrease_collateral=need_decrease_collateral,
+            decrease_collateral_amount_burrow=decrease_collateral_amount_burrow,
+        )
+    )
 
     amt_ft = nep141_ft_transfer_amount_minus_one(str(amount_token_smallest))
     tx_requests.extend(
