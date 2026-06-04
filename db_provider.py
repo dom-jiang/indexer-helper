@@ -2775,6 +2775,95 @@ def update_near_intents_order_status(network_id, order_id, status, status_respon
         db_conn.close()
 
 
+# ============================================================
+# APY Daily Reports
+# ============================================================
+
+APY_DAILY_REPORTS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS apy_daily_reports (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    report_date   DATE         NOT NULL,
+    token         VARCHAR(32)  NOT NULL,
+    contract_id   VARCHAR(128) NOT NULL,
+    apy           DECIMAL(20, 6) NOT NULL,
+    created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_report_date_token (report_date, token),
+    INDEX idx_report_date (report_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_apy_daily_reports_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(APY_DAILY_REPORTS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("ensure_apy_daily_reports_table error:", e.args)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def upsert_apy_daily_report(network_id, report_date, token, contract_id, apy):
+    sql = (
+        "INSERT INTO apy_daily_reports (report_date, token, contract_id, apy) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE "
+        "contract_id = VALUES(contract_id), "
+        "apy = VALUES(apy), "
+        "updated_at = CURRENT_TIMESTAMP"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (report_date, token, contract_id, apy))
+        db_conn.commit()
+        return True
+    except Exception as e:
+        db_conn.rollback()
+        print("upsert_apy_daily_report error:", e.args)
+        return False
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_apy_daily_reports(network_id, start_date=None, end_date=None):
+    where = []
+    params = []
+    if start_date:
+        where.append("report_date >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append("report_date <= %s")
+        params.append(end_date)
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = (
+        "SELECT DATE_FORMAT(report_date, '%%Y-%%m-%%d') AS date, "
+        "token, CAST(apy AS DOUBLE) AS apy "
+        "FROM apy_daily_reports "
+        f"{where_sql} "
+        "ORDER BY report_date ASC, "
+        "FIELD(token, 'rnear', 'linear', 'stnear'), token ASC"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, tuple(params))
+        return cursor.fetchall() or []
+    except Exception as e:
+        print("query_apy_daily_reports error:", e.args)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
 if __name__ == '__main__':
     print("#########MAINNET###########")
     # clear_token_price()

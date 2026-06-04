@@ -769,6 +769,94 @@ def get_lp_lock_info(network_id):
         print("Error: ", e)
 
 
+def get_near_block_height():
+    url = Cfg.LST_RPC
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "block",
+        "params": {"finality": "final"}
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data['result']['header']['height']
+    except requests.exceptions.RequestException as e:
+        print(f"reqest: {e}")
+        return None
+    except KeyError:
+        print("error data")
+        return None
+
+
+def get_old_block(day_number):
+    current_block = get_near_block_height()
+    if current_block is None:
+        return None
+    ago_block = current_block - (Cfg.LST_AGO_DAY * day_number)
+    print("current_block:", current_block)
+    return ago_block
+
+
+def get_staking_token_price(day_number, contract_id, method_name="ft_price"):
+    old_block_h = get_old_block(day_number)
+    if old_block_h is None:
+        return None
+    if not contract_id:
+        print("get_staking_token_price: empty contract_id")
+        return None
+    url = Cfg.LST_RPC
+    if not url:
+        print("get_staking_token_price: empty LST_RPC")
+        return None
+    new_price = {
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "account_id": contract_id,
+            "method_name": method_name,
+            "args_base64": "e30=",
+            "finality": "optimistic"
+        },
+        "id": 0,
+        "jsonrpc": "2.0"
+    }
+
+    old_price = {
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "account_id": contract_id,
+            "method_name": method_name,
+            "args_base64": "e30=",
+            "block_id": old_block_h
+          },
+        "id": 0,
+        "jsonrpc": "2.0"
+    }
+    print("day_ago_block_h:", old_block_h)
+    try:
+        response_n = requests.post(url, json=new_price)
+        response_n.raise_for_status()
+        new_data = response_n.json()
+        response_o = requests.post(url, json=old_price)
+        response_o.raise_for_status()
+        old_data = response_o.json()
+        new_data_r = new_data["result"]["result"]
+        old_data_r = old_data["result"]["result"]
+        new_price = json.loads("".join([chr(x) for x in new_data_r]))
+        old_price = json.loads("".join([chr(x) for x in old_data_r]))
+        return new_price, old_price
+    except requests.exceptions.RequestException as e:
+        print(f"request error: {e}")
+        return None
+    except Exception as ee:
+        print(f"data error:{ee}")
+        return None
+
+
 if __name__ == '__main__':
     # from config import Cfg
     # from redis_provider import list_token_price, list_pools_by_id_list, list_token_metadata
