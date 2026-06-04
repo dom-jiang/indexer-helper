@@ -37,7 +37,8 @@ from db_provider import query_recent_transaction_swap, query_recent_transaction_
     query_evm_mpc_call_cache, add_evm_mpc_call_cache, query_supported_chains, \
     check_supported_chains_expired, refresh_supported_chains, get_oneclick_order_by_deposit_address, \
     insert_random_record, get_one_pending_random_record, update_random_record, get_random_record_by_request_id, \
-    get_pending_random_records_page, add_multichain_lending_report_lsd, query_multichain_lending_history_lsd
+    get_pending_random_records_page, add_multichain_lending_report_lsd, query_multichain_lending_history_lsd, \
+    ensure_apy_daily_reports_table, query_apy_daily_reports
 from loguru import logger
 from analysis_v2_pool_data_s3 import analysis_v2_pool_data_to_s3, analysis_v2_pool_account_data_to_s3
 import datetime
@@ -1579,6 +1580,19 @@ def handel_rnear_apy():
         "code": 0,
         "msg": "success",
         "data": apy
+    }
+    return ret
+
+
+@app.route('/get-apy-report', methods=['GET'])
+def handle_apy_report():
+    start_date = request.args.get("start_date", type=str, default=None)
+    end_date = request.args.get("end_date", type=str, default=None)
+    rows = query_apy_daily_reports(Cfg.NETWORK_ID, start_date, end_date)
+    ret = {
+        "code": 0,
+        "msg": "success",
+        "data": rows
     }
     return ret
 
@@ -4030,6 +4044,11 @@ try:
     ensure_hyperliquid_transfer_jobs_table(Cfg.NETWORK_ID)
 except Exception as _e:
     logger.warning(f"Failed to ensure hyperliquid_transfer_jobs table: {_e}")
+
+try:
+    ensure_apy_daily_reports_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure apy_daily_reports table: {_e}")
 
 
 def _build_oneclick_payload_from_body(body, allow_dry=False):

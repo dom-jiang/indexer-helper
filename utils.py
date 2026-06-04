@@ -849,15 +849,23 @@ def get_old_block(day_number):
     return ago_block
 
 
-def get_rnear_price(day_number):
+def get_staking_token_price(day_number, contract_id, method_name="ft_price"):
     old_block_h = get_old_block(day_number)
+    if old_block_h is None:
+        return None
+    if not contract_id:
+        print("get_staking_token_price: empty contract_id")
+        return None
     url = Cfg.LST_RPC
+    if not url:
+        print("get_staking_token_price: empty LST_RPC")
+        return None
     new_price = {
         "method": "query",
         "params": {
             "request_type": "call_function",
-            "account_id": Cfg.LST_CONTRACT_ID,
-            "method_name": "ft_price",
+            "account_id": contract_id,
+            "method_name": method_name,
             "args_base64": "e30=",
             "finality": "optimistic"
         },
@@ -869,8 +877,8 @@ def get_rnear_price(day_number):
         "method": "query",
         "params": {
             "request_type": "call_function",
-            "account_id": Cfg.LST_CONTRACT_ID,
-            "method_name": "ft_price",
+            "account_id": contract_id,
+            "method_name": method_name,
             "args_base64": "e30=",
             "block_id": old_block_h
           },
@@ -896,6 +904,10 @@ def get_rnear_price(day_number):
     except Exception as ee:
         print(f"data error:{ee}")
         return None
+
+
+def get_rnear_price(day_number):
+    return get_staking_token_price(day_number, Cfg.LST_CONTRACT_ID, "ft_price")
 
 
 if __name__ == '__main__':
