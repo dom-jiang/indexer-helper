@@ -3954,6 +3954,83 @@ def insert_user_access_log(
         db_conn.close()
 
 
+# ============================================================
+# APY Daily Reports
+# ============================================================
+
+APY_DAILY_REPORTS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS apy_daily_reports (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    report_date   DATE         NOT NULL,
+    token         VARCHAR(32)  NOT NULL,
+    contract_id   VARCHAR(128) NOT NULL,
+    apy           DECIMAL(20, 6) NOT NULL,
+    created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_report_date_token (report_date, token),
+    INDEX idx_report_date (report_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_apy_daily_reports_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(APY_DAILY_REPORTS_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        print("ensure_apy_daily_reports_table error:", e.args)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def upsert_apy_daily_report(network_id, report_date, token, contract_id, apy):
+    sql = (
+        "INSERT INTO apy_daily_reports (report_date, token, contract_id, apy) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE "
+        "contract_id = VALUES(contract_id), "
+        "apy = VALUES(apy), "
+        "updated_at = CURRENT_TIMESTAMP"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, (report_date, token, contract_id, apy))
+        db_conn.commit()
+        return True
+    except Exception as e:
+        db_conn.rollback()
+        print("upsert_apy_daily_report error:", e.args)
+        return False
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_apy_daily_reports(network_id):
+    sql = (
+        "SELECT DATE_FORMAT(report_date, '%Y-%m-%d') AS date, "
+        "token, CAST(apy AS DECIMAL(20,6)) AS apy "
+        "FROM apy_daily_reports "
+        "ORDER BY report_date ASC, "
+        "FIELD(token, 'rnear', 'linear', 'stnear'), token ASC"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql)
+        return cursor.fetchall() or []
+    except Exception as e:
+        print("query_apy_daily_reports error:", e.args)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
 
 # ============================================================
 # Swap Transactions (user-reported signed swap history)
