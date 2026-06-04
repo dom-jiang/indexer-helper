@@ -1586,9 +1586,7 @@ def handel_rnear_apy():
 
 @app.route('/get-apy-report', methods=['GET'])
 def handle_apy_report():
-    start_date = request.args.get("start_date", type=str, default=None)
-    end_date = request.args.get("end_date", type=str, default=None)
-    rows = query_apy_daily_reports(Cfg.NETWORK_ID, start_date, end_date)
+    rows = query_apy_daily_reports(Cfg.NETWORK_ID)
     ret = {
         "code": 0,
         "msg": "success",

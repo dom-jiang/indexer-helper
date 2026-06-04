@@ -4011,29 +4011,18 @@ def upsert_apy_daily_report(network_id, report_date, token, contract_id, apy):
         db_conn.close()
 
 
-def query_apy_daily_reports(network_id, start_date=None, end_date=None):
-    where = []
-    params = []
-    if start_date:
-        where.append("report_date >= %s")
-        params.append(start_date)
-    if end_date:
-        where.append("report_date <= %s")
-        params.append(end_date)
-
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+def query_apy_daily_reports(network_id):
     sql = (
-        "SELECT DATE_FORMAT(report_date, '%%Y-%%m-%%d') AS date, "
-        "token, CAST(apy AS DOUBLE) AS apy "
+        "SELECT DATE_FORMAT(report_date, '%Y-%m-%d') AS date, "
+        "token, CAST(apy AS DECIMAL(20,6)) AS apy "
         "FROM apy_daily_reports "
-        f"{where_sql} "
         "ORDER BY report_date ASC, "
         "FIELD(token, 'rnear', 'linear', 'stnear'), token ASC"
     )
     db_conn = get_db_connect(network_id)
     cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
     try:
-        cursor.execute(sql, tuple(params))
+        cursor.execute(sql)
         return cursor.fetchall() or []
     except Exception as e:
         print("query_apy_daily_reports error:", e.args)
@@ -4041,7 +4030,6 @@ def query_apy_daily_reports(network_id, start_date=None, end_date=None):
     finally:
         cursor.close()
         db_conn.close()
-
 
 
 # ============================================================
