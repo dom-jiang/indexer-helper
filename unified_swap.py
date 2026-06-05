@@ -688,7 +688,7 @@ def _compare_cross_chain_quotes(omni_result: Dict, near_result: Dict, token_out_
 #
 # Used when `tokenIn` on `fromChain` is NOT directly supported by
 # NearIntents 1Click, but an
-# intermediate bluechip token on the same fromChain (USDC / USDT / WETH)
+# intermediate bluechip token on the same fromChain (USDC / USDT)
 # IS supported by 1Click to deliver `tokenOut` on `toChain`.
 #
 # Flow:
@@ -699,7 +699,7 @@ def _compare_cross_chain_quotes(omni_result: Dict, near_result: Dict, token_out_
 # At swap time Stage-A builders re-quote in parallel and pick the best executable route.
 
 _PRESWAP_ROUTER_NAME = "preswap-nearintents"
-_PRESWAP_EVM_INTERMEDIATE_SYMBOLS = ("USDC", "USDT", "WETH")
+_PRESWAP_EVM_INTERMEDIATE_SYMBOLS = ("USDC", "USDT")
 # Order matters: USDC first (best 1Click + Jupiter liquidity), USDT second,
 # native SOL last (no ATA hop needed but typically smallest 1Click pool).
 _PRESWAP_SOLANA_INTERMEDIATE_SYMBOLS = ("USDC", "USDT")
