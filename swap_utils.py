@@ -15,6 +15,7 @@ API Endpoints:
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
+import time
 from typing import Dict, List, Optional
 
 from loguru import logger
@@ -1718,6 +1719,7 @@ def aggregate_solana_quote(
         slippage: flexible input
         sender: wallet public key
     """
+    quote_start_ms = int(time.time() * 1000)
     from jupiter_utils import jupiter_quote
     from titan_utils import titan_order
 
@@ -1751,20 +1753,48 @@ def aggregate_solana_quote(
 
     with ThreadPoolExecutor(max_workers=len(routers)) as executor:
         futures = {}
+        future_start_ms = {}
         for name, fn in routers:
-            futures[executor.submit(fn)] = name
+            fut = executor.submit(fn)
+            futures[fut] = name
+            future_start_ms[fut] = int(time.time() * 1000)
         for future in as_completed(futures):
             name = futures[future]
+            provider_cost_ms = int(time.time() * 1000) - future_start_ms.get(future, int(time.time() * 1000))
             try:
                 result = future.result()
                 if result.get("success"):
                     quotes.append(result)
+                    logger.info(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=true",
+                        name,
+                        provider_cost_ms,
+                    )
                 else:
+                    logger.info(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=false err={}",
+                        name,
+                        provider_cost_ms,
+                        result.get("error", "Unknown"),
+                    )
                     errors.append({"router": name, "error": result.get("error", "Unknown")})
             except Exception as e:
+                logger.info(
+                    "swap.quote timing solana_stageA_provider router={} ms={} success=false err={}",
+                    name,
+                    provider_cost_ms,
+                    str(e),
+                )
                 errors.append({"router": name, "error": str(e)})
 
     if not quotes:
+        logger.info(
+            "swap.quote timing solana_stageA_total_ms={} success=false tokenIn={} tokenOut={} errors={}",
+            int(time.time() * 1000) - quote_start_ms,
+            token_in_addr,
+            token_out_addr,
+            len(errors),
+        )
         return {"success": False, "error": "All Solana routers failed", "details": errors}
 
     parsed = []
@@ -1782,6 +1812,13 @@ def aggregate_solana_quote(
             errors.append({"router": router, "error": "Invalid quote response"})
 
     if not parsed:
+        logger.info(
+            "swap.quote timing solana_stageA_total_ms={} success=false tokenIn={} tokenOut={} errors={} parse_failed=true",
+            int(time.time() * 1000) - quote_start_ms,
+            token_in_addr,
+            token_out_addr,
+            len(errors),
+        )
         return {"success": False, "error": "No valid Solana quotes", "details": errors}
 
     best = max(parsed, key=lambda q: q["_amountOutDecimal"])
@@ -1789,6 +1826,15 @@ def aggregate_solana_quote(
 
     all_summary = [{k: v for k, v in pq.items() if not k.startswith("_")} for pq in parsed]
 
+    logger.info(
+        "swap.quote timing solana_stageA_total_ms={} success=true tokenIn={} tokenOut={} winner={} parsedQuotes={} errors={}",
+        int(time.time() * 1000) - quote_start_ms,
+        token_in_addr,
+        token_out_addr,
+        str(best.get("router") or ""),
+        len(parsed),
+        len(errors),
+    )
     return {
         "success": True,
         "chainType": CHAIN_TYPE_SOLANA,

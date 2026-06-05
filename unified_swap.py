@@ -2,14 +2,15 @@
 Unified Swap API dispatch layer.
 
 Routes requests to same-chain or cross-chain handlers based on fromChain vs toChain.
-For cross-chain: runs OmniBridge and NearIntents 1Click in parallel, picks best price.
+For cross-chain: uses NearIntents 1Click (direct or pre-swap route) for quotes and builds.
 For same-chain:  delegates to existing multi_chain_* functions.
 """
 
 import base64
 import json
+import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
 
@@ -90,10 +91,9 @@ _NATIVE_TOKEN_META = {
     "stellar": {"symbol": "XLM", "decimals": 7},
     "cardano": {"symbol": "ADA", "decimals": 6},
 }
-from omnibridge_utils import cross_chain_quote as omni_quote, cross_chain_build_tx as omni_build_tx
 from nearintents_utils import (
     nearintents_quote, nearintents_build_tx,
-    resolve_omni_chain, resolve_1click_asset_id, CHAIN_TO_1CLICK,
+    resolve_1click_asset_id, CHAIN_TO_1CLICK,
     is_chain_native_token,
 )
 
@@ -314,7 +314,14 @@ _APTOS_BLUECHIP_LOOKUP = {
     v["address"].lower(): v for v in APTOS_BLUECHIP_TOKENS.values()
 }
 
-_executor = ThreadPoolExecutor(max_workers=4)
+_QUOTE_EXECUTOR_MAX_WORKERS = max(8, min(32, (os.cpu_count() or 4) * 4))
+_DIRECT_QUOTE_WAIT_TIMEOUT_SECONDS = 20
+_PRESWAP_QUOTE_WAIT_TIMEOUT_SECONDS = 30
+_executor = ThreadPoolExecutor(max_workers=_QUOTE_EXECUTOR_MAX_WORKERS)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 # Map of human-readable / canonical chain identifiers => ordered list of
@@ -631,7 +638,7 @@ def _safe_int_str(value) -> int:
 
 def _compare_cross_chain_quotes(omni_result: Dict, near_result: Dict, token_out_decimals: int) -> Tuple[Dict, list]:
     """
-    Compare OmniBridge and NearIntents quotes, return (bestQuote, allQuotes).
+    Compare available cross-chain quotes and return (bestQuote, allQuotes).
     Compares estimatedOut in smallest units of the destination token.
     """
     all_quotes = []
@@ -679,8 +686,8 @@ def _compare_cross_chain_quotes(omni_result: Dict, near_result: Dict, token_out_
 # Two-stage cross-chain (pre-swap + NearIntents bridge)
 # ============================================================
 #
-# Used when `tokenIn` on `fromChain` is NOT directly supported by any
-# cross-chain provider (OmniBridge / NearIntents 1Click), but an
+# Used when `tokenIn` on `fromChain` is NOT directly supported by
+# NearIntents 1Click, but an
 # intermediate bluechip token on the same fromChain (USDC / USDT / WETH)
 # IS supported by 1Click to deliver `tokenOut` on `toChain`.
 #
@@ -1087,6 +1094,7 @@ def _stage_a_quote_solana(
     Returns ``(mid_amount, router, error, meta)``. `meta` includes
     ``stageAAllQuotes`` / ``stageAErrors`` for API transparency.
     """
+    stage_a_solana_start_ms = _now_ms()
     from swap_utils import aggregate_solana_quote
     res = aggregate_solana_quote(
         token_in=token_in,
@@ -1101,6 +1109,13 @@ def _stage_a_quote_solana(
         details = res.get("details")
         if details:
             err_detail = f"{err_detail}: {details}"
+        logger.info(
+            "swap.quote timing stageA_solana_total_ms={} success=false tokenIn={} intermediate={} err={}",
+            _now_ms() - stage_a_solana_start_ms,
+            token_in.get("address", ""),
+            intermediate.get("symbol", ""),
+            err_detail,
+        )
         return None, None, err_detail, None
     quote = res.get("quote") or {}
     out_str = str(quote.get("amountOut") or "")
@@ -1108,6 +1123,13 @@ def _stage_a_quote_solana(
         return None, None, "Solana aggregate quote missing amountOut", None
     try:
         meta = _stage_a_aggregate_meta(res)
+        logger.info(
+            "swap.quote timing stageA_solana_total_ms={} success=true tokenIn={} intermediate={} winnerRouter={}",
+            _now_ms() - stage_a_solana_start_ms,
+            token_in.get("address", ""),
+            intermediate.get("symbol", ""),
+            str(quote.get("router") or "jupiter"),
+        )
         return Decimal(out_str), str(quote.get("router") or "jupiter"), None, meta
     except (InvalidOperation, ValueError) as e:
         return None, None, f"Solana amountOut invalid: {e}", None
@@ -1251,6 +1273,7 @@ def _preswap_cross_chain_quote(
     aggregators (Bitget+OKX for EVM, Jupiter+Titan+OKX for Solana, Ref
     SmartRouter for NEAR, Hyperion for Aptos); Stage-B is always NearIntents 1Click.
     """
+    preswap_start_ms = _now_ms()
     is_solana_src = _is_solana_chain(from_chain)
     is_near_src = _is_near_chain(from_chain)
     is_aptos_src = _is_aptos_chain(from_chain)
@@ -1271,8 +1294,10 @@ def _preswap_cross_chain_quote(
     stage_a_by_intermediate = []
 
     def _quote_one_intermediate(idx: int, inter: Dict) -> Dict:
+        inter_start_ms = _now_ms()
         try:
             stage_a_meta = None
+            stage_a_start_ms = _now_ms()
             if is_solana_src:
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_solana(
                     token_in, inter, str(amount_in), slippage, sender,
@@ -1289,6 +1314,7 @@ def _preswap_cross_chain_quote(
                 mid_amount_raw, stage_a_router, err, stage_a_meta = _stage_a_quote_evm(
                     chain_int, token_in, inter, str(amount_in), slippage, sender,
                 )
+            stage_a_cost_ms = _now_ms() - stage_a_start_ms
             stage_a_error = None
             if isinstance(stage_a_meta, dict) and stage_a_meta.get("stageAErrors"):
                 stage_a_error = {
@@ -1320,6 +1346,7 @@ def _preswap_cross_chain_quote(
             # exact amount delivered to the deposit address is only known at
             # execution time, so quote the bridge as FLEX_INPUT (and the `/swap`
             # build below uses FLEX_INPUT too, keeping quote/build consistent).
+            near_quote_start_ms = _now_ms()
             near_res = nearintents_quote(
                 from_chain=from_chain,
                 to_chain=to_chain,
@@ -1332,7 +1359,17 @@ def _preswap_cross_chain_quote(
                 oneclick_extensions=oneclick_extensions,
                 swap_type="FLEX_INPUT",
             )
+            near_quote_cost_ms = _now_ms() - near_quote_start_ms
             if not near_res.get("success"):
+                logger.info(
+                    "swap.quote timing preswap_intermediate idx={} symbol={} stageA_ms={} nearQuote_ms={} total_ms={} success=false err={}",
+                    idx,
+                    inter.get("symbol") or "",
+                    stage_a_cost_ms,
+                    max(near_quote_cost_ms, 0),
+                    _now_ms() - inter_start_ms,
+                    near_res.get("error", ""),
+                )
                 return {
                     "idx": idx,
                     "error": f"{inter['symbol']}: 1Click quote failed: {near_res.get('error')}",
@@ -1389,6 +1426,15 @@ def _preswap_cross_chain_quote(
                 },
             }
             quote_obj["estimatedOutSmallest"] = str(int(est_out_dec))
+            logger.info(
+                "swap.quote timing preswap_intermediate idx={} symbol={} stageA_ms={} nearQuote_ms={} total_ms={} success=true stageARouter={}",
+                idx,
+                inter.get("symbol") or "",
+                stage_a_cost_ms,
+                max(near_quote_cost_ms, 0),
+                _now_ms() - inter_start_ms,
+                stage_a_router or "",
+            )
             return {
                 "idx": idx,
                 "quote": quote_obj,
@@ -1423,8 +1469,25 @@ def _preswap_cross_chain_quote(
                 best = quote_obj
 
     if not best:
+        logger.info(
+            "swap.quote timing preswap_total_ms={} success=false fromChain={} toChain={} candidates={} errors={}",
+            _now_ms() - preswap_start_ms,
+            from_chain,
+            to_chain,
+            len(candidates),
+            len(errors),
+        )
         return {"success": False, "error": "pre-swap route failed: " + "; ".join(errors)}
 
+    logger.info(
+        "swap.quote timing preswap_total_ms={} success=true fromChain={} toChain={} candidates={} successQuotes={} errors={}",
+        _now_ms() - preswap_start_ms,
+        from_chain,
+        to_chain,
+        len(candidates),
+        len(all_quotes),
+        len(errors),
+    )
     return {
         "success": True,
         "router": _PRESWAP_ROUTER_NAME,
@@ -1516,7 +1579,7 @@ def _mca_context_for_quote(
             ctx["note"] = (
                 "Near Intents 1Click quotes always include appFees and referral from server config "
                 "(INTENTS_APP_FEES_* / INTENTS_DEFAULT_REFERRAL). Optional `mca` fields (e.g. "
-                "customRecipientMsg) merge when flow=deposit. OmniBridge-only quotes ignore 1Click extras."
+                "customRecipientMsg) merge when flow=deposit."
             )
     elif flow == "withdraw":
         if ctx.get("mcaAccountId"):
@@ -2369,10 +2432,13 @@ def unified_quote(
     """
     Unified quote entry point.
     - Same chain: delegates to multi_chain_quote
-    - Cross chain: parallel OmniBridge + NearIntents, best price.
+    - Cross chain: NearIntents direct quote + pre-swap fallback, best price.
       If all direct providers fail and `tokenIn` is not 1Click-supported,
       falls back to the two-stage pre-swap (OKX) + 1Click bridge route.
     """
+    quote_start_ms = _now_ms()
+    req_from_chain = str(from_chain or "")
+    req_to_chain = str(to_chain or "")
     from_chain = _normalize_chain_id(from_chain)
     to_chain = _normalize_chain_id(to_chain)
 
@@ -2397,8 +2463,10 @@ def unified_quote(
     if not recipient:
         recipient = sender
 
+    token_resolve_start_ms = _now_ms()
     token_in_info = _resolve_token_info(from_chain, token_in_address)
     token_out_info = _resolve_token_info(to_chain, token_out_address)
+    token_resolve_cost_ms = _now_ms() - token_resolve_start_ms
 
     if not token_in_info:
         return {"code": -1, "msg": f"Token {token_in_address!r} not found on chain {from_chain}. Check address and chain."}
@@ -2407,9 +2475,16 @@ def unified_quote(
 
     mca_enriched = mca
     if isinstance(mca, dict) and mca:
+        mca_enrich_start_ms = _now_ms()
         from mca_burrow_auto import enrich_mca_deposit_block
 
         mca_enriched, crm_err = enrich_mca_deposit_block(dict(mca), Cfg.NETWORK_ID)
+        logger.info(
+            "swap.quote timing mca_enrich_ms={} fromChain={} toChain={}",
+            _now_ms() - mca_enrich_start_ms,
+            from_chain,
+            to_chain,
+        )
         if crm_err:
             return {"code": -1, "msg": crm_err, "data": None}
 
@@ -2441,7 +2516,9 @@ def unified_quote(
                 network_id=str(Cfg.NETWORK_ID),
             )
 
-    if not _is_cross_chain(from_chain, to_chain):
+    route_start_ms = _now_ms()
+    is_cross = _is_cross_chain(from_chain, to_chain)
+    if not is_cross:
         if near_dep_intents:
             crm_chk = (mca_enriched or {}).get("customRecipientMsg") or (mca_enriched or {}).get("custom_recipient_msg")
             if not (isinstance(crm_chk, str) and crm_chk.strip()):
@@ -2512,6 +2589,7 @@ def unified_quote(
             recipient,
             mca_block=mca_enriched,
         )
+    route_cost_ms = _now_ms() - route_start_ms
 
     mc_ctx = _mca_context_for_quote(
         mca_enriched if isinstance(mca_enriched, dict) else None,
@@ -2568,6 +2646,24 @@ def unified_quote(
             dat = resp.get("data")
             if isinstance(dat, dict) and dat.get("mcaWithdrawToIntents"):
                 dat["mcaWithdrawRoute"] = "near-same-chain-withdraw-relayer"
+
+    logger.info(
+        "swap.quote timing total_ms={} route_ms={} token_resolve_ms={} "
+        "fromChainRaw={} toChainRaw={} fromChain={} toChain={} crossChain={} "
+        "nearDirectMca={} nearWithdrawIntents={} nearDepositIntents={} code={}",
+        _now_ms() - quote_start_ms,
+        route_cost_ms,
+        token_resolve_cost_ms,
+        req_from_chain,
+        req_to_chain,
+        from_chain,
+        to_chain,
+        is_cross,
+        near_withdraw_dir,
+        near_withdraw_intents,
+        near_dep_intents,
+        resp.get("code") if isinstance(resp, dict) else "unknown",
+    )
 
     return resp
 
@@ -2650,36 +2746,23 @@ def _cross_chain_quote(
     recipient: str,
     mca_block: Optional[Dict] = None,
 ) -> Dict:
-    """Run OmniBridge + NearIntents quotes in parallel, return best.
+    """Run NearIntents direct/preswap quotes and return best.
 
     When ``tokenIn`` is not listed by 1Click on ``fromChain`` (e.g. Ref-only
     NEP-141), skip the direct 1Click leg and run the two-stage preswap route
-    (Ref SmartRouter / SmartX → intermediate → 1Click) in parallel with OmniBridge.
+    (Ref SmartRouter / SmartX → intermediate → 1Click).
     """
+    cross_quote_start_ms = _now_ms()
     oneclick_extensions = _mca_deposit_extensions(mca_block)
-    omni_result = None
     near_result = None
     errors = []
 
     token_in_addr = token_in.get("address", "")
+    token_support_check_start_ms = _now_ms()
     token_in_oneclick = _token_in_supported_by_1click(from_chain, token_in_addr)
+    token_support_check_cost_ms = _now_ms() - token_support_check_start_ms
 
     futures = {}
-
-    omni_from = resolve_omni_chain(from_chain)
-    omni_to = resolve_omni_chain(to_chain)
-    if omni_from and omni_to:
-        f = _executor.submit(
-            omni_quote,
-            from_chain=omni_from,
-            to_chain=omni_to,
-            token_in=token_in,
-            token_out=token_out,
-            amount_in=amount_in,
-            sender=sender,
-            recipient=recipient,
-        )
-        futures[f] = "omnibridge"
 
     oneclick_from = CHAIN_TO_1CLICK.get(from_chain)
     oneclick_to = CHAIN_TO_1CLICK.get(to_chain)
@@ -2723,31 +2806,37 @@ def _cross_chain_quote(
     if not futures and not preswap_future:
         return {"code": -1, "msg": "No cross-chain provider supports this chain pair"}
 
-    for future in as_completed(futures, timeout=30):
-        provider = futures[future]
-        try:
-            result = future.result()
-            if provider == "omnibridge":
-                omni_result = result
-            else:
+    try:
+        direct_wait_start_ms = _now_ms()
+        for future in as_completed(futures, timeout=_DIRECT_QUOTE_WAIT_TIMEOUT_SECONDS):
+            provider = futures[future]
+            try:
+                result = future.result()
                 near_result = result
-            if not result.get("success"):
-                errors.append(f"{provider}: {result.get('error', 'unknown error')}")
-        except Exception as e:
-            errors.append(f"{provider}: {str(e)}")
+                if not result.get("success"):
+                    errors.append(f"{provider}: {result.get('error', 'unknown error')}")
+            except Exception as e:
+                errors.append(f"{provider}: {str(e)}")
+        direct_wait_cost_ms = _now_ms() - direct_wait_start_ms
+    except FuturesTimeoutError:
+        errors.append(f"direct quote timeout after {_DIRECT_QUOTE_WAIT_TIMEOUT_SECONDS}s")
+        direct_wait_cost_ms = _now_ms() - direct_wait_start_ms
 
     token_out_decimals = token_out.get("decimals", 18)
-    best_quote, all_quotes = _compare_cross_chain_quotes(omni_result, near_result, token_out_decimals)
+    best_quote, all_quotes = _compare_cross_chain_quotes(None, near_result, token_out_decimals)
 
     preswap_res = None
     preswap_stage_a_errors = None
     preswap_route_errors = None
 
+    preswap_wait_cost_ms = 0
     if preswap_future is not None:
+        preswap_wait_start_ms = _now_ms()
         try:
-            preswap_res = preswap_future.result(timeout=45)
+            preswap_res = preswap_future.result(timeout=_PRESWAP_QUOTE_WAIT_TIMEOUT_SECONDS)
         except Exception as e:
             preswap_res = {"success": False, "error": str(e)}
+        preswap_wait_cost_ms = _now_ms() - preswap_wait_start_ms
         if preswap_res.get("success"):
             ps_quote = preswap_res.get("quote")
             ps_all = preswap_res.get("allQuotes") or []
@@ -2758,7 +2847,7 @@ def _cross_chain_quote(
                 all_quotes = list(all_quotes) + ps_all
                 if errors:
                     logger.info(
-                        "cross-chain: tokenIn not 1Click-listed, using preswap route. direct errors: %s",
+                        "cross-chain: tokenIn not 1Click-listed, using preswap route. direct errors: {}",
                         errors,
                     )
             else:
@@ -2773,6 +2862,7 @@ def _cross_chain_quote(
         elif not token_in_oneclick:
             errors.append(f"preswap: {preswap_res.get('error')}")
     elif not best_quote:
+        preswap_wait_start_ms = _now_ms()
         preswap_res = _preswap_cross_chain_quote(
             from_chain=from_chain,
             to_chain=to_chain,
@@ -2784,6 +2874,7 @@ def _cross_chain_quote(
             recipient=recipient,
             oneclick_extensions=oneclick_extensions,
         )
+        preswap_wait_cost_ms = _now_ms() - preswap_wait_start_ms
         if preswap_res.get("success"):
             best_quote = preswap_res.get("quote")
             ps_all = preswap_res.get("allQuotes") or []
@@ -2792,7 +2883,7 @@ def _cross_chain_quote(
             preswap_route_errors = preswap_res.get("errors")
             if errors:
                 logger.info(
-                    "cross-chain direct providers all failed, falling back to pre-swap route. direct errors: %s",
+                    "cross-chain direct providers all failed, falling back to pre-swap route. direct errors: {}",
                     errors,
                 )
         else:
@@ -2800,6 +2891,18 @@ def _cross_chain_quote(
 
     if not best_quote:
         error_detail = "; ".join(errors) if errors else "All providers failed"
+        logger.info(
+            "swap.quote timing cross_chain_total_ms={} success=false fromChain={} toChain={} "
+            "tokenSupportCheck_ms={} directWait_ms={} preswapWait_ms={} directNearSuccess={} errors={}",
+            _now_ms() - cross_quote_start_ms,
+            from_chain,
+            to_chain,
+            token_support_check_cost_ms,
+            direct_wait_cost_ms if futures else 0,
+            preswap_wait_cost_ms,
+            bool(near_result and near_result.get("success")),
+            len(errors),
+        )
         return {"code": -1, "msg": f"Cross-chain quote failed: {error_detail}"}
 
     quote_warnings = _build_quote_provider_warnings(
@@ -2820,6 +2923,23 @@ def _cross_chain_quote(
         data["quoteProviderWarnings"] = quote_warnings
     if preswap_stage_a_errors:
         data["stageAAggregateErrors"] = preswap_stage_a_errors
+
+    logger.info(
+        "swap.quote timing cross_chain_total_ms={} success=true fromChain={} toChain={} "
+        "tokenSupportCheck_ms={} directWait_ms={} preswapWait_ms={} directNearSuccess={} "
+        "preswapSuccess={} selectedRouter={} allQuotes={} errors={}",
+        _now_ms() - cross_quote_start_ms,
+        from_chain,
+        to_chain,
+        token_support_check_cost_ms,
+        direct_wait_cost_ms if futures else 0,
+        preswap_wait_cost_ms,
+        bool(near_result and near_result.get("success")),
+        bool(preswap_res and preswap_res.get("success")),
+        str((best_quote or {}).get("router") or ""),
+        len(all_quotes),
+        len(errors),
+    )
 
     return {
         "code": 0,
@@ -2853,7 +2973,7 @@ def unified_swap(
     """
     Unified swap (build tx) entry point.
     - Same chain: build tx + approve info
-    - Cross chain: build via specified router (omnibridge / nearintents)
+    - Cross chain: build via specified router (nearintents / preswap-nearintents)
     - Optional `mca_relayer`: forward signed relayer payloads (no ordinary swap tx)
     """
     if mca_relayer is not None and isinstance(mca_relayer, dict) and mca_relayer:
@@ -4069,7 +4189,7 @@ def _cross_chain_swap(
     (depositAddress, orderId, estimatedOut, minAmountOut, etc.) for UI.
     """
     if not router:
-        return {"code": -1, "msg": "router is required for cross-chain swap (from quote response, e.g. 'omnibridge' or 'nearintents')"}
+        return {"code": -1, "msg": "router is required for cross-chain swap (from quote response, e.g. 'nearintents')"}
 
     # Two-stage route: user's tokenIn is not 1Click-supported, we pre-swap via OKX into a
     # bluechip intermediate and then bridge via 1Click. The quote response carries the
@@ -4092,23 +4212,7 @@ def _cross_chain_swap(
         )
 
     try:
-        if router == "omnibridge":
-            omni_from = resolve_omni_chain(from_chain)
-            omni_to = resolve_omni_chain(to_chain)
-            if not omni_from or not omni_to:
-                return {"code": -1, "msg": f"OmniBridge does not support chain {from_chain} -> {to_chain}"}
-
-            result = omni_build_tx(
-                from_chain=omni_from,
-                to_chain=omni_to,
-                token_in=token_in,
-                token_out=token_out,
-                amount_in=amount_in,
-                sender=sender,
-                recipient=recipient,
-                slippage=slippage,
-            )
-        elif router == "nearintents":
+        if router == "nearintents":
             result = nearintents_build_tx(
                 from_chain=from_chain,
                 to_chain=to_chain,
@@ -4121,7 +4225,7 @@ def _cross_chain_swap(
                 oneclick_extensions=oneclick_extensions,
             )
         else:
-            return {"code": -1, "msg": f"Unknown cross-chain router: {router}. Supported: omnibridge, nearintents, {_PRESWAP_ROUTER_NAME}"}
+            return {"code": -1, "msg": f"Unknown cross-chain router: {router}. Supported: nearintents, {_PRESWAP_ROUTER_NAME}"}
 
         if not result.get("success"):
             return {"code": -1, "msg": result.get("error", "Cross-chain swap failed"), "data": result}

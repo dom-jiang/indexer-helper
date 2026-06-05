@@ -2657,7 +2657,7 @@ def api_swap_quote():
     }
 
     Same-chain (fromChain == toChain): routes to multi-aggregator (Bitget/OKX/Jupiter/Hyperion).
-    Cross-chain (fromChain != toChain): parallel OmniBridge + NearIntents 1Click, returns best price.
+    Cross-chain (fromChain != toChain): NearIntents 1Click direct/preswap quote, returns best price.
     """
     try:
         if not request.is_json:
@@ -2706,7 +2706,7 @@ def api_swap_build():
     }
 
     Same-chain: builds swap tx + includes approve tx data if needed.
-    Cross-chain: builds via specified router (omnibridge / nearintents).
+    Cross-chain: builds via specified router (nearintents / preswap-nearintents).
     """
     try:
         if not request.is_json:
