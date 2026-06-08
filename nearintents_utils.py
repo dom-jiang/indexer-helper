@@ -90,6 +90,7 @@ _ONECLICK_QUOTE_OPTIONAL_KEYS = frozenset({
     "swapType",
     "deadline",
 })
+_ONECLICK_DEFAULT_QUOTE_WAITING_TIME_MS = 1500
 
 
 def _apply_default_intents_app_fees_and_referral(body: Dict[str, Any]) -> None:
@@ -457,6 +458,7 @@ def nearintents_quote(
     body = {
         "dry": True,
         "swapType": (swap_type or "EXACT_INPUT").strip().upper(),
+        "quoteWaitingTimeMs": _ONECLICK_DEFAULT_QUOTE_WAITING_TIME_MS,
         "slippageTolerance": slippage_bps,
         "originAsset": origin_asset,
         "depositType": "ORIGIN_CHAIN",
@@ -548,6 +550,7 @@ def nearintents_build_tx(
     body = {
         "dry": False,
         "swapType": (swap_type or "EXACT_INPUT").strip().upper(),
+        "quoteWaitingTimeMs": _ONECLICK_DEFAULT_QUOTE_WAITING_TIME_MS,
         "slippageTolerance": slippage_bps,
         "originAsset": origin_asset,
         "depositType": "ORIGIN_CHAIN",

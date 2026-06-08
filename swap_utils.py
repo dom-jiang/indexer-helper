@@ -13,11 +13,13 @@ API Endpoints:
   - /api/swap/supported-routers : Get supported router info per chain
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from decimal import Decimal, InvalidOperation
+import time
 from typing import Dict, List, Optional
 
 from loguru import logger
+from config import Cfg
 from bitget_utils import proxy_bitget_request, proxy_okx_request
 
 from near_smart_router_swap import (
@@ -1718,6 +1720,7 @@ def aggregate_solana_quote(
         slippage: flexible input
         sender: wallet public key
     """
+    quote_start_ms = int(time.time() * 1000)
     from jupiter_utils import jupiter_quote
     from titan_utils import titan_order
 
@@ -1748,23 +1751,80 @@ def aggregate_solana_quote(
 
     quotes = []
     errors = []
-
-    with ThreadPoolExecutor(max_workers=len(routers)) as executor:
-        futures = {}
+    titan_fast_timeout_sec = float(
+        getattr(Cfg, "TITAN_PRESWAP_FAST_TIMEOUT_SEC", 1.0) or 1.0
+    )
+    titan_fast_timeout_sec = max(0.2, titan_fast_timeout_sec)
+    executor = ThreadPoolExecutor(max_workers=len(routers))
+    try:
+        futures_by_name = {}
+        future_start_ms = {}
         for name, fn in routers:
-            futures[executor.submit(fn)] = name
-        for future in as_completed(futures):
-            name = futures[future]
+            fut = executor.submit(fn)
+            futures_by_name[name] = fut
+            future_start_ms[name] = int(time.time() * 1000)
+
+        for name in ("jupiter", "titan"):
+            fut = futures_by_name.get(name)
+            if fut is None:
+                continue
+            timeout_sec = titan_fast_timeout_sec if name == "titan" else max(3.0, titan_fast_timeout_sec)
             try:
-                result = future.result()
+                result = fut.result(timeout=timeout_sec)
+                provider_cost_ms = int(time.time() * 1000) - future_start_ms.get(name, int(time.time() * 1000))
                 if result.get("success"):
                     quotes.append(result)
+                    logger.info(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=true",
+                        name,
+                        provider_cost_ms,
+                    )
                 else:
+                    logger.info(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=false err={}",
+                        name,
+                        provider_cost_ms,
+                        result.get("error", "Unknown"),
+                    )
                     errors.append({"router": name, "error": result.get("error", "Unknown")})
+            except FuturesTimeoutError:
+                provider_cost_ms = int(time.time() * 1000) - future_start_ms.get(name, int(time.time() * 1000))
+                timeout_msg = f"{name} quote timeout after {timeout_sec:.2f}s"
+                if name == "titan":
+                    logger.warning(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=false titan_slow_fallback=true err={}",
+                        name,
+                        provider_cost_ms,
+                        timeout_msg,
+                    )
+                else:
+                    logger.info(
+                        "swap.quote timing solana_stageA_provider router={} ms={} success=false err={}",
+                        name,
+                        provider_cost_ms,
+                        timeout_msg,
+                    )
+                errors.append({"router": name, "error": timeout_msg})
             except Exception as e:
+                provider_cost_ms = int(time.time() * 1000) - future_start_ms.get(name, int(time.time() * 1000))
+                logger.info(
+                    "swap.quote timing solana_stageA_provider router={} ms={} success=false err={}",
+                    name,
+                    provider_cost_ms,
+                    str(e),
+                )
                 errors.append({"router": name, "error": str(e)})
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if not quotes:
+        logger.info(
+            "swap.quote timing solana_stageA_total_ms={} success=false tokenIn={} tokenOut={} errors={}",
+            int(time.time() * 1000) - quote_start_ms,
+            token_in_addr,
+            token_out_addr,
+            len(errors),
+        )
         return {"success": False, "error": "All Solana routers failed", "details": errors}
 
     parsed = []
@@ -1782,6 +1842,13 @@ def aggregate_solana_quote(
             errors.append({"router": router, "error": "Invalid quote response"})
 
     if not parsed:
+        logger.info(
+            "swap.quote timing solana_stageA_total_ms={} success=false tokenIn={} tokenOut={} errors={} parse_failed=true",
+            int(time.time() * 1000) - quote_start_ms,
+            token_in_addr,
+            token_out_addr,
+            len(errors),
+        )
         return {"success": False, "error": "No valid Solana quotes", "details": errors}
 
     best = max(parsed, key=lambda q: q["_amountOutDecimal"])
@@ -1789,6 +1856,15 @@ def aggregate_solana_quote(
 
     all_summary = [{k: v for k, v in pq.items() if not k.startswith("_")} for pq in parsed]
 
+    logger.info(
+        "swap.quote timing solana_stageA_total_ms={} success=true tokenIn={} tokenOut={} winner={} parsedQuotes={} errors={}",
+        int(time.time() * 1000) - quote_start_ms,
+        token_in_addr,
+        token_out_addr,
+        str(best.get("router") or ""),
+        len(parsed),
+        len(errors),
+    )
     return {
         "success": True,
         "chainType": CHAIN_TYPE_SOLANA,
