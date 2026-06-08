@@ -999,6 +999,7 @@ def _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage, sende
             "error": "Transaction would revert (slippage or price impact too high)",
         }
 
+    logger.info("okx upstream tx_data.data(raw)={}", tx_data.get("data"))
     calldata = tx_data.get("data") or ""
     to = tx_data.get("to") or ""
     value = tx_data.get("value") or "0"
@@ -1168,6 +1169,7 @@ def build_okx_exact_out_swap_tx(
     if tx_data.get("estimateRevert") is True:
         return {"success": False, "error": "Pre-swap would revert (price impact or insufficient liquidity)"}
 
+    logger.info("okx exactOut upstream tx_data.data(raw)={}", tx_data.get("data"))
     calldata = tx_data.get("data") or ""
     to = tx_data.get("to") or ""
     value = tx_data.get("value") or "0"
