@@ -213,7 +213,7 @@ def get_bitget_chain_name(chain_id: int) -> str:
 
 
 def _evm_test_okx_only() -> bool:
-    """Return True when EVM_TEST_OKX_ONLY temp flag is enabled (db_info/config)."""
+    """Return True when OKX routing is enabled by EVM_TEST_OKX_ONLY."""
     try:
         from config import Cfg
         return bool(getattr(Cfg, "EVM_TEST_OKX_ONLY", False))
@@ -675,18 +675,12 @@ def aggregate_quote(
 
     slippage_decimal = convert_slippage_to_decimal(slippage)
 
-    # Determine which routers to query based on chain support
+    # Determine which routers to query based on chain support and OKX switch
     routers_to_query = []
-    # ===== TEMP TEST START: EVM OKX-only — skip Bitget parallel quote =====
-    if not _evm_test_okx_only():
-        if chain_id in BITGET_CHAIN_MAP and chain_id not in BITGET_DISABLED_CHAIN_IDS:
-            routers_to_query.append(("bitget", bitget_quote))
-    # Original (restore when reverting EVM_TEST_OKX_ONLY):
-    # if chain_id in BITGET_CHAIN_MAP:
-    #     routers_to_query.append(("bitget", bitget_quote))
-    # ===== TEMP TEST END =====
-    # OKX supports many chains, always try
-    routers_to_query.append(("okx", okx_quote))
+    if chain_id in BITGET_CHAIN_MAP and chain_id not in BITGET_DISABLED_CHAIN_IDS:
+        routers_to_query.append(("bitget", bitget_quote))
+    if _evm_test_okx_only():
+        routers_to_query.append(("okx", okx_quote))
 
     if not routers_to_query:
         return {
@@ -816,14 +810,12 @@ def build_swap_tx(
     slippage_decimal = convert_slippage_to_decimal(slippage)
 
     if router == "bitget":
-        # ===== TEMP TEST START: EVM OKX-only — reject explicit Bitget build =====
-        if _evm_test_okx_only():
-            return {"success": False, "error": "Bitget disabled (EVM_TEST_OKX_ONLY test flag)"}
-        # ===== TEMP TEST END =====
         if chain_id in BITGET_DISABLED_CHAIN_IDS:
             return {"success": False, "error": f"Bitget disabled on chain {chain_id}"}
         return _build_bitget_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient, market)
     elif router == "okx":
+        if not _evm_test_okx_only():
+            return {"success": False, "error": "OKX disabled (EVM_TEST_OKX_ONLY=false)"}
         return _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage_decimal, sender, recipient)
     else:
         return {"success": False, "error": f"Unknown router: {router}"}
@@ -999,6 +991,7 @@ def _build_okx_swap_tx(chain_id, token_in, token_out, amount_in, slippage, sende
             "error": "Transaction would revert (slippage or price impact too high)",
         }
 
+    logger.info("okx upstream tx_data.data(raw)={}", tx_data.get("data"))
     calldata = tx_data.get("data") or ""
     to = tx_data.get("to") or ""
     value = tx_data.get("value") or "0"
@@ -1168,6 +1161,7 @@ def build_okx_exact_out_swap_tx(
     if tx_data.get("estimateRevert") is True:
         return {"success": False, "error": "Pre-swap would revert (price impact or insufficient liquidity)"}
 
+    logger.info("okx exactOut upstream tx_data.data(raw)={}", tx_data.get("data"))
     calldata = tx_data.get("data") or ""
     to = tx_data.get("to") or ""
     value = tx_data.get("value") or "0"
@@ -1392,12 +1386,10 @@ def build_approve_tx(
         return {"success": False, "error": "Native tokens do not need approval"}
 
     if router == "okx":
+        if not _evm_test_okx_only():
+            return {"success": False, "error": "OKX disabled (EVM_TEST_OKX_ONLY=false)"}
         return _build_okx_approve_tx(chain_id, token_address, approve_amount)
     elif router == "bitget":
-        # ===== TEMP TEST START: EVM OKX-only — reject Bitget approve =====
-        if _evm_test_okx_only():
-            return {"success": False, "error": "Bitget disabled (EVM_TEST_OKX_ONLY test flag)"}
-        # ===== TEMP TEST END =====
         return _build_bitget_approve_tx(chain_id, token_address, approve_amount, spender)
     else:
         return {"success": False, "error": f"Unknown router: {router}"}
@@ -1488,27 +1480,18 @@ def get_supported_routers(chain_id: int = None) -> Dict:
     """
     if chain_id is not None:
         routers = []
-        # ===== TEMP TEST START: EVM OKX-only — hide Bitget from router list =====
-        if not _evm_test_okx_only():
-            if chain_id in BITGET_CHAIN_MAP:
-                routers.append({
-                    "name": "bitget",
-                    "chainName": get_bitget_chain_name(chain_id),
-                    "supported": True,
-                })
-        # Original (restore when reverting EVM_TEST_OKX_ONLY):
-        # if chain_id in BITGET_CHAIN_MAP:
-        #     routers.append({
-        #         "name": "bitget",
-        #         "chainName": get_bitget_chain_name(chain_id),
-        #         "supported": True,
-        #     })
-        # ===== TEMP TEST END =====
-        routers.append({
-            "name": "okx",
-            "chainId": str(chain_id),
-            "supported": True,
-        })
+        if chain_id in BITGET_CHAIN_MAP:
+            routers.append({
+                "name": "bitget",
+                "chainName": get_bitget_chain_name(chain_id),
+                "supported": True,
+            })
+        if _evm_test_okx_only():
+            routers.append({
+                "name": "okx",
+                "chainId": str(chain_id),
+                "supported": True,
+            })
 
         bluechip = get_bluechip_tokens(chain_id)
         bluechip_list = [
@@ -1527,25 +1510,18 @@ def get_supported_routers(chain_id: int = None) -> Dict:
         all_chains = {}
 
         # Bitget chains
-        # ===== TEMP TEST START: EVM OKX-only — hide Bitget from all-chains list =====
-        if not _evm_test_okx_only():
-            for cid, cname in BITGET_CHAIN_MAP.items():
-                if cid not in all_chains:
-                    all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
-                all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
-        # Original (restore when reverting EVM_TEST_OKX_ONLY):
-        # for cid, cname in BITGET_CHAIN_MAP.items():
-        #     if cid not in all_chains:
-        #         all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
-        #     all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
-        # ===== TEMP TEST END =====
-
-        # OKX supports many chains, add some common ones
-        okx_chains = [1, 56, 137, 8453, 42161, 10, 250, 43114, 324, 59144, 5000, 534352, 146, 130, 143]
-        for cid in okx_chains:
+        for cid, cname in BITGET_CHAIN_MAP.items():
             if cid not in all_chains:
                 all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
-            all_chains[cid]["routers"].append({"name": "okx", "chainId": str(cid)})
+            all_chains[cid]["routers"].append({"name": "bitget", "chainName": cname})
+
+        # OKX supports many chains, add some common ones (enabled only when switch is true)
+        if _evm_test_okx_only():
+            okx_chains = [1, 56, 137, 8453, 42161, 10, 250, 43114, 324, 59144, 5000, 534352, 146, 130, 143]
+            for cid in okx_chains:
+                if cid not in all_chains:
+                    all_chains[cid] = {"chainId": cid, "routers": [], "bluechipTokens": []}
+                all_chains[cid]["routers"].append({"name": "okx", "chainId": str(cid)})
 
         # Add bluechip info
         for cid in all_chains:
