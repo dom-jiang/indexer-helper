@@ -818,7 +818,7 @@ def is_base64(s):
         return False
 
 
-def get_near_block_height():
+def get_latest_near_block():
     url = Cfg.LST_RPC
     payload = {
         "jsonrpc": "2.0",
@@ -831,27 +831,80 @@ def get_near_block_height():
         response = requests.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
-        return data['result']['header']['height']
+        header = data['result']['header']
+        return header['height'], header['timestamp']
+    except requests.exceptions.RequestException as e:
+        print(f"reqest: {e}")
+        return None, None
+    except KeyError:
+        print("error data")
+        return None, None
+
+
+def get_near_block_height():
+    height, _ = get_latest_near_block()
+    return height
+
+
+def get_near_block_timestamp_ns(block_height, cache=None):
+    if cache is not None and block_height in cache:
+        return cache[block_height]
+    url = Cfg.LST_RPC
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "block",
+        "params": {"block_id": int(block_height)}
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        timestamp = int(data['result']['header']['timestamp'])
+        if cache is not None:
+            cache[block_height] = timestamp
+        return timestamp
     except requests.exceptions.RequestException as e:
         print(f"reqest: {e}")
         return None
-    except KeyError:
+    except (KeyError, TypeError, ValueError):
         print("error data")
         return None
 
 
-def get_old_block(day_number):
-    current_block = get_near_block_height()
-    if current_block is None:
-        return None
-    ago_block = current_block - (Cfg.LST_AGO_DAY * day_number)
-    print("current_block:", current_block)
-    return ago_block
+def find_block_at_or_before(target_ts_ns, latest_height, latest_ts_ns, cache=None):
+    if target_ts_ns >= latest_ts_ns:
+        return int(latest_height)
+
+    lo, hi = 1, int(latest_height)
+    best = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        ts = get_near_block_timestamp_ns(mid, cache)
+        if ts is None:
+            return None
+        if ts <= target_ts_ns:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def get_price_blocks(day_number):
+    latest_height, latest_ts_ns = get_latest_near_block()
+    if latest_height is None or latest_ts_ns is None:
+        return None, None
+    target_old_ts_ns = int(latest_ts_ns) - int(day_number * 24 * 60 * 60 * 1_000_000_000)
+    old_block = find_block_at_or_before(target_old_ts_ns, latest_height, latest_ts_ns, {})
+    print("current_block:", latest_height)
+    print("day_ago_block_h:", old_block)
+    return int(latest_height), old_block
 
 
 def get_staking_token_price(day_number, contract_id, method_name="ft_price"):
-    old_block_h = get_old_block(day_number)
-    if old_block_h is None:
+    new_block_h, old_block_h = get_price_blocks(day_number)
+    if new_block_h is None or old_block_h is None:
         return None
     if not contract_id:
         print("get_staking_token_price: empty contract_id")
@@ -867,7 +920,7 @@ def get_staking_token_price(day_number, contract_id, method_name="ft_price"):
             "account_id": contract_id,
             "method_name": method_name,
             "args_base64": "e30=",
-            "finality": "optimistic"
+            "block_id": new_block_h
         },
         "id": 0,
         "jsonrpc": "2.0"
@@ -885,7 +938,6 @@ def get_staking_token_price(day_number, contract_id, method_name="ft_price"):
         "id": 0,
         "jsonrpc": "2.0"
     }
-    print("day_ago_block_h:", old_block_h)
     try:
         response_n = requests.post(url, json=new_price)
         response_n.raise_for_status()
