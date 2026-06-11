@@ -417,14 +417,14 @@ def get_whitelist_tokens():
 
 def get_rnear_apy(day_number):
     r = redis.StrictRedis(connection_pool=pool)
-    ret = r.get("REDIS_KEY_RNEAR_APY" + str(day_number))
+    ret = r.get("REDIS_KEY_RNEAR_APY_V2" + str(day_number))
     r.close()
     return ret
 
 
 def add_rnear_apy(value, day_number):
     r = redis.StrictRedis(connection_pool=pool)
-    r.set("REDIS_KEY_RNEAR_APY" + str(day_number), value, 600)
+    r.set("REDIS_KEY_RNEAR_APY_V2" + str(day_number), value, 600)
     r.close()
 
 

@@ -1573,7 +1573,7 @@ def handel_rnear_apy():
             }
             return ret
         new_p, old_p = price_result
-        apy = (int(new_p) - int(old_p)) / (int(old_p) / (10 ** 24)) / (10 ** 24) / day_number * 365 * 100
+        apy = ((int(new_p) / int(old_p)) ** (365 / day_number) - 1) * 100
         apy = '{:.6f}'.format(apy)
         add_rnear_apy(apy, day_number)
     ret = {
