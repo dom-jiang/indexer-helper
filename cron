@@ -38,4 +38,4 @@
 * * * * * /indexer-helper/backends/backend_mca_withdraw_job.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_near_intents_status_checker.sh > /dev/null
 * * * * * /indexer-helper/backends/backend_swap_status_checker.sh > /dev/null
-01 0 * * * /indexer-helper/backends/backend_apy_report_collector.sh > /dev/null
+01 * * * * /indexer-helper/backends/backend_apy_report_collector.sh > /dev/null

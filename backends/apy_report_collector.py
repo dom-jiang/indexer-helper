@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import requests
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 sys.path.append("../")
 
@@ -34,7 +34,7 @@ def _resolve_rnear_contract() -> str:
 
 
 def _calc_apy(new_price: str, old_price: str, day_number: int = 1) -> str:
-    apy = (int(new_price) - int(old_price)) / (int(old_price) / (10 ** 24)) / (10 ** 24) / day_number * 365 * 100
+    apy = ((int(new_price) / int(old_price)) ** (365 / day_number) - 1) * 100
     return "{:.6f}".format(apy)
 
 
@@ -128,13 +128,13 @@ def _query_contract_price_at_block(contract_id: str, method_name: str, block_hei
         return None
 
 
-def _build_target_timestamps_ns(report_date: str) -> tuple[int, int]:
-    # Use end-of-day UTC for daily snapshots, then look back APY_LOOKBACK_DAYS.
-    end_of_day_utc = datetime.strptime(report_date, "%Y-%m-%d").replace(
-        hour=23, minute=59, second=59, tzinfo=timezone.utc
-    )
-    start_utc = end_of_day_utc - timedelta(days=APY_LOOKBACK_DAYS)
-    return int(end_of_day_utc.timestamp() * 1_000_000_000), int(start_utc.timestamp() * 1_000_000_000)
+def _validate_report_date(report_date: str) -> bool:
+    try:
+        datetime.strptime(report_date, "%Y-%m-%d")
+        return True
+    except Exception as e:
+        print(f"invalid report_date format ({report_date}), expected YYYY-MM-DD: {e}")
+        return False
 
 
 def collect_apy_daily(network_id: str, report_date: str) -> int:
@@ -145,19 +145,20 @@ def collect_apy_daily(network_id: str, report_date: str) -> int:
         print("failed to resolve latest block")
         return 0
 
-    try:
-        target_new_ts_ns, target_old_ts_ns = _build_target_timestamps_ns(report_date)
-    except Exception as e:
-        print(f"invalid report_date format ({report_date}), expected YYYY-MM-DD: {e}")
+    if not _validate_report_date(report_date):
         return 0
+
     ts_cache = {}
-    new_height = _find_block_at_or_before(target_new_ts_ns, latest_height, latest_ts_ns, ts_cache)
+    new_height = int(latest_height)
+    target_new_ts_ns = int(latest_ts_ns)
+    target_old_ts_ns = target_new_ts_ns - int(timedelta(days=APY_LOOKBACK_DAYS).total_seconds() * 1_000_000_000)
     old_height = _find_block_at_or_before(target_old_ts_ns, latest_height, latest_ts_ns, ts_cache)
     if new_height is None or old_height is None:
         print("failed to resolve target block heights")
         return 0
     print(
         f"report_date={report_date}, lookback_days={APY_LOOKBACK_DAYS}, "
+        f"new_ts_ns={target_new_ts_ns}, old_ts_ns={target_old_ts_ns}, "
         f"new_height={new_height}, old_height={old_height}"
     )
 
