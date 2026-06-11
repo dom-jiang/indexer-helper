@@ -23,8 +23,11 @@ Admin:
 """
 
 import hashlib
+import json
 import random
 import secrets
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, g
 from loguru import logger
 
@@ -57,6 +60,16 @@ from boss.rate_limiter import (
 )
 from boss.email_utils import send_verification_code, is_valid_email
 from config import Cfg
+from redis_provider import get_chain_tokens_with_prices
+from nearintents_utils import CHAIN_TO_1CLICK
+from message import send_message
+from db_provider import (
+    query_boss_fee_balance_by_app,
+    insert_boss_fee_withdraw_request,
+    query_boss_fee_withdraw_requests,
+    get_boss_fee_withdraw_request_by_id,
+    update_boss_fee_withdraw_request,
+)
 
 _aes_key = getattr(Cfg, "CRYPTO_AES_KEY", "") or ""
 BOSS_SESSION_SECRET = hashlib.sha256(f"boss_session_{_aes_key}".encode()).hexdigest()
@@ -405,6 +418,213 @@ def get_token_usage(token_id):
     return jsonify({"code": 0, "msg": "success", "data": {"usage": usage, "limits": limits_map}})
 
 
+def _resolve_withdraw_min_usd() -> Decimal:
+    raw = getattr(Cfg, "BOSS_FEE_WITHDRAW_MIN_USD", "10")
+    try:
+        val = Decimal(str(raw))
+        if val < 0:
+            return Decimal("10")
+        return val
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("10")
+
+
+_WITHDRAW_MIN_USD = _resolve_withdraw_min_usd()
+
+
+def _asset_to_near_contract(asset: str) -> str:
+    a = str(asset or "").strip()
+    if a.lower().startswith("nep141:"):
+        return a[7:]
+    return a
+
+
+def _safe_decimal(v, default="0") -> Decimal:
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
+def _pow10(decimals: int) -> Decimal:
+    if decimals <= 0:
+        return Decimal("1")
+    return Decimal(10) ** decimals
+
+
+def _near_price_map() -> dict:
+    data = get_chain_tokens_with_prices("near", max_age_seconds=600) or {}
+    return {str(k).lower(): v for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _format_fee_balance_rows(rows: list) -> list:
+    prices = _near_price_map()
+    out = []
+    for row in rows or []:
+        asset = str(row.get("fee_token_asset") or "")
+        symbol = str(row.get("fee_token_symbol") or "")
+        decimals = int(row.get("fee_token_decimals") or 0)
+        accrued = int(_safe_decimal(row.get("total_accrued"), "0"))
+        locked = int(_safe_decimal(row.get("total_locked"), "0"))
+        available = max(0, int(_safe_decimal(row.get("total_available"), "0")))
+        contract = _asset_to_near_contract(asset).lower()
+        token_info = prices.get(contract) or {}
+        price = _safe_decimal((token_info or {}).get("price"), "0")
+        amount_hr = (Decimal(available) / _pow10(decimals)) if available > 0 else Decimal("0")
+        usd = amount_hr * price if price > 0 else Decimal("0")
+        out.append(
+            {
+                "asset": asset,
+                "symbol": symbol,
+                "decimals": decimals,
+                "totalAccrued": str(accrued),
+                "totalLocked": str(locked),
+                "totalAvailable": str(available),
+                "availableUsd": str(usd.quantize(Decimal("0.000001")) if usd > 0 else Decimal("0")),
+                "canWithdraw": bool(available > 0 and usd >= _WITHDRAW_MIN_USD),
+            }
+        )
+    return out
+
+
+def _normalize_withdraw_rows(rows: list) -> list:
+    out = []
+    for row in rows or []:
+        item = dict(row)
+        for k in ("created_at", "updated_at", "reviewed_at"):
+            if item.get(k) is not None:
+                item[k] = str(item.get(k))
+        if isinstance(item.get("status_response"), str):
+            try:
+                item["status_response"] = json.loads(item["status_response"])
+            except Exception:
+                pass
+        out.append(item)
+    return out
+
+
+def _user_app_token_or_none():
+    conn = _conn()
+    try:
+        return get_user_api_token(conn, g.boss_user_id)
+    finally:
+        conn.close()
+
+
+def _notify_boss_withdraw(event_type: str, content: dict) -> None:
+    try:
+        payload = dict(content or {})
+        payload.setdefault("source", "stats")
+        send_message(event_type, payload)
+    except Exception as e:
+        logger.warning(f"boss withdraw notify failed: {e}")
+
+
+@boss_bp.route("/fee/balances", methods=["GET"])
+@boss_login_required(BOSS_SESSION_SECRET)
+def fee_balances():
+    token = _user_app_token_or_none()
+    if not token:
+        return jsonify({"code": 0, "msg": "success", "data": {"appId": "", "tokens": []}})
+    app_id = str(token.get("app_id") or "")
+    rows = query_boss_fee_balance_by_app(Cfg.NETWORK_ID, app_id)
+    return jsonify({"code": 0, "msg": "success", "data": {"appId": app_id, "tokens": _format_fee_balance_rows(rows)}})
+
+
+@boss_bp.route("/fee/withdraw-options", methods=["GET"])
+@boss_login_required(BOSS_SESSION_SECRET)
+def fee_withdraw_options():
+    chains = sorted(set(CHAIN_TO_1CLICK.values()))
+    return jsonify({"code": 0, "msg": "success", "data": {"chains": chains, "minUsd": str(_WITHDRAW_MIN_USD)}})
+
+
+@boss_bp.route("/fee/withdraw-requests", methods=["POST"])
+@boss_login_required(BOSS_SESSION_SECRET)
+def create_fee_withdraw_request():
+    body = request.get_json(silent=True) or {}
+    token_asset = str(body.get("tokenAsset") or body.get("asset") or "").strip()
+    amount = str(body.get("amount") or "").strip()
+    to_chain = str(body.get("toChain") or "").strip()
+    to_address = str(body.get("toAddress") or body.get("recipient") or "").strip()
+    if not token_asset or not amount or not to_chain or not to_address:
+        return jsonify({"code": -1, "msg": "tokenAsset, amount, toChain, toAddress are required"})
+    try:
+        amount_int = int(amount)
+    except ValueError:
+        return jsonify({"code": -1, "msg": "amount must be integer smallest-unit string"})
+    if amount_int <= 0:
+        return jsonify({"code": -1, "msg": "amount must be > 0"})
+
+    token = _user_app_token_or_none()
+    if not token:
+        return jsonify({"code": -1, "msg": "Please create API token first"})
+    app_id = str(token.get("app_id") or "")
+    rows = query_boss_fee_balance_by_app(Cfg.NETWORK_ID, app_id)
+    formatted = _format_fee_balance_rows(rows)
+    selected = next((x for x in formatted if str(x.get("asset")) == token_asset), None)
+    if not selected:
+        return jsonify({"code": -1, "msg": "tokenAsset not found in your fee balances"})
+    available = int(selected.get("totalAvailable") or "0")
+    if amount_int > available:
+        return jsonify({"code": -1, "msg": "amount exceeds available balance"})
+
+    decimals = int(selected.get("decimals") or 0)
+    prices = _near_price_map()
+    contract = _asset_to_near_contract(token_asset).lower()
+    price = _safe_decimal((prices.get(contract) or {}).get("price"), "0")
+    req_usd = (Decimal(amount_int) / _pow10(decimals)) * price if price > 0 else Decimal("0")
+    if req_usd < _WITHDRAW_MIN_USD:
+        return jsonify({"code": -1, "msg": f"Withdrawal amount must be >= {_WITHDRAW_MIN_USD} USD by current price"})
+
+    req_id = insert_boss_fee_withdraw_request(
+        Cfg.NETWORK_ID,
+        app_id=app_id,
+        boss_user_id=g.boss_user_id,
+        fee_token_asset=token_asset,
+        fee_token_symbol=selected.get("symbol"),
+        fee_token_decimals=decimals,
+        amount=str(amount_int),
+        amount_usd=str(req_usd.quantize(Decimal("0.000001"))),
+        to_chain=to_chain,
+        to_address=to_address,
+    )
+    _notify_boss_withdraw(
+        "alert",
+        {
+            "event": "withdraw_apply",
+            "app_id": app_id,
+            "boss_user_id": g.boss_user_id,
+            "request_id": req_id,
+            "token_asset": token_asset,
+            "amount_smallest": str(amount_int),
+            "to_chain": to_chain,
+            "to_address": to_address,
+            "amount_usd": str(req_usd.quantize(Decimal("0.000001"))),
+        },
+    )
+    return jsonify({"code": 0, "msg": "success", "data": {"id": req_id, "status": "PENDING"}})
+
+
+@boss_bp.route("/fee/withdraw-requests", methods=["GET"])
+@boss_login_required(BOSS_SESSION_SECRET)
+def list_fee_withdraw_requests():
+    page = request.args.get("page", 1, type=int)
+    page_size = request.args.get("pageSize", 20, type=int)
+    status = (request.args.get("status") or "").strip().upper() or None
+    token = _user_app_token_or_none()
+    if not token:
+        return jsonify({"code": 0, "msg": "success", "data": {"list": [], "total": 0, "page": page, "pageSize": page_size}})
+    app_id = str(token.get("app_id") or "")
+    rows, total = query_boss_fee_withdraw_requests(
+        Cfg.NETWORK_ID,
+        app_id=app_id,
+        status=status,
+        page_number=page,
+        page_size=page_size,
+    )
+    return jsonify({"code": 0, "msg": "success", "data": {"list": _normalize_withdraw_rows(rows), "total": total, "page": page, "pageSize": page_size}})
+
+
 # ── Admin: User management ───────────────────────────────
 
 @boss_bp.route("/admin/users", methods=["GET"])
@@ -543,3 +763,47 @@ def admin_get_token_usage(app_id):
     limits_map = resolve_rate_limits(limits)
 
     return jsonify({"code": 0, "msg": "success", "data": {"usage": usage, "limits": limits_map}})
+
+
+@boss_bp.route("/admin/fee/withdraw-requests", methods=["GET"])
+@boss_admin_required(BOSS_SESSION_SECRET)
+def admin_list_fee_withdraw_requests():
+    page = request.args.get("page", 1, type=int)
+    page_size = request.args.get("pageSize", 20, type=int)
+    status = (request.args.get("status") or "").strip().upper() or None
+    rows, total = query_boss_fee_withdraw_requests(
+        Cfg.NETWORK_ID,
+        app_id=None,
+        status=status,
+        page_number=page,
+        page_size=page_size,
+    )
+    return jsonify({"code": 0, "msg": "success", "data": {"list": _normalize_withdraw_rows(rows), "total": total, "page": page, "pageSize": page_size}})
+
+
+@boss_bp.route("/admin/fee/withdraw-requests/<int:request_id>/review", methods=["POST"])
+@boss_admin_required(BOSS_SESSION_SECRET)
+def admin_review_fee_withdraw_request(request_id):
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action") or "").strip().lower()
+    note = str(body.get("note") or "").strip()
+    if action not in ("approve", "reject"):
+        return jsonify({"code": -1, "msg": "action must be approve or reject"})
+
+    row = get_boss_fee_withdraw_request_by_id(Cfg.NETWORK_ID, request_id)
+    if not row:
+        return jsonify({"code": -1, "msg": "request not found"}), 404
+    if str(row.get("status") or "").upper() != "PENDING":
+        return jsonify({"code": -1, "msg": "only PENDING request can be reviewed"})
+
+    new_status = "APPROVED" if action == "approve" else "REJECTED"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    update_boss_fee_withdraw_request(
+        Cfg.NETWORK_ID,
+        request_id,
+        status=new_status,
+        review_note=note,
+        reviewed_by_user_id=g.boss_user_id,
+        reviewed_at=now,
+    )
+    return jsonify({"code": 0, "msg": "success", "data": {"id": request_id, "status": new_status}})

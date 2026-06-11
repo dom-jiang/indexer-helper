@@ -2428,6 +2428,7 @@ def unified_quote(
     sender: str = "",
     recipient: str = "",
     mca: Optional[Dict] = None,
+    oneclick_extensions_override: Optional[Dict] = None,
 ) -> Dict:
     """
     Unified quote entry point.
@@ -2489,6 +2490,10 @@ def unified_quote(
             return {"code": -1, "msg": crm_err, "data": None}
 
     oneclick_ext = _mca_deposit_extensions(mca_enriched)
+    if isinstance(oneclick_extensions_override, dict) and oneclick_extensions_override:
+        merged_ext = dict(oneclick_ext or {})
+        merged_ext.update(oneclick_extensions_override)
+        oneclick_ext = merged_ext
 
     near_dep_intents = (not _is_cross_chain(from_chain, to_chain)) and near_same_chain_mca_deposit_intents_applies(
         from_chain, to_chain, token_in_info, token_out_info, mca_enriched
@@ -2537,6 +2542,7 @@ def unified_quote(
                 sender,
                 recipient,
                 mca_block=mca_enriched,
+                oneclick_extensions=oneclick_ext,
             )
         elif near_withdraw_dir:
             if not ((mca_enriched or {}).get("mcaAccountId") or (mca_enriched or {}).get("mca_id")):
@@ -2574,6 +2580,7 @@ def unified_quote(
                 sender,
                 recipient,
                 mca_block=mca_enriched,
+                oneclick_extensions=oneclick_ext,
             )
         else:
             resp = _same_chain_quote(from_chain, token_in_info, token_out_info, amount_in, slippage, sender, recipient)
@@ -2588,6 +2595,7 @@ def unified_quote(
             sender,
             recipient,
             mca_block=mca_enriched,
+            oneclick_extensions=oneclick_ext,
         )
     route_cost_ms = _now_ms() - route_start_ms
 
@@ -2745,6 +2753,7 @@ def _cross_chain_quote(
     sender: str,
     recipient: str,
     mca_block: Optional[Dict] = None,
+    oneclick_extensions: Optional[Dict] = None,
 ) -> Dict:
     """Run NearIntents direct/preswap quotes and return best.
 
@@ -2753,7 +2762,8 @@ def _cross_chain_quote(
     (Ref SmartRouter / SmartX → intermediate → 1Click).
     """
     cross_quote_start_ms = _now_ms()
-    oneclick_extensions = _mca_deposit_extensions(mca_block)
+    if not (isinstance(oneclick_extensions, dict) and oneclick_extensions):
+        oneclick_extensions = _mca_deposit_extensions(mca_block)
     near_result = None
     errors = []
 
@@ -2969,6 +2979,7 @@ def unified_swap(
     is_cross_chain: Optional[bool] = None,
     tx_type: str = "",
     multi_addr: str = "",
+    oneclick_extensions_override: Optional[Dict] = None,
 ) -> Dict:
     """
     Unified swap (build tx) entry point.
@@ -3029,6 +3040,12 @@ def unified_swap(
         if crm_err:
             return {"code": -1, "msg": crm_err, "data": None}
 
+    oneclick_ext = _mca_deposit_extensions(mca_oc)
+    if isinstance(oneclick_extensions_override, dict) and oneclick_extensions_override:
+        merged_ext = dict(oneclick_ext or {})
+        merged_ext.update(oneclick_extensions_override)
+        oneclick_ext = merged_ext
+
     if not _is_cross_chain(from_chain, to_chain):
         if isinstance(mca_oc, dict) and mca_oc and near_same_chain_mca_deposit_intents_applies(
             from_chain, to_chain, token_in_info, token_out_info, mca_oc
@@ -3073,7 +3090,7 @@ def unified_swap(
                 quote_min_amount_out=quote_min_amount_out,
                 pre_swap=pre_swap,
                 bridge=bridge,
-                oneclick_extensions=_mca_deposit_extensions(mca_oc),
+                oneclick_extensions=oneclick_ext,
             )
         if isinstance(mca_oc, dict) and mca_oc and near_same_chain_mca_withdraw_applies(
             from_chain, to_chain, token_in_info, token_out_info, mca_oc
@@ -3130,7 +3147,7 @@ def unified_swap(
             quote_min_amount_out=quote_min_amount_out,
             pre_swap=pre_swap,
             bridge=bridge,
-            oneclick_extensions=_mca_deposit_extensions(mca_oc),
+            oneclick_extensions=oneclick_ext,
         )
 
 

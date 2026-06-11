@@ -4069,6 +4069,62 @@ CREATE TABLE IF NOT EXISTS swap_transactions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
+BOSS_APP_FEE_LEDGER_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS boss_app_fee_ledger (
+    id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+    swap_transaction_id   BIGINT NOT NULL,
+    app_id                VARCHAR(64)  NOT NULL,
+    boss_user_id          BIGINT       DEFAULT NULL,
+    from_hash             VARCHAR(128) DEFAULT NULL,
+    deposit_address       VARCHAR(128) DEFAULT NULL,
+    router                VARCHAR(64)  DEFAULT NULL,
+    fee_token_asset       VARCHAR(256) DEFAULT NULL,
+    fee_token_symbol      VARCHAR(64)  DEFAULT NULL,
+    fee_token_decimals    INT          DEFAULT NULL,
+    bridge_amount_in      VARCHAR(78)  NOT NULL,
+    total_fee_bps         INT          NOT NULL,
+    app_fee_bps           INT          NOT NULL DEFAULT 0,
+    platform_base_fee_bps INT          NOT NULL DEFAULT 0,
+    total_fee_amount      VARCHAR(78)  NOT NULL,
+    partner_fee_amount    VARCHAR(78)  NOT NULL,
+    platform_fee_amount   VARCHAR(78)  NOT NULL,
+    status_response       TEXT,
+    created_at            DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_swap_transaction_id (swap_transaction_id),
+    INDEX idx_app_id_created (app_id, created_at),
+    INDEX idx_from_hash (from_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+BOSS_FEE_WITHDRAW_REQUEST_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS boss_fee_withdraw_request (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    app_id              VARCHAR(64)  NOT NULL,
+    boss_user_id        BIGINT       DEFAULT NULL,
+    fee_token_asset     VARCHAR(256) NOT NULL,
+    fee_token_symbol    VARCHAR(64)  DEFAULT NULL,
+    fee_token_decimals  INT          DEFAULT NULL,
+    amount              VARCHAR(78)  NOT NULL,
+    amount_usd          VARCHAR(64)  DEFAULT NULL,
+    to_chain            VARCHAR(64)  NOT NULL,
+    to_address          VARCHAR(256) NOT NULL,
+    status              VARCHAR(32)  NOT NULL DEFAULT 'PENDING',
+    review_note         VARCHAR(512) DEFAULT NULL,
+    reviewed_by_user_id BIGINT       DEFAULT NULL,
+    reviewed_at         DATETIME     DEFAULT NULL,
+    order_id            VARCHAR(256) DEFAULT NULL,
+    payout_tx_hash      VARCHAR(128) DEFAULT NULL,
+    payout_to_hash      VARCHAR(128) DEFAULT NULL,
+    status_response     TEXT,
+    last_error          TEXT,
+    created_at          DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_app_created (app_id, created_at),
+    INDEX idx_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 
 def _ensure_swap_transactions_columns(cursor):
     """Idempotently add missing columns / indexes on an existing table.
@@ -4116,6 +4172,290 @@ def ensure_swap_transactions_table(network_id):
     except Exception as e:
         db_conn.rollback()
         logger.warning(f"ensure_swap_transactions_table error: {e}")
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def ensure_boss_app_fee_ledger_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(BOSS_APP_FEE_LEDGER_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        logger.warning(f"ensure_boss_app_fee_ledger_table error: {e}")
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def ensure_boss_fee_withdraw_request_table(network_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(BOSS_FEE_WITHDRAW_REQUEST_CREATE_SQL)
+        db_conn.commit()
+    except Exception as e:
+        db_conn.rollback()
+        logger.warning(f"ensure_boss_fee_withdraw_request_table error: {e}")
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_boss_app_fee_ledger(network_id, **fields):
+    """
+    Insert a fee-ledger row once per swap_transaction_id.
+    Idempotent: duplicate swap_transaction_id returns existing row id.
+    """
+    required = ("swap_transaction_id", "app_id", "bridge_amount_in", "total_fee_bps", "total_fee_amount")
+    for key in required:
+        if fields.get(key) in (None, ""):
+            raise ValueError(f"{key} is required")
+
+    columns = [
+        "swap_transaction_id", "app_id", "boss_user_id",
+        "from_hash", "deposit_address", "router",
+        "fee_token_asset", "fee_token_symbol", "fee_token_decimals",
+        "bridge_amount_in",
+        "total_fee_bps", "app_fee_bps", "platform_base_fee_bps",
+        "total_fee_amount", "partner_fee_amount", "platform_fee_amount",
+        "status_response",
+    ]
+    values = [fields.get(c) for c in columns]
+    if isinstance(fields.get("status_response"), (dict, list)):
+        values[-1] = json.dumps(fields.get("status_response"), ensure_ascii=False)
+    placeholders = ", ".join(["%s"] * len(columns))
+    sql = f"INSERT INTO boss_app_fee_ledger ({', '.join(columns)}) VALUES ({placeholders})"
+
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.lastrowid
+    except pymysql.err.IntegrityError:
+        db_conn.rollback()
+        cursor.execute(
+            "SELECT id FROM boss_app_fee_ledger WHERE swap_transaction_id = %s LIMIT 1",
+            (fields.get("swap_transaction_id"),),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row[0] if isinstance(row, (tuple, list)) else row.get("id")
+        raise
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_boss_app_fee_ledger error: {e}")
+        raise
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_boss_fee_balance_by_app(network_id, app_id: str):
+    """Return token-level accrued/locked/available partner fee balances for one app_id."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    sql = """
+    SELECT
+        l.fee_token_asset,
+        l.fee_token_symbol,
+        l.fee_token_decimals,
+        SUM(CAST(l.partner_fee_amount AS DECIMAL(65,0))) AS total_accrued,
+        COALESCE(w.locked_amount, 0) AS total_locked,
+        SUM(CAST(l.partner_fee_amount AS DECIMAL(65,0))) - COALESCE(w.locked_amount, 0) AS total_available
+    FROM boss_app_fee_ledger l
+    LEFT JOIN (
+        SELECT
+            app_id,
+            fee_token_asset,
+            SUM(CAST(amount AS DECIMAL(65,0))) AS locked_amount
+        FROM boss_fee_withdraw_request
+        WHERE status IN ('PENDING', 'APPROVED', 'PROCESSING', 'SUCCESS')
+        GROUP BY app_id, fee_token_asset
+    ) w ON w.app_id = l.app_id AND w.fee_token_asset = l.fee_token_asset
+    WHERE l.app_id = %s
+    GROUP BY l.fee_token_asset, l.fee_token_symbol, l.fee_token_decimals, w.locked_amount
+    ORDER BY total_available DESC
+    """
+    try:
+        cursor.execute(sql, (app_id,))
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"query_boss_fee_balance_by_app error: {e}")
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_boss_fee_withdraw_request(
+    network_id,
+    *,
+    app_id,
+    boss_user_id,
+    fee_token_asset,
+    fee_token_symbol,
+    fee_token_decimals,
+    amount,
+    amount_usd,
+    to_chain,
+    to_address,
+):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    sql = """
+    INSERT INTO boss_fee_withdraw_request (
+        app_id, boss_user_id, fee_token_asset, fee_token_symbol, fee_token_decimals,
+        amount, amount_usd, to_chain, to_address, status, created_at, updated_at
+    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',NOW(),NOW())
+    """
+    try:
+        cursor.execute(
+            sql,
+            (
+                app_id, boss_user_id, fee_token_asset, fee_token_symbol, fee_token_decimals,
+                str(amount), str(amount_usd) if amount_usd is not None else None,
+                str(to_chain), str(to_address),
+            ),
+        )
+        db_conn.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"insert_boss_fee_withdraw_request error: {e}")
+        raise
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def query_boss_fee_withdraw_requests(
+    network_id,
+    *,
+    app_id=None,
+    status=None,
+    page_number=1,
+    page_size=20,
+):
+    page_number = max(1, int(page_number or 1))
+    page_size = max(1, min(200, int(page_size or 20)))
+    offset = (page_number - 1) * page_size
+    where = []
+    params = []
+    if app_id:
+        where.append("app_id = %s")
+        params.append(str(app_id))
+    if status:
+        where.append("status = %s")
+        params.append(str(status).upper())
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql_data = (
+        "SELECT * FROM boss_fee_withdraw_request" + where_sql +
+        " ORDER BY id DESC LIMIT %s OFFSET %s"
+    )
+    sql_count = "SELECT COUNT(*) AS total FROM boss_fee_withdraw_request" + where_sql
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql_data, tuple(params + [page_size, offset]))
+        rows = cursor.fetchall() or []
+        cursor.execute(sql_count, tuple(params))
+        total = (cursor.fetchone() or {}).get("total", 0)
+        return rows, int(total)
+    except Exception as e:
+        logger.error(f"query_boss_fee_withdraw_requests error: {e}")
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_boss_fee_withdraw_request_by_id(network_id, request_id):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT * FROM boss_fee_withdraw_request WHERE id = %s LIMIT 1", (request_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"get_boss_fee_withdraw_request_by_id error: {e}")
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_boss_fee_withdraw_request(network_id, request_id, **kwargs):
+    allowed = {
+        "status", "review_note", "reviewed_by_user_id", "reviewed_at",
+        "order_id", "payout_tx_hash", "payout_to_hash", "status_response", "last_error",
+    }
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed:
+            continue
+        if key == "status":
+            value = str(value).upper()
+        if key == "status_response" and isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields.append(f"{key} = %s")
+        params.append(value)
+    if not fields:
+        return 0
+    fields.append("updated_at = NOW()")
+    params.append(request_id)
+    sql = f"UPDATE boss_fee_withdraw_request SET {', '.join(fields)} WHERE id = %s"
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(params))
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"update_boss_fee_withdraw_request error: {e}")
+        return 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def list_boss_fee_withdraw_requests_by_status(network_id, status: str, limit=50):
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            "SELECT * FROM boss_fee_withdraw_request WHERE status = %s ORDER BY id ASC LIMIT %s",
+            (str(status).upper(), int(limit)),
+        )
+        return cursor.fetchall() or []
+    except Exception as e:
+        logger.error(f"list_boss_fee_withdraw_requests_by_status error: {e}")
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def claim_boss_fee_withdraw_request(network_id, request_id, from_status="APPROVED", to_status="PROCESSING"):
+    """Atomic status transition; returns affected rows."""
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE boss_fee_withdraw_request SET status = %s, updated_at = NOW() WHERE id = %s AND status = %s",
+            (str(to_status).upper(), request_id, str(from_status).upper()),
+        )
+        db_conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        db_conn.rollback()
+        logger.error(f"claim_boss_fee_withdraw_request error: {e}")
+        return 0
     finally:
         cursor.close()
         db_conn.close()

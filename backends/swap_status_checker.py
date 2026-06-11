@@ -15,10 +15,15 @@ sys.path.append('../')
 
 import json
 import time
+from decimal import Decimal, InvalidOperation
 from loguru import logger
 
 from config import Cfg
-from db_provider import get_pending_cross_chain_swaps, update_swap_transaction
+from db_provider import (
+    get_pending_cross_chain_swaps,
+    update_swap_transaction,
+    insert_boss_app_fee_ledger,
+)
 from nearintents_utils import nearintents_order_status
 from omnibridge_utils import omni_get_order_status
 
@@ -86,6 +91,122 @@ def _extract_actual_out(router: str, status_data: dict) -> str:
     return ""
 
 
+def _extract_bridge_amount_in(router: str, status_data: dict) -> str:
+    if not isinstance(status_data, dict):
+        return ""
+    if router in _NEARINTENTS_LIKE_ROUTERS:
+        swap = status_data.get("swapDetails") or {}
+        for key in ("amountIn", "originAmount", "depositAmount"):
+            v = swap.get(key)
+            if v not in (None, ""):
+                return str(v)
+    if router == "omnibridge":
+        return str(status_data.get("amountIn") or status_data.get("sentAmount") or "")
+    return ""
+
+
+def _extract_fee_asset(router: str, status_data: dict) -> dict:
+    if not isinstance(status_data, dict):
+        return {}
+    if router in _NEARINTENTS_LIKE_ROUTERS:
+        swap = status_data.get("swapDetails") or {}
+        token = swap.get("originToken") or {}
+        return {
+            "asset": str(swap.get("originAsset") or swap.get("tokenIn") or ""),
+            "symbol": str(token.get("symbol") or ""),
+            "decimals": token.get("decimals"),
+        }
+    return {}
+
+
+def _extract_boss_fee_meta(row: dict) -> dict:
+    raw = row.get("extra")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    meta = raw.get("bossFeeMeta") if isinstance(raw.get("bossFeeMeta"), dict) else {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _to_int(val, default=0):
+    try:
+        return int(str(val))
+    except Exception:
+        return int(default)
+
+
+def _as_decimal_ratio(val, default: Decimal) -> Decimal:
+    try:
+        d = Decimal(str(val))
+        if d <= 0 or d >= 1:
+            return default
+        return d
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
+def _try_accrue_boss_fee(network_id: str, row: dict, router: str, status_data: dict) -> None:
+    meta = _extract_boss_fee_meta(row)
+    app_id = str(meta.get("bossAppId") or "").strip()
+    if not app_id:
+        return
+
+    app_fee_bps = max(0, _to_int(meta.get("appFeeBps"), 0))
+    platform_bps = max(0, _to_int(meta.get("platformBaseFeeBps"), 0))
+    total_fee_bps = max(0, _to_int(meta.get("totalFeeBps"), platform_bps + app_fee_bps))
+    bridge_amount_in = max(0, _to_int(_extract_bridge_amount_in(router, status_data), 0))
+    if total_fee_bps <= 0 or bridge_amount_in <= 0:
+        return
+
+    total_fee_amount = bridge_amount_in * total_fee_bps // 10000
+    app_component_amount = bridge_amount_in * app_fee_bps // 10000
+    partner_ratio = _as_decimal_ratio(meta.get("partnerShareRatio"), Decimal("0.8"))
+    partner_fee_amount = int((Decimal(app_component_amount) * partner_ratio).to_integral_value())
+    partner_fee_amount = max(0, min(partner_fee_amount, total_fee_amount))
+    platform_fee_amount = max(0, total_fee_amount - partner_fee_amount)
+    fee_asset = _extract_fee_asset(router, status_data)
+
+    try:
+        ledger_id = insert_boss_app_fee_ledger(
+            network_id,
+            swap_transaction_id=row.get("id"),
+            app_id=app_id,
+            boss_user_id=meta.get("bossUserId"),
+            from_hash=row.get("from_hash"),
+            deposit_address=row.get("deposit_address"),
+            router=router,
+            fee_token_asset=fee_asset.get("asset"),
+            fee_token_symbol=fee_asset.get("symbol"),
+            fee_token_decimals=fee_asset.get("decimals"),
+            bridge_amount_in=str(bridge_amount_in),
+            total_fee_bps=int(total_fee_bps),
+            app_fee_bps=int(app_fee_bps),
+            platform_base_fee_bps=int(platform_bps),
+            total_fee_amount=str(total_fee_amount),
+            partner_fee_amount=str(partner_fee_amount),
+            platform_fee_amount=str(platform_fee_amount),
+            status_response=status_data,
+        )
+        logger.info(
+            "[swap_status_checker] fee ledger upserted id={} swap_id={} app_id={} total_fee_amount={}",
+            ledger_id,
+            row.get("id"),
+            app_id,
+            total_fee_amount,
+        )
+    except Exception as e:
+        logger.warning(
+            "[swap_status_checker] fee ledger insert skipped swap_id={} app_id={} err={}",
+            row.get("id"),
+            app_id,
+            e,
+        )
+
+
 def _query_status(router: str, deposit_address: str) -> dict:
     # preswap-nearintents shares 1Click status semantics (see _NEARINTENTS_LIKE_ROUTERS).
     if router in _NEARINTENTS_LIKE_ROUTERS:
@@ -146,6 +267,9 @@ def check_once(network_id: str) -> int:
             )
         except Exception as e:
             logger.error(f"[swap_status_checker] update failed id={rec_id}: {e}")
+
+        if new_status == "SUCCESS":
+            _try_accrue_boss_fee(network_id, row, router, data)
 
         # Backfill the synthetic `mca_relayer:{batch_id}` placeholder with the real
         # origin tx hash once available. Done as a separate, best-effort update so a

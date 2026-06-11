@@ -10,6 +10,7 @@ from flask import g
 import json
 import math
 import logging
+from decimal import Decimal, InvalidOperation
 from indexer_provider import get_proposal_id_hash
 from redis_provider import list_farms, list_top_pools, list_pools, list_token_price, list_whitelist, get_token_price, list_base_token_price
 from redis_provider import list_pools_by_id_list, list_token_metadata, list_pools_by_tokens, get_pool, list_token_metadata_v2
@@ -64,6 +65,8 @@ from trxx_utils import (
 )
 from db_provider import create_trxx_order, get_trxx_order_by_id, get_trxx_order_by_serial, \
     ensure_swap_transactions_table, insert_swap_transaction, query_swap_transactions, \
+    ensure_boss_app_fee_ledger_table, \
+    ensure_boss_fee_withdraw_request_table, \
     update_trxx_order_status as db_update_trxx_order_status, \
     trxx_webhook_event_exists, create_trxx_webhook_event, \
     insert_lsd_compensation, get_lsd_compensation_by_deposit_address, get_lsd_compensation_by_id, \
@@ -2668,6 +2671,7 @@ def api_swap_quote():
             return jsonify({"code": -1, "msg": "Request body must be a non-empty JSON object", "data": None})
 
         mca = body.get("mca") if isinstance(body.get("mca"), dict) else None
+        oneclick_ext, _ = _boss_oneclick_fee_context()
         result = unified_quote(
             from_chain=body.get("fromChain", body.get("chainId", "")),
             to_chain=body.get("toChain", body.get("fromChain", body.get("chainId", ""))),
@@ -2678,6 +2682,7 @@ def api_swap_quote():
             sender=body.get("sender", ""),
             recipient=body.get("recipient", ""),
             mca=mca,
+            oneclick_extensions_override=oneclick_ext,
         )
 
         return jsonify(result)
@@ -2739,6 +2744,7 @@ def api_swap_build():
         mca_oc = body.get("mca") if isinstance(body.get("mca"), dict) else None
         if mca_oc is None and isinstance(body.get("mcaOneclick"), dict):
             mca_oc = body.get("mcaOneclick")
+        oneclick_ext, _ = _boss_oneclick_fee_context()
         mca_id_hint = ""
         if isinstance(mca_rel, dict):
             mca_id_hint = str(
@@ -2775,6 +2781,7 @@ def api_swap_build():
             is_cross_chain=is_cross_chain_body,
             tx_type=str(body.get("tx_type") or body.get("txType") or ""),
             multi_addr=str(multi_addr_body or mca_id_hint or ""),
+            oneclick_extensions_override=oneclick_ext,
         )
 
         return jsonify(result)
@@ -2940,6 +2947,52 @@ def api_swap_order_status():
 # ============================================================
 
 CROSS_CHAIN_ACCOUNT_DISPLAY = "Cross-chain Account"
+_BOSS_APP_FEE_SPLIT_USER_RATIO = Decimal("0.8")
+
+
+def _to_int_bps(percent_val) -> int:
+    """Convert percent (e.g. 0.02) into bps (2)."""
+    try:
+        p = Decimal(str(percent_val or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
+    if p <= 0:
+        return 0
+    return max(0, int((p * Decimal("100")).to_integral_value()))
+
+
+def _boss_oneclick_fee_context():
+    """
+    Build 1Click fee extension + accounting metadata for Boss app fee.
+    Returns (oneclick_extensions, fee_meta). When no app_id/token, returns ({}, {}).
+    """
+    app_id = str(getattr(g, "app_id", "") or "").strip()
+    api_token = getattr(g, "api_token", None) if hasattr(g, "api_token") else None
+    if not app_id or not isinstance(api_token, dict):
+        return {}, {}
+
+    platform_bps = _to_int_bps(getattr(Cfg, "INTENTS_APP_FEES", 0))
+    app_fee_bps = _to_int_bps(api_token.get("app_fee"))
+    total_fee_bps = max(0, platform_bps + app_fee_bps)
+    recipient = str(getattr(Cfg, "INTENTS_APP_FEES_RECIPIENT", "") or "").strip()
+    referral = str(getattr(Cfg, "INTENTS_DEFAULT_REFERRAL", "") or "").strip()
+
+    oneclick_ext = {}
+    if recipient and total_fee_bps > 0:
+        oneclick_ext["appFees"] = [{"recipient": recipient, "fee": int(total_fee_bps)}]
+    if referral:
+        oneclick_ext["referral"] = referral
+
+    # Accounting split keeps precision in integer smallest units at settlement time.
+    fee_meta = {
+        "bossAppId": app_id,
+        "bossUserId": api_token.get("user_id"),
+        "platformBaseFeeBps": int(platform_bps),
+        "appFeeBps": int(app_fee_bps),
+        "totalFeeBps": int(total_fee_bps),
+        "partnerShareRatio": str(_BOSS_APP_FEE_SPLIT_USER_RATIO),
+    }
+    return oneclick_ext, fee_meta
 
 
 def _is_mca_near_account_id(addr: str) -> bool:
@@ -2978,6 +3031,14 @@ try:
     ensure_swap_transactions_table(Cfg.NETWORK_ID)
 except Exception as _e:
     logger.warning(f"Failed to ensure swap_transactions table: {_e}")
+try:
+    ensure_boss_app_fee_ledger_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure boss_app_fee_ledger table: {_e}")
+try:
+    ensure_boss_fee_withdraw_request_table(Cfg.NETWORK_ID)
+except Exception as _e:
+    logger.warning(f"Failed to ensure boss_fee_withdraw_request table: {_e}")
 
 
 @app.route('/api/swap/report', methods=['POST'])
@@ -3039,6 +3100,14 @@ def api_swap_report():
             else:
                 is_cross_chain = False
 
+        oneclick_ext, fee_meta = _boss_oneclick_fee_context()
+        raw_extra = body.get("extra")
+        merged_extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+        if fee_meta:
+            merged_extra["bossFeeMeta"] = fee_meta
+            merged_extra["oneclickExtensions"] = oneclick_ext
+        report_extra = merged_extra or raw_extra
+
         record_id = insert_swap_transaction(
             Cfg.NETWORK_ID,
             sender=sender,
@@ -3056,7 +3125,7 @@ def api_swap_report():
             is_cross_chain=bool(is_cross_chain),
             multi_addr=body.get("multi_addr") or body.get("multiAddr"),
             swap_id=str(swap_id_val) if swap_id_val is not None else None,
-            extra=body.get("extra"),
+            extra=report_extra,
         )
 
         return jsonify({"code": 0, "msg": "success", "data": {"id": record_id, "from_hash": from_hash}})

@@ -16,6 +16,9 @@ try:
         INTENTS_APP_FEES_RECIPIENT,
         INTENTS_APP_FEES,
         INTENTS_DEFAULT_REFERRAL,
+        BOSS_FEE_TREASURY_NEAR_ACCOUNT_ID,
+        BOSS_FEE_TREASURY_NEAR_PRIVATE_KEY,
+        BOSS_FEE_WITHDRAW_MIN_USD,
     )
 except ImportError:
     MCA_BURROW_LOGIC_CONTRACT = None
@@ -23,6 +26,9 @@ except ImportError:
     INTENTS_APP_FEES_RECIPIENT = "rhea-ccdfm.sputnik-dao.near"
     INTENTS_APP_FEES = 2
     INTENTS_DEFAULT_REFERRAL = "rhea"
+    BOSS_FEE_TREASURY_NEAR_ACCOUNT_ID = ""
+    BOSS_FEE_TREASURY_NEAR_PRIVATE_KEY = ""
+    BOSS_FEE_WITHDRAW_MIN_USD = "10"
 
 try:
     from db_info import MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
@@ -209,6 +215,12 @@ except ImportError:
     BOSS_EMAIL_VERIFY = True
 
 
+try:
+    from db_info import MESSAGE_SERVICE_URL
+except ImportError:
+    MESSAGE_SERVICE_URL = ""
+
+
 class Cfg:
     NETWORK_ID = "MAINNET"
     REFSUBGRAPH_URL = "https://api.thegraph.com/subgraphs/name/coolsnake/refsubgraph"
@@ -280,6 +292,9 @@ class Cfg:
     INTENTS_APP_FEES_RECIPIENT = INTENTS_APP_FEES_RECIPIENT
     INTENTS_APP_FEES = INTENTS_APP_FEES
     INTENTS_DEFAULT_REFERRAL = INTENTS_DEFAULT_REFERRAL
+    BOSS_FEE_TREASURY_NEAR_ACCOUNT_ID = BOSS_FEE_TREASURY_NEAR_ACCOUNT_ID
+    BOSS_FEE_TREASURY_NEAR_PRIVATE_KEY = BOSS_FEE_TREASURY_NEAR_PRIVATE_KEY
+    BOSS_FEE_WITHDRAW_MIN_USD = BOSS_FEE_WITHDRAW_MIN_USD
     MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID = MULTICHAIN_RELAYER_NEAR_ACCOUNT_ID
     # Burrow-inner amount sent via Logic `simple_withdraw` to the multichain relayer BEFORE
     # `execute(Withdraw)` in MCA withdraw batches (staging relayers often require this leg).
@@ -293,6 +308,7 @@ class Cfg:
     # back to the legacy descriptor format (`sol_transfer` / `spl_transfer`).
     SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
     BOSS_EMAIL_VERIFY = BOSS_EMAIL_VERIFY
+    MESSAGE_SERVICE_URL = MESSAGE_SERVICE_URL
     NETWORK = {
         "DEVNET": {
             "NEAR_RPC_URL": TESTNET_RPC_URL,

@@ -13,9 +13,11 @@ const routes = [
     children: [
       { path: 'dashboard', name: 'Dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'tokens/:id', name: 'TokenDetail', component: () => import('./views/TokenDetail.vue') },
+      { path: 'fee-withdraw', name: 'FeeWithdraw', component: () => import('./views/FeeWithdraw.vue') },
       { path: 'guide', name: 'Guide', component: () => import('./views/Guide.vue') },
       { path: 'admin/users', name: 'AdminUsers', component: () => import('./views/AdminUsers.vue'), meta: { admin: true } },
       { path: 'admin/tokens', name: 'AdminTokens', component: () => import('./views/AdminTokens.vue'), meta: { admin: true } },
+      { path: 'admin/fee-withdraw', name: 'AdminFeeWithdraw', component: () => import('./views/AdminFeeWithdraw.vue'), meta: { admin: true } },
     ],
   },
 ]

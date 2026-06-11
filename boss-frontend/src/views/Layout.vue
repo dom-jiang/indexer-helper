@@ -11,6 +11,10 @@
           <el-icon><Document /></el-icon>
           <span>API Guide</span>
         </el-menu-item>
+        <el-menu-item index="/fee-withdraw">
+          <el-icon><Wallet /></el-icon>
+          <span>Fee Withdraw</span>
+        </el-menu-item>
         <template v-if="auth.isAdmin">
           <el-menu-item-group title="Admin">
             <el-menu-item index="/admin/users">
@@ -20,6 +24,10 @@
             <el-menu-item index="/admin/tokens">
               <el-icon><Key /></el-icon>
               <span>All Tokens</span>
+            </el-menu-item>
+            <el-menu-item index="/admin/fee-withdraw">
+              <el-icon><Tickets /></el-icon>
+              <span>Withdraw Reviews</span>
             </el-menu-item>
           </el-menu-item-group>
         </template>
@@ -42,7 +50,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { HomeFilled, User, Key, Document } from '@element-plus/icons-vue'
+import { HomeFilled, User, Key, Document, Wallet, Tickets } from '@element-plus/icons-vue'
 import { useAuthStore } from '../store'
 import api from '../api'
 
