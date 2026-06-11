@@ -2232,6 +2232,14 @@ CREATE TABLE IF NOT EXISTS hyperliquid_transfer_jobs (
     display_meta_json TEXT,
     permit_submitted_at DATETIME DEFAULT NULL,
     exchange_submitted_at DATETIME DEFAULT NULL,
+    funding_source VARCHAR(32) DEFAULT NULL,
+    borrow_auth_mode VARCHAR(32) DEFAULT NULL,
+    borrow_batch_id VARCHAR(64) DEFAULT NULL,
+    borrow_tx_hash VARCHAR(128) DEFAULT NULL,
+    borrow_zcash_deposit_address VARCHAR(256) DEFAULT NULL,
+    borrow_succeeded_at DATETIME DEFAULT NULL,
+    required_action VARCHAR(64) DEFAULT NULL,
+    request_fingerprint VARCHAR(128) DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     finished_at DATETIME DEFAULT NULL,
@@ -2243,15 +2251,327 @@ CREATE TABLE IF NOT EXISTS hyperliquid_transfer_jobs (
 """
 
 
+def _ensure_hyperliquid_transfer_jobs_columns(cursor):
+    def _column_exists(name):
+        cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'hyperliquid_transfer_jobs' "
+            "AND COLUMN_NAME = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+        return bool(row and row[0])
+
+    alter_sqls = [
+        ("funding_source", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN funding_source VARCHAR(32) DEFAULT NULL"),
+        ("borrow_auth_mode", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN borrow_auth_mode VARCHAR(32) DEFAULT NULL"),
+        ("borrow_batch_id", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN borrow_batch_id VARCHAR(64) DEFAULT NULL"),
+        ("borrow_tx_hash", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN borrow_tx_hash VARCHAR(128) DEFAULT NULL"),
+        (
+            "borrow_zcash_deposit_address",
+            "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN borrow_zcash_deposit_address VARCHAR(256) DEFAULT NULL",
+        ),
+        ("borrow_succeeded_at", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN borrow_succeeded_at DATETIME DEFAULT NULL"),
+        ("required_action", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN required_action VARCHAR(64) DEFAULT NULL"),
+        ("request_fingerprint", "ALTER TABLE hyperliquid_transfer_jobs ADD COLUMN request_fingerprint VARCHAR(128) DEFAULT NULL"),
+    ]
+    for col, sql in alter_sqls:
+        if not _column_exists(col):
+            cursor.execute(sql)
+
+
 def ensure_hyperliquid_transfer_jobs_table(network_id):
     db_conn = get_db_connect(network_id)
     cursor = db_conn.cursor()
     try:
         cursor.execute(HYPERLIQUID_TRANSFER_JOBS_CREATE_SQL)
+        _ensure_hyperliquid_transfer_jobs_columns(cursor)
         db_conn.commit()
     except Exception as e:
         db_conn.rollback()
         print("ensure_hyperliquid_transfer_jobs_table error:", e.args)
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_transfer_job_by_client_request_id(network_id, client_request_id):
+    sql = (
+        "SELECT * FROM hyperliquid_transfer_jobs "
+        "WHERE client_request_id = %s LIMIT 1"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (client_request_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_transfer_job_by_client_request_id error:", e.args)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def get_hyperliquid_transfer_job_by_job_id(network_id, job_id):
+    sql = "SELECT * FROM hyperliquid_transfer_jobs WHERE job_id = %s LIMIT 1"
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (job_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        print("get_hyperliquid_transfer_job_by_job_id error:", e.args)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def insert_hyperliquid_transfer_job(network_id, row):
+    sql = (
+        "INSERT INTO hyperliquid_transfer_jobs ("
+        "job_id, client_request_id, transfer_type, account_mode, "
+        "hyperliquid_user_address, destination_address, status, message, progress, "
+        "request_payload, tx_hashes_json, external_status_json, last_error, "
+        "permit_id, deposit_address, batch_id, intent_nonces_json, display_meta_json, "
+        "funding_source, borrow_auth_mode, borrow_batch_id, borrow_tx_hash, "
+        "borrow_zcash_deposit_address, borrow_succeeded_at, required_action, request_fingerprint"
+        ") VALUES ("
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+        "%s, %s, %s, %s, %s, %s, %s, %s"
+        ")"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(
+            sql,
+            (
+                row["job_id"],
+                row["client_request_id"],
+                row["transfer_type"],
+                row["account_mode"],
+                row["hyperliquid_user_address"],
+                row.get("destination_address"),
+                row["status"],
+                row.get("message"),
+                row.get("progress", 0),
+                row["request_payload"],
+                row.get("tx_hashes_json"),
+                row.get("external_status_json"),
+                row.get("last_error"),
+                row.get("permit_id"),
+                row.get("deposit_address"),
+                row.get("batch_id"),
+                row.get("intent_nonces_json"),
+                row.get("display_meta_json"),
+                row.get("funding_source"),
+                row.get("borrow_auth_mode"),
+                row.get("borrow_batch_id"),
+                row.get("borrow_tx_hash"),
+                row.get("borrow_zcash_deposit_address"),
+                row.get("borrow_succeeded_at"),
+                row.get("required_action"),
+                row.get("request_fingerprint"),
+            ),
+        )
+        db_conn.commit()
+        return int(cursor.lastrowid)
+    except Exception as e:
+        db_conn.rollback()
+        print("insert_hyperliquid_transfer_job error:", e.args)
+        return None
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def update_hyperliquid_transfer_job(network_id, job_id, updates):
+    if not updates:
+        return False
+    sets = []
+    values = []
+    for k, v in updates.items():
+        col = k.replace("`", "").replace(" ", "")
+        sets.append("`%s` = %%s" % col)
+        values.append(v)
+    values.append(job_id)
+    sql = (
+        "UPDATE hyperliquid_transfer_jobs SET "
+        + ", ".join(sets)
+        + " WHERE job_id = %s"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        cursor.execute(sql, tuple(values))
+        db_conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        db_conn.rollback()
+        print("update_hyperliquid_transfer_job error:", e.args)
+        return False
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def list_hyperliquid_transfer_history(
+    network_id, hyperliquid_user_address, page=1, page_size=20
+):
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 20
+    start = (page - 1) * page_size
+    addr = (hyperliquid_user_address or "").strip().lower()
+    count_sql = (
+        "SELECT COUNT(*) AS c FROM hyperliquid_transfer_jobs "
+        "WHERE LOWER(hyperliquid_user_address) = %s"
+    )
+    list_sql = (
+        "SELECT id, job_id, transfer_type, account_mode, hyperliquid_user_address, "
+        "destination_address, status, message, progress, created_at, updated_at, finished_at, "
+        "last_error, tx_hashes_json, permit_id, external_status_json, display_meta_json, "
+        "funding_source, borrow_auth_mode, borrow_batch_id, borrow_tx_hash, "
+        "borrow_zcash_deposit_address, borrow_succeeded_at, required_action "
+        "FROM hyperliquid_transfer_jobs WHERE LOWER(hyperliquid_user_address) = %s "
+        "ORDER BY id DESC LIMIT %s, %s"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(count_sql, (addr,))
+        total = cursor.fetchone()["c"]
+        cursor.execute(list_sql, (addr, start, page_size))
+        rows = cursor.fetchall()
+        return rows, total
+    except Exception as e:
+        print("list_hyperliquid_transfer_history error:", e.args)
+        return [], 0
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def fetch_hyperliquid_transfer_jobs_active(network_id, limit=50):
+    sql = (
+        "SELECT * FROM hyperliquid_transfer_jobs WHERE status NOT IN "
+        "('SUCCESS', 'FAILED', 'ACTION_REQUIRED', 'MANUAL_REVIEW') ORDER BY id ASC LIMIT %s"
+    )
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor(cursor=pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(sql, (int(limit),))
+        return cursor.fetchall()
+    except Exception as e:
+        print("fetch_hyperliquid_transfer_jobs_active error:", e.args)
+        return []
+    finally:
+        cursor.close()
+        db_conn.close()
+
+
+def create_hyperliquid_borrow_topup_job_with_relayer(
+    network_id,
+    *,
+    job_row,
+    mca_id,
+    wallet,
+    request_rows,
+    page_display_data="",
+    batch_field="borrow_batch_id",
+):
+    """
+    Insert relayer rows + hyperliquid_transfer_jobs row in one DB transaction.
+    Returns (job_insert_id, created_batch_id).
+    """
+    import uuid
+
+    created_batch_id = str(uuid.uuid4())
+    utc_now = datetime.utcnow()
+    db_conn = get_db_connect(network_id)
+    cursor = db_conn.cursor()
+    try:
+        relayer_sql = (
+            "insert into multichain_lending_requests("
+            "mca_id, `wallet`, `request`, batch_id, `sequence`, `created_at`, `updated_at`"
+            ") values(%s,%s,%s,%s,%s,%s,%s)"
+        )
+        relayer_data = []
+        for i, req in enumerate(request_rows or []):
+            relayer_data.append((mca_id, wallet, req, created_batch_id, i, utc_now, utc_now))
+        if not relayer_data:
+            raise ValueError("request_rows must be non-empty for relayer mode")
+        cursor.executemany(relayer_sql, relayer_data)
+
+        if page_display_data != "":
+            report_sql = (
+                "insert into multichain_lending_report_data("
+                "`type`, mca_id, `wallet`, batch_id, page_display_data, `created_at`, `updated_at`"
+                ") values(%s,%s,%s,%s,%s,%s,%s)"
+            )
+            cursor.execute(report_sql, (1, mca_id, wallet, created_batch_id, page_display_data, utc_now, utc_now))
+
+        row = dict(job_row)
+        if batch_field:
+            row[batch_field] = created_batch_id
+        row["created_at"] = utc_now
+        row["updated_at"] = utc_now
+        job_sql = (
+            "INSERT INTO hyperliquid_transfer_jobs ("
+            "job_id, client_request_id, transfer_type, account_mode, "
+            "hyperliquid_user_address, destination_address, status, message, progress, "
+            "request_payload, tx_hashes_json, external_status_json, last_error, "
+            "permit_id, deposit_address, batch_id, intent_nonces_json, display_meta_json, "
+            "funding_source, borrow_auth_mode, borrow_batch_id, borrow_tx_hash, "
+            "borrow_zcash_deposit_address, borrow_succeeded_at, required_action, request_fingerprint, "
+            "created_at, updated_at"
+            ") VALUES ("
+            "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+            ")"
+        )
+        cursor.execute(
+            job_sql,
+            (
+                row["job_id"],
+                row["client_request_id"],
+                row["transfer_type"],
+                row["account_mode"],
+                row["hyperliquid_user_address"],
+                row.get("destination_address"),
+                row["status"],
+                row.get("message"),
+                row.get("progress", 0),
+                row["request_payload"],
+                row.get("tx_hashes_json"),
+                row.get("external_status_json"),
+                row.get("last_error"),
+                row.get("permit_id"),
+                row.get("deposit_address"),
+                row.get("batch_id"),
+                row.get("intent_nonces_json"),
+                row.get("display_meta_json"),
+                row.get("funding_source"),
+                row.get("borrow_auth_mode"),
+                row.get("borrow_batch_id"),
+                row.get("borrow_tx_hash"),
+                row.get("borrow_zcash_deposit_address"),
+                row.get("borrow_succeeded_at"),
+                row.get("required_action"),
+                row.get("request_fingerprint"),
+                row.get("created_at"),
+                row.get("updated_at"),
+            ),
+        )
+        job_insert_id = int(cursor.lastrowid)
+        db_conn.commit()
+        return job_insert_id, created_batch_id
+    except Exception:
+        db_conn.rollback()
+        raise
     finally:
         cursor.close()
         db_conn.close()

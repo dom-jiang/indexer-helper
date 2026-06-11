@@ -124,9 +124,12 @@ def _progress_for(status: str, transfer_type: str) -> int:
         dmap = {
             "SUBMITTED": 5,
             "WAITING_SIGNATURE": 20,
+            "WAITING_BORROW": 30,
             "WAITING_BRIDGE": 40,
             "SUBMITTING_PERMIT": 60,
             "WAITING_PERMIT": 80,
+            "ACTION_REQUIRED": 50,
+            "MANUAL_REVIEW": 50,
             "SUCCESS": 100,
             "FAILED": 0,
         }
@@ -521,6 +524,317 @@ def _resolve_mca_b_path_rsv(
     )
 
 
+def _extract_borrow_hash_from_lending_rows(rows: List[Dict[str, Any]]) -> Optional[str]:
+    keys = ("tx_hash", "txHash", "transaction_hash", "hash")
+    for row in rows or []:
+        for src in ("request_result", "tx_record", "request"):
+            raw = row.get(src)
+            obj = {}
+            if isinstance(raw, dict):
+                obj = raw
+            elif isinstance(raw, str) and raw.strip():
+                try:
+                    obj = json.loads(raw)
+                except Exception:
+                    obj = {}
+            if not isinstance(obj, dict):
+                continue
+            for k in keys:
+                v = obj.get(k)
+                if v and str(v).strip():
+                    return str(v).strip()
+    return None
+
+
+def _near_tx_status(network_id: str, tx_hash: str, sender_ids: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    txh = str(tx_hash or "").strip()
+    if not txh:
+        return None, "txHash is empty"
+    urls = Cfg.NETWORK[network_id].get("NEAR_RPC_URL") or []
+    if not isinstance(urls, list):
+        urls = [urls]
+    senders = [str(s or "").strip() for s in sender_ids if str(s or "").strip()]
+    if not senders:
+        return None, "sender ids are empty"
+    for sender in senders:
+        for rpc_url in urls:
+            try:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": "borrow_tx_status",
+                    "method": "EXPERIMENTAL_tx_status",
+                    "params": {"tx_hash": txh, "sender_account_id": sender, "wait_until": "NONE"},
+                }
+                resp = requests.post(rpc_url, json=payload, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+                err = data.get("error")
+                if err:
+                    continue
+                result = data.get("result") or {}
+                final_execution_status = str(result.get("final_execution_status") or "")
+                if final_execution_status == "FINAL":
+                    tx_outcome = (result.get("transaction_outcome") or {}).get("outcome") or {}
+                    status = tx_outcome.get("status") or {}
+                    if isinstance(status, dict) and "Failure" in status:
+                        return "FAILED", json.dumps(status.get("Failure"), ensure_ascii=False, default=str)[:500]
+                    return "SUCCESS", None
+                if final_execution_status in ("NONE", "NOT_STARTED", "STARTED", "INCLUDED"):
+                    return "PENDING", None
+            except Exception:
+                continue
+    return "PENDING", None
+
+
+def _process_lending_borrow_stage(network_id: str, row: Dict[str, Any], payload: Dict[str, Any], now: datetime) -> bool:
+    """
+    Handle lending-specific borrow prerequisite stages.
+    Returns True when the caller should return immediately.
+    """
+    from db_provider import query_multichain_lending_data, add_multichain_lending_requests
+    from mca_relayer_payload import normalize_mca_relayer_wallet, build_relayer_request_row
+
+    st = str(row.get("status") or "")
+    funding_source = str(row.get("funding_source") or "").lower()
+    if funding_source != "lending" or st not in ("WAITING_SIGNATURE", "WAITING_BORROW"):
+        return False
+
+    job_id = str(row.get("job_id") or "")
+    created = _parse_dt(row.get("created_at")) or now
+    if (now - created).total_seconds() > STEP_GATE_SEC:
+        _fail_job(network_id, job_id, "timeout waiting for borrow confirmation (10m)")
+        return True
+
+    if row.get("borrow_succeeded_at"):
+        return False
+
+    mode = str(row.get("borrow_auth_mode") or "").lower()
+    ext_patch: Dict[str, Any] = {}
+    if mode == "relayer" and st == "WAITING_SIGNATURE":
+        permit_batch_id = str(row.get("batch_id") or "").strip()
+        if not permit_batch_id:
+            _fail_job(network_id, job_id, "batch_id is missing for permit relayer mode")
+            return True
+        permit_rows = query_multichain_lending_data(network_id, permit_batch_id) or []
+        if not permit_rows:
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": "Waiting for relayer signature",
+                    "external_status_json": _merge_ext(row, {"permitBatchStatus": "PENDING"}),
+                },
+                transfer_type="deposit",
+            )
+            return True
+        permit_err = lending_batch_error(permit_rows)
+        if permit_err:
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "ACTION_REQUIRED",
+                    "message": "Action required",
+                    "required_action": "REFRESH_PERMIT",
+                    "last_error": ("permit relayer failed: {0}".format(permit_err))[:4000],
+                },
+                transfer_type="deposit",
+            )
+            return True
+        if not lending_batch_complete(permit_rows):
+            first = permit_rows[0] or {}
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_SIGNATURE",
+                    "message": "Waiting for relayer signature",
+                    "external_status_json": _merge_ext(row, {"permitBatchStatus": first.get("batch_status")}),
+                },
+                transfer_type="deposit",
+            )
+            return True
+
+        borrow = payload.get("borrow") or {}
+        permit_bundle = payload.get("signatureTask") or {}
+        try:
+            p_nonce = int(str((permit_bundle.get("business") or {}).get("nonce") or "").strip())
+            b_nonce = int(str((borrow.get("business") or {}).get("nonce") or "").strip())
+            if b_nonce != p_nonce + 1:
+                _update_job(
+                    network_id,
+                    job_id,
+                    {
+                        "status": "ACTION_REQUIRED",
+                        "message": "Action required",
+                        "required_action": "REFRESH_PERMIT",
+                        "last_error": "borrow.business.nonce must equal permit nonce + 1",
+                    },
+                    transfer_type="deposit",
+                )
+                return True
+        except Exception:
+            pass
+
+        try:
+            wallet_json, signer_wallet_obj = normalize_mca_relayer_wallet(borrow.get("signerWallet"))
+            req_row = build_relayer_request_row(
+                signer_wallet=signer_wallet_obj,
+                business=borrow.get("business"),
+                signature=str(borrow.get("signature")).strip(),
+                attach_deposit=str(borrow.get("attachDeposit") if borrow.get("attachDeposit") is not None else "0"),
+            )
+            borrow_batch = add_multichain_lending_requests(
+                network_id,
+                str(payload.get("mcaId") or "").strip(),
+                wallet_json,
+                [req_row],
+                "",
+            )
+        except Exception as e:
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "MANUAL_REVIEW",
+                    "message": "Manual review required",
+                    "last_error": ("failed to submit borrow relayer request: {0}".format(e))[:4000],
+                },
+                transfer_type="deposit",
+            )
+            return True
+        _update_job(
+            network_id,
+            job_id,
+            {
+                "status": "WAITING_BORROW",
+                "message": "Waiting for borrow confirmation",
+                "borrow_batch_id": str(borrow_batch),
+                "external_status_json": _merge_ext(row, {"permitBatchStatus": "DONE", "borrowBatchStatus": "SUBMITTED"}),
+            },
+            transfer_type="deposit",
+        )
+        return True
+
+    if mode == "relayer" and st == "WAITING_BORROW":
+        batch_id = str(row.get("borrow_batch_id") or "").strip()
+        if not batch_id:
+            _fail_job(network_id, job_id, "borrow_batch_id is missing for relayer mode")
+            return True
+        lending_rows = query_multichain_lending_data(network_id, batch_id) or []
+        if not lending_rows:
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BORROW",
+                    "message": "Waiting for borrow confirmation",
+                    "external_status_json": _merge_ext(row, {"borrowBatchStatus": "PENDING"}),
+                },
+                transfer_type="deposit",
+            )
+            return True
+        relayer_err = lending_batch_error(lending_rows)
+        if relayer_err:
+            _fail_job(network_id, job_id, "borrow relayer failed: {0}".format(relayer_err))
+            return True
+        if not lending_batch_complete(lending_rows):
+            first = lending_rows[0] or {}
+            ext_patch["borrowBatchStatus"] = first.get("batch_status")
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BORROW",
+                    "message": "Waiting for borrow confirmation",
+                    "external_status_json": _merge_ext(row, ext_patch),
+                },
+                transfer_type="deposit",
+            )
+            return True
+        borrow_hash = _extract_borrow_hash_from_lending_rows(lending_rows)
+        patch = {
+            "status": "WAITING_BRIDGE",
+            "message": "Waiting for bridge settlement",
+            "borrow_succeeded_at": now,
+            "external_status_json": _merge_ext(
+                row, {"borrowHash": borrow_hash, "borrowBatchStatus": "DONE"} if borrow_hash else {"borrowBatchStatus": "DONE"}
+            ),
+        }
+        if borrow_hash:
+            patch["borrow_tx_hash"] = borrow_hash
+        _update_job(network_id, job_id, patch, transfer_type="deposit")
+        return True
+
+    if mode == "near_wallet" and st == "WAITING_BORROW":
+        borrow_hash = str(row.get("borrow_tx_hash") or "").strip()
+        borrow = payload.get("borrow") or {}
+        signer_wallet = borrow.get("signerWallet") if isinstance(borrow, dict) else {}
+        candidates = [
+            (signer_wallet or {}).get("identityKey"),
+            payload.get("mcaId"),
+        ]
+        tx_status, tx_err = _near_tx_status(network_id, borrow_hash, candidates)
+        if tx_status == "FAILED":
+            _fail_job(network_id, job_id, "borrow tx failed: {0}".format(tx_err or "unknown"))
+            return True
+        if tx_status == "SUCCESS":
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BRIDGE",
+                    "message": "Waiting for bridge settlement",
+                    "borrow_succeeded_at": now,
+                    "external_status_json": _merge_ext(row, {"borrowHash": borrow_hash}),
+                },
+                transfer_type="deposit",
+            )
+            return True
+        return True
+
+    if mode == "zcash_legacy" and st == "WAITING_BORROW":
+        zaddr = str(row.get("borrow_zcash_deposit_address") or "").strip()
+        if not zaddr:
+            _fail_job(network_id, job_id, "borrow_zcash_deposit_address is missing for zcash_legacy mode")
+            return True
+        stask = {"type": "mca_relayer", "zcashMode": "legacy", "zcashDepositAddress": zaddr}
+        zr = resolve_zcash_signature_task(network_id, stask)
+        ext_patch = zr.get("ext_patch") or {}
+        if zr.get("error_msg"):
+            _fail_job(network_id, job_id, str(zr["error_msg"]), ext_patch=ext_patch)
+            return True
+        if zr.get("pending"):
+            _update_job(
+                network_id,
+                job_id,
+                {
+                    "status": "WAITING_BORROW",
+                    "message": "Waiting for borrow confirmation",
+                    "external_status_json": _merge_ext(row, ext_patch),
+                },
+                transfer_type="deposit",
+            )
+            return True
+        borrow_hash = str((ext_patch or {}).get("txHash") or "").strip() or None
+        patch = {
+            "status": "WAITING_BRIDGE",
+            "message": "Waiting for bridge settlement",
+            "borrow_succeeded_at": now,
+            "external_status_json": _merge_ext(
+                row, {"borrowHash": borrow_hash, **(ext_patch or {})} if borrow_hash else ext_patch
+            ),
+        }
+        if borrow_hash:
+            patch["borrow_tx_hash"] = borrow_hash
+        _update_job(network_id, job_id, patch, transfer_type="deposit")
+        return True
+
+    _fail_job(network_id, job_id, "unsupported borrow_auth_mode/status: {0}/{1}".format(mode or "", st))
+    return True
+
+
 def _wait_for_mca_signature(
     network_id: str,
     job_id: str,
@@ -677,6 +991,9 @@ def process_deposit_row(network_id: str, row: Dict[str, Any]) -> None:
 
     created = _parse_dt(row.get("created_at")) or _utcnow()
     now = _utcnow()
+
+    if _process_lending_borrow_stage(network_id, row, payload, now):
+        return
 
     def _timeout_gate(msg: str) -> bool:
         if (now - created).total_seconds() > STEP_GATE_SEC:
