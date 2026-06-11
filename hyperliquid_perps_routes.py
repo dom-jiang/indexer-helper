@@ -7,6 +7,7 @@ POST /deposits, POST /withdrawals, GET /transfer-jobs/<id>, GET /transfer-histor
 """
 
 import json
+import hashlib
 import secrets
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,9 +22,11 @@ from db_provider import (
     get_hyperliquid_transfer_job_by_client_request_id,
     get_hyperliquid_transfer_job_by_job_id,
     insert_hyperliquid_transfer_job,
+    create_hyperliquid_borrow_topup_job_with_relayer,
     list_hyperliquid_transfer_history,
 )
 from mca_evm_signature import is_zcash_bridge_deposit_body
+from mca_relayer_payload import normalize_mca_relayer_wallet, build_relayer_request_row
 
 bp = Blueprint("hyperliquid_perps", __name__, url_prefix="/api/v1/perps/hyperliquid")
 
@@ -98,7 +101,13 @@ def _hashes_from_row(row: Dict[str, Any]) -> Dict[str, Optional[str]]:
         "transferHash": tx_list[0] if tx_list else None,
         "depositHash": ext.get("depositHash") or None,
         "withdrawHash": ext.get("withdrawHash") or None,
+        "borrowHash": row.get("borrow_tx_hash") or ext.get("borrowHash") or None,
     }
+
+
+def _payload_fingerprint(payload: Dict[str, Any]) -> str:
+    normalized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 _EVM_EXPLORER_BASE = {
@@ -302,7 +311,7 @@ def _validate_display_meta_endpoint(dm: Any, endpoint: str) -> Optional[str]:
         if not isinstance(block, dict):
             return "displayMeta.{0} is required".format(side)
         st = (block.get("type") or "").strip()
-        if st not in ("external_wallet", "trading_account"):
+        if st not in ("external_wallet", "trading_account", "lending_account"):
             return "displayMeta.{0}.type is invalid".format(side)
         for k in ("chain", "chainLabel"):
             if not block.get(k) or not str(block.get(k)).strip():
@@ -311,8 +320,8 @@ def _validate_display_meta_endpoint(dm: Any, endpoint: str) -> Optional[str]:
     if endpoint == "deposit":
         src = dm.get("source") or {}
         tgt = dm.get("target") or {}
-        if src.get("type") != "external_wallet":
-            return "displayMeta.source.type must be external_wallet for deposit"
+        if src.get("type") not in ("external_wallet", "lending_account"):
+            return "displayMeta.source.type must be external_wallet or lending_account for deposit"
         if tgt.get("type") != "trading_account":
             return "displayMeta.target.type must be trading_account for deposit"
     elif endpoint == "withdrawal":
@@ -358,10 +367,13 @@ def _message_for_status(transfer_type: str, status: str, last_error: Optional[st
     if transfer_type == "deposit":
         m = {
             "SUBMITTED": "Job accepted",
+            "WAITING_BORROW": "Waiting for borrow confirmation",
             "WAITING_SIGNATURE": "Waiting for relayer signature",
             "WAITING_BRIDGE": "Waiting for bridge settlement",
             "SUBMITTING_PERMIT": "Submitting permit",
             "WAITING_PERMIT": "Confirming deposit",
+            "ACTION_REQUIRED": "Action required",
+            "MANUAL_REVIEW": "Manual review required",
             "SUCCESS": "Success",
         }
     else:
@@ -371,6 +383,8 @@ def _message_for_status(transfer_type: str, status: str, last_error: Optional[st
             "SUBMITTING_EXCHANGE": "Submitting withdrawal",
             "WAITING_LEDGER": "Waiting for ledger confirmation",
             "WAITING_BRIDGE": "Waiting for bridge settlement",
+            "ACTION_REQUIRED": "Action required",
+            "MANUAL_REVIEW": "Manual review required",
             "SUCCESS": "Success",
         }
     return m.get(status, status)
@@ -394,9 +408,12 @@ def _progress_for_transfer(status: str, transfer_type: str) -> int:
         dmap = {
             "SUBMITTED": 5,
             "WAITING_SIGNATURE": 20,
+            "WAITING_BORROW": 30,
             "WAITING_BRIDGE": 40,
             "SUBMITTING_PERMIT": 60,
             "WAITING_PERMIT": 80,
+            "ACTION_REQUIRED": 50,
+            "MANUAL_REVIEW": 50,
             "SUCCESS": 100,
             "FAILED": 0,
         }
@@ -412,6 +429,9 @@ def _job_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
         "clientRequestId": row.get("client_request_id"),
         "transferType": t,
         "accountMode": row.get("account_mode"),
+        "fundingSource": row.get("funding_source"),
+        "borrowAuthMode": row.get("borrow_auth_mode"),
+        "requiredAction": row.get("required_action"),
         "hyperliquidUserAddress": row.get("hyperliquid_user_address"),
         "destinationAddress": row.get("destination_address"),
         "status": st,
@@ -519,6 +539,53 @@ def _validate_mca_signature_task(stask: Any) -> Optional[str]:
         "signatureTask.batchId, txHash, or zcashDepositAddress is required "
         "for accountMode mca"
     )
+
+
+def _signature_task_has_presolved_business(stask: Any) -> bool:
+    if not isinstance(stask, dict):
+        return False
+    if not isinstance(stask.get("signerWallet"), dict):
+        return False
+    if not isinstance(stask.get("business"), dict):
+        return False
+    sig = stask.get("signature")
+    return sig is not None and str(sig).strip() != ""
+
+
+def _parse_int_like(v: Any) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+def _validate_borrow_nonce_relation(body: Dict[str, Any]) -> Optional[str]:
+    borrow = body.get("borrow") or {}
+    stask = body.get("signatureTask") or {}
+    bb = borrow.get("business") if isinstance(borrow, dict) else None
+    pb = stask.get("business") if isinstance(stask, dict) else None
+    if not isinstance(bb, dict) or not isinstance(pb, dict):
+        return None
+    b_nonce = _parse_int_like(bb.get("nonce"))
+    p_nonce = _parse_int_like(pb.get("nonce"))
+    if b_nonce is None or p_nonce is None:
+        return None
+    if b_nonce != p_nonce + 1:
+        return "borrow.business.nonce must equal signatureTask.business.nonce + 1"
+    return None
+
+
+def _build_relayer_row_from_business_bundle(bundle: Dict[str, Any]) -> Tuple[str, str]:
+    wallet_json, signer_wallet_obj = normalize_mca_relayer_wallet(bundle.get("signerWallet"))
+    row = build_relayer_request_row(
+        signer_wallet=signer_wallet_obj,
+        business=bundle.get("business"),
+        signature=str(bundle.get("signature")).strip(),
+        attach_deposit=str(bundle.get("attachDeposit") if bundle.get("attachDeposit") is not None else "0"),
+    )
+    return wallet_json, row
 
 
 def _validate_permit_request(pr: Any, hyperliquid_user_address: str) -> Optional[str]:
@@ -652,6 +719,232 @@ def _validate_withdraw(body: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _validate_borrow_top_up(body: Dict[str, Any]) -> Optional[str]:
+    for k in ("clientRequestId", "hyperliquidUserAddress", "accountMode", "mcaId", "fundingSource"):
+        if body.get(k) is None or str(body.get(k)).strip() == "":
+            return f"{k} is required"
+    am = str(body.get("accountMode")).strip().lower()
+    if am not in ("evm", "mca"):
+        return "accountMode must be evm or mca"
+    if str(body.get("fundingSource")).strip().lower() != "lending":
+        return "fundingSource must be lending"
+
+    q = body.get("quote")
+    if not isinstance(q, dict):
+        return "quote object is required"
+    if q.get("needsBridge") is not True:
+        return "quote.needsBridge must be true"
+    for k in ("depositAddress", "amountIn", "amountOut", "minAmountOut"):
+        if q.get(k) is None or str(q.get(k)).strip() == "":
+            return f"quote.{k} is required"
+
+    b = body.get("borrow")
+    if not isinstance(b, dict):
+        return "borrow object is required"
+    mode = str(b.get("mode") or "").strip().lower()
+    if mode not in ("relayer", "near_wallet", "zcash_legacy"):
+        return "borrow.mode must be relayer | near_wallet | zcash_legacy"
+    signer_wallet = b.get("signerWallet")
+    if not isinstance(signer_wallet, dict):
+        return "borrow.signerWallet must be an object"
+    business = b.get("business")
+    if not isinstance(business, dict):
+        return "borrow.business must be an object"
+    if mode == "relayer":
+        if not b.get("signature") or not str(b.get("signature")).strip():
+            return "borrow.signature is required for relayer mode"
+        if b.get("attachDeposit") is None or not str(b.get("attachDeposit")).strip():
+            return "borrow.attachDeposit is required for relayer mode"
+        stask = body.get("signatureTask")
+        ps = body.get("permitSignature") or {}
+        has_frontend_permit_sig = isinstance(ps, dict) and bool((ps.get("signatureParts") or {}).get("r"))
+        if not has_frontend_permit_sig and not _signature_task_has_presolved_business(stask):
+            return (
+                "signatureTask.signerWallet/business/signature is required for relayer mode "
+                "when permitSignature.signatureParts is not provided"
+            )
+        if _signature_task_has_presolved_business(stask):
+            err = _validate_borrow_nonce_relation(body)
+            if err:
+                return err
+    elif mode == "near_wallet":
+        if not b.get("txHash") or not str(b.get("txHash")).strip():
+            return "borrow.txHash is required for near_wallet mode"
+    elif mode == "zcash_legacy":
+        if not b.get("zcashDepositAddress") or not str(b.get("zcashDepositAddress")).strip():
+            return "borrow.zcashDepositAddress is required for zcash_legacy mode"
+
+    ps = body.get("permitSignature")
+    stask = body.get("signatureTask") or {}
+    pr = body.get("permitRequest")
+    hl = body.get("hyperliquidUserAddress")
+    has_ps = isinstance(ps, dict) and bool(ps)
+    has_relayer = isinstance(pr, dict) and isinstance(stask, dict) and (
+        stask.get("batchId")
+        or stask.get("txHash")
+        or stask.get("zcashDepositAddress")
+        or _signature_task_has_presolved_business(stask)
+    )
+    if not has_ps and not has_relayer:
+        return "permitSignature or (permitRequest + signatureTask) is required"
+    if has_ps:
+        err = _validate_permit_signature_owner(ps, hl)
+        if err:
+            return err
+    if has_relayer and not has_ps:
+        err = _validate_permit_request(pr, hl)
+        if err:
+            return err
+        if not _signature_task_has_presolved_business(stask):
+            err = _validate_mca_signature_task(stask)
+            if err:
+                return err
+        min_out = str((q or {}).get("minAmountOut") or "").strip()
+        pv = str((pr or {}).get("value") or "").strip()
+        if min_out and pv and min_out != pv:
+            return "permitRequest.value must match quote.minAmountOut"
+
+    err = _validate_display_meta_endpoint(body.get("displayMeta"), "deposit")
+    if err:
+        return err
+    return None
+
+
+def _create_or_get_borrow_top_up_job(body: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    network_id = Cfg.NETWORK_ID
+    cid = str(body["clientRequestId"]).strip()
+    fingerprint = _payload_fingerprint(body)
+    existing = get_hyperliquid_transfer_job_by_client_request_id(network_id, cid)
+    if existing:
+        old_fp = str(existing.get("request_fingerprint") or "").strip()
+        if old_fp and old_fp != fingerprint:
+            raise ValueError("clientRequestId already exists with a different payload")
+        if not old_fp:
+            try:
+                old_payload = json.loads(existing.get("request_payload") or "{}")
+            except Exception:
+                old_payload = {}
+            if _payload_fingerprint(old_payload) != fingerprint:
+                raise ValueError("clientRequestId already exists with a different payload")
+        return existing, False
+
+    am = str(body.get("accountMode") or "").strip().lower()
+    hl = str(body.get("hyperliquidUserAddress") or "").strip()
+    q = body.get("quote") or {}
+    dep_addr = str((q.get("depositAddress") or "")).strip() or None
+    stask = body.get("signatureTask") or {}
+    permit_batch_id = None
+    if isinstance(stask, dict) and stask.get("batchId"):
+        permit_batch_id = str(stask.get("batchId")).strip()
+
+    borrow = body.get("borrow") or {}
+    borrow_mode = str(borrow.get("mode") or "").strip().lower()
+    stask = body.get("signatureTask") or {}
+    use_permit_relayer = borrow_mode == "relayer" and _signature_task_has_presolved_business(stask)
+    borrow_tx_hash = None
+    borrow_zcash_deposit_address = None
+    borrow_batch_id = None
+
+    payload = json.dumps(body, ensure_ascii=False, default=str)
+    row_in = {
+        "job_id": _new_job_id("deposit"),
+        "client_request_id": cid[:128],
+        "transfer_type": "deposit",
+        "account_mode": am,
+        "hyperliquid_user_address": hl[:128],
+        "destination_address": None,
+        "status": "WAITING_SIGNATURE" if use_permit_relayer else "WAITING_BORROW",
+        "message": "Waiting for relayer signature" if use_permit_relayer else "Waiting for borrow confirmation",
+        "progress": 20 if use_permit_relayer else 30,
+        "request_payload": payload,
+        "tx_hashes_json": None,
+        "external_status_json": None,
+        "last_error": None,
+        "permit_id": None,
+        "deposit_address": dep_addr,
+        "batch_id": permit_batch_id,
+        "intent_nonces_json": _intent_nonces_json(body),
+        "display_meta_json": _display_meta_json(body),
+        "funding_source": "lending",
+        "borrow_auth_mode": borrow_mode,
+        "borrow_batch_id": None,
+        "borrow_tx_hash": None,
+        "borrow_zcash_deposit_address": None,
+        "borrow_succeeded_at": None,
+        "required_action": None,
+        "request_fingerprint": fingerprint,
+    }
+
+    if borrow_mode == "relayer":
+        if use_permit_relayer:
+            permit_wallet_json, permit_req_row = _build_relayer_row_from_business_bundle(stask)
+            try:
+                _new_id, permit_batch_id = create_hyperliquid_borrow_topup_job_with_relayer(
+                    network_id,
+                    job_row=row_in,
+                    mca_id=str(body.get("mcaId")).strip(),
+                    wallet=permit_wallet_json,
+                    request_rows=[permit_req_row],
+                    page_display_data="",
+                    batch_field="batch_id",
+                )
+            except Exception as e:
+                if "Duplicate entry" in str(e) or "1062" in str(e):
+                    ex2 = get_hyperliquid_transfer_job_by_client_request_id(network_id, cid)
+                    if ex2:
+                        return ex2, False
+                raise
+            row_in["batch_id"] = permit_batch_id
+        else:
+            wallet_json, signer_wallet_obj = normalize_mca_relayer_wallet(borrow.get("signerWallet"))
+            borrow_req_row = build_relayer_request_row(
+                signer_wallet=signer_wallet_obj,
+                business=borrow.get("business"),
+                signature=str(borrow.get("signature")).strip(),
+                attach_deposit=str(borrow.get("attachDeposit")),
+            )
+            try:
+                _new_id, borrow_batch_id = create_hyperliquid_borrow_topup_job_with_relayer(
+                    network_id,
+                    job_row=row_in,
+                    mca_id=str(body.get("mcaId")).strip(),
+                    wallet=wallet_json,
+                    request_rows=[borrow_req_row],
+                    page_display_data="",
+                    batch_field="borrow_batch_id",
+                )
+            except Exception as e:
+                if "Duplicate entry" in str(e) or "1062" in str(e):
+                    ex2 = get_hyperliquid_transfer_job_by_client_request_id(network_id, cid)
+                    if ex2:
+                        return ex2, False
+                raise
+            row_in["borrow_batch_id"] = borrow_batch_id
+    elif borrow_mode == "near_wallet":
+        borrow_tx_hash = str(borrow.get("txHash")).strip()
+        row_in["borrow_tx_hash"] = borrow_tx_hash
+        new_id = insert_hyperliquid_transfer_job(network_id, row_in)
+        if not new_id:
+            ex2 = get_hyperliquid_transfer_job_by_client_request_id(network_id, cid)
+            if ex2:
+                return ex2, False
+            raise RuntimeError("insert failed")
+    else:
+        borrow_zcash_deposit_address = str(borrow.get("zcashDepositAddress")).strip()
+        row_in["borrow_zcash_deposit_address"] = borrow_zcash_deposit_address
+        new_id = insert_hyperliquid_transfer_job(network_id, row_in)
+        if not new_id:
+            ex2 = get_hyperliquid_transfer_job_by_client_request_id(network_id, cid)
+            if ex2:
+                return ex2, False
+            raise RuntimeError("insert failed")
+
+    row = get_hyperliquid_transfer_job_by_job_id(network_id, row_in["job_id"])
+    if row and borrow_batch_id and not row.get("borrow_batch_id"):
+        row["borrow_batch_id"] = borrow_batch_id
+    return row, True
+
+
 def _intent_nonces_json(body: Dict[str, Any]) -> Optional[str]:
     v = body.get("intentNonces")
     if v is None:
@@ -740,6 +1033,31 @@ def _create_or_get_job(
     return row, True
 
 
+@bp.route("/borrow-top-ups", methods=["POST"])
+def perps_hl_borrow_top_ups():
+    try:
+        body = request.get_json(force=True, silent=False)
+    except Exception:
+        return _bad("invalid JSON body")
+    if not isinstance(body, dict):
+        return _bad("body must be a JSON object")
+
+    err = _validate_borrow_top_up(body)
+    if err:
+        return _bad(err)
+
+    ensure_hyperliquid_transfer_jobs_table(Cfg.NETWORK_ID)
+    try:
+        row, _created = _create_or_get_borrow_top_up_job(body)
+    except ValueError as ve:
+        msg = str(ve)
+        return _bad(msg, 409 if "different payload" in msg else 400)
+    except Exception as e:
+        logger.error(f"perps_hl_borrow_top_ups: {e}")
+        return _bad("failed to create borrow-top-up job", 500)
+    return _ok(_job_to_api(row))
+
+
 @bp.route("/deposits", methods=["POST"])
 def perps_hl_deposits():
     try:
@@ -826,6 +1144,9 @@ def perps_hl_transfer_history():
                 "jobId": r.get("job_id"),
                 "transferType": t,
                 "accountMode": r.get("account_mode"),
+                "fundingSource": r.get("funding_source"),
+                "borrowAuthMode": r.get("borrow_auth_mode"),
+                "requiredAction": r.get("required_action"),
                 "status": st,
                 "message": _message_for_status(
                     t,
